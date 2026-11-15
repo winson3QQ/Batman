@@ -82,7 +82,7 @@ class FakeProber implements Prober {
   Completer<void>? hold; // when set, a probe waits for it (or for cancel)
 
   @override
-  Future<Outcome> probe(GateLink link, String id, {required Duration msg2, required Future<void> cancelled}) async {
+  Future<Outcome> probe(GateLink link, String id, {required Future<void> due, required Future<void> cancelled}) async {
     probes.add('${link.address}×$id');
     final h = hold;
     if (h != null) await Future.any([h.future, cancelled]);

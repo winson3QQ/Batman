@@ -14,6 +14,7 @@ import 'key_abilities.dart';
 import 'member_ui.dart';
 import 'say.dart';
 import 'scan.dart' show provdService;
+import 'src/nodelink/raw_use.dart';
 import 'src/rust/api/claim.dart' show frameLimit, storeRemove;
 import 'src/rust/api/member.dart';
 import 'src/rust/api/owner.dart';
@@ -56,7 +57,10 @@ const _sendUnclear = '[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁
 const staleRecordLine = '紀錄已被別處更新，請重新開啟再試';
 
 class NodesPage extends StatefulWidget {
-  const NodesPage({super.key, this.ble});
+  const NodesPage({super.key, this.ble, this.use});
+
+  /// #329 §4.4: the raw lease this page runs under (null in tests of the page alone)
+  final RawUse? use;
 
   /// tests: a fake BLE (null = the platform's)
   final FlutterReactiveBle? ble;
@@ -65,11 +69,14 @@ class NodesPage extends StatefulWidget {
   State<NodesPage> createState() => _NodesPageState();
 }
 
-class _NodesPageState extends State<NodesPage> {
+class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
+  @override
+  RawUse? get rawUse => widget.use;
   late final _ble = widget.ble ?? FlutterReactiveBle(); // late: first used by a login
   final _lines = <String>[];
   List<String> _nodes = [];
-  bool _busy = false;
+  bool get _busy => rawBusy; // #329 §4.4: busy = the raw lease is held (it outlives a pop until the work ends)
+  set _busy(bool v) => rawBusy = v;
   // the live owner session
   OwnerSession? _session;
   String? _deviceId;
@@ -376,6 +383,7 @@ class _NodesPageState extends State<NodesPage> {
       final tried = <String>{};
       final end = DateTime.now().add(const Duration(seconds: 60));
       final found = <String>[];
+      rawScanStarted();
       final scan = _ble.scanForDevices(withServices: [provdService], scanMode: ScanMode.lowLatency).listen((d) {
         if (tried.add(d.id)) found.add(d.id);
       });
@@ -388,6 +396,10 @@ class _NodesPageState extends State<NodesPage> {
           final id = found.removeAt(0);
           scan.pause();
           final ok = await _tryLogin(id, record, ownerPub);
+          if (ok && !mounted) {
+            await _drop(); // #329 review pr1 B-M1: a login that ends after the page is gone keeps no link
+            return;
+          }
           if (ok) {
             _deviceId = deviceId;
             _lastNode = deviceId;
@@ -403,7 +415,7 @@ class _NodesPageState extends State<NodesPage> {
     } catch (e) {
       _say('[LOGIN_FAIL] 連線中斷：$e');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
   }
 
@@ -562,7 +574,7 @@ class _NodesPageState extends State<NodesPage> {
       _wait?.cancel();
       _answer = null;
       _unclear = null;
-      if (mounted && !held) setState(() => _busy = false);
+      if (!held) rawIdle();
     }
   }
 
@@ -608,7 +620,7 @@ class _NodesPageState extends State<NodesPage> {
     try {
       net = await _pickNet('要加入哪個網路？', forJoin: true);
     } finally {
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
     if (net == null || !mounted) return;
     final n = net; // non-null from here (the request closure below cannot promote `net`)
@@ -689,7 +701,7 @@ class _NodesPageState extends State<NodesPage> {
       }
       _say(last);
     } finally {
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
   }
 
@@ -772,7 +784,7 @@ class _NodesPageState extends State<NodesPage> {
     } catch (e) {
       _say('[REQ_FAIL] 邀請沒有成功：$e');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
   }
 
@@ -881,7 +893,7 @@ class _NodesPageState extends State<NodesPage> {
     try {
       await body();
     } finally {
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
   }
 
@@ -1009,7 +1021,7 @@ class _NodesPageState extends State<NodesPage> {
     try {
       pick = await _pickMnet();
     } finally {
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
     if (pick == null || !mounted) return;
     final (gen, plain) = await _readRecord('mnet/${pick.$1}');
@@ -1546,7 +1558,7 @@ class _NodesPageState extends State<NodesPage> {
       _answer = null;
       _unclear = null;
       _quiet = false;
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
   }
 

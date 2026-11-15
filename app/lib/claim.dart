@@ -17,6 +17,7 @@ import 'claim_recovery.dart';
 import 'key_abilities.dart';
 import 'say.dart';
 import 'scan.dart' show provdService, provdStatus;
+import 'src/nodelink/raw_use.dart';
 import 'src/rust/api/claim.dart';
 import 'src/rust/api/owner.dart' show listNodes, listPending;
 import 'src/rust/api/simple.dart';
@@ -48,7 +49,10 @@ const devSoftEncText = '這支手機的復原／成員金鑰是軟體保護，�
     '之後換手機、或改用 field 版／硬體 owner_enc，這支手機認領的每個節點都要重燒卡回收。';
 
 class ClaimPage extends StatefulWidget {
-  const ClaimPage({super.key, this.ble, this.findFor = const Duration(seconds: 60), this.recoveryBle});
+  const ClaimPage({super.key, this.ble, this.findFor = const Duration(seconds: 60), this.recoveryBle, this.use});
+
+  /// #329 §4.4: the raw lease this page runs under (null in tests of the page alone)
+  final RawUse? use;
 
   /// tests: a fake BLE (null = the platform's)
   final FlutterReactiveBle? ble;
@@ -61,11 +65,14 @@ class ClaimPage extends StatefulWidget {
   State<ClaimPage> createState() => _ClaimPageState();
 }
 
-class _ClaimPageState extends State<ClaimPage> {
+class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
+  @override
+  RawUse? get rawUse => widget.use;
   late final _ble = widget.ble ?? FlutterReactiveBle(); // late: first used by a claim (the D1 test builds the page without BLE)
   final _lines = <String>[];
   ClaimQr? _qr;
-  bool _busy = false;
+  bool get _busy => rawBusy; // #329 §4.4: busy = the raw lease is held (it outlives a pop until the work ends)
+  set _busy(bool v) => rawBusy = v;
   int _claimedNear = 0; // claimed / member nodes seen by the last search (their id tail is not public)
   bool _heldNode = false; // this phone holds a node record for the QR's device id (R7), set by _held
   bool _heldPending = false; // ... and a pending (254-app-replay T2), set by _held
@@ -138,7 +145,7 @@ class _ClaimPageState extends State<ClaimPage> {
       final k = _keyRefused(e);
       _say(k != null ? '[CLAIM_FAIL] $k' : '[CLAIM_FAIL] 恢復中斷：$e');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
       await _loadPending();
     }
   }
@@ -206,6 +213,7 @@ class _ClaimPageState extends State<ClaimPage> {
     final want = q.deviceId.substring(14);
     final tried = <String>{};
     final queue = Queue<String>();
+    rawScanStarted();
     final scan = _ble.scanForDevices(withServices: [provdService], scanMode: ScanMode.lowLatency).listen((d) {
       if (tried.add(d.id)) queue.add(d.id);
     });
@@ -457,7 +465,7 @@ class _ClaimPageState extends State<ClaimPage> {
     } finally {
       await notify?.cancel();
       await conn?.cancel();
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
       await _loadPending(); // a claim may have written or removed a pending (the T4 entry)
     }
   }
@@ -467,7 +475,7 @@ class _ClaimPageState extends State<ClaimPage> {
   Future<RecoveryOutcome> _recover(String deviceId, ClaimQr? q, ClaimStore store, ClaimRecords records,
       {String? t1Id, bool after9 = false, bool t3 = false, required String intro}) async {
     final rec = ClaimRecovery(
-        ble: widget.recoveryBle ?? ReactiveRecoveryBle(_ble), platform: _platform, store: store, records: records, deviceId: deviceId, qr: q, say: _say);
+        ble: widget.recoveryBle ?? ReactiveRecoveryBle(_ble, onScan: rawScanStarted), platform: _platform, store: store, records: records, deviceId: deviceId, qr: q, say: _say);
     if (mounted) setState(() => _recovery = rec);
     try {
       final out = await rec.run(

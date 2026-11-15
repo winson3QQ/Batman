@@ -3,9 +3,12 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
+import '../../key_abilities.dart' show KeyAbilities;
 import '../rust/api/owner.dart' show listNodes, storeReadSealed;
 import 'ble_backend.dart';
 import 'ble_gate.dart';
@@ -48,6 +51,10 @@ class AppLink {
       },
       ownerPub: () async => ((await platform.invokeMapMethod<String, dynamic>('publicKeys'))!['owner']) as Uint8List,
       signOwner: (input) async => (await platform.invokeMethod<Uint8List>('signOwner', {'input': input}))!,
+      // X26: the key gate refused a key use -> 2.4 until the app is opened again (review pr1 B-M5)
+      keyError: (e) {
+        if (KeyAbilities.refusedBy(e) != null) _one?.link.radio(keyOk: false);
+      },
     );
     Future<List<Rec>> readRecords() async {
       final ids = await listNodes(dir: records);
@@ -73,6 +80,33 @@ class AppLink {
       now: _now,
       after: _after,
     );
+    // §4.3.2 (T20): the app lifecycle, app-wide (it outlives any page)
+    WidgetsBinding.instance.addObserver(_Life(link));
+    // §4.3.3-1: Bluetooth off / no permission are the overlay 2.3 / 2.2, at once (review pr1 A-M3 / B-M5)
+    ble.statusStream.listen((s) {
+      final (bt, perm) = bleStatusToRadio(s);
+      if (bt != null || perm != null) link.radio(bluetooth: bt, permission: perm);
+    }, onError: (Object _) {});
     return _one = AppLink._(ble, reg, gate, link);
+  }
+}
+
+/// flutter_reactive_ble's status -> (Bluetooth on, permission granted); null = no change. unknown (the first event)
+/// and locationServicesDisabled / unsupported change nothing: a scan that fails then ends by itself and is retried.
+(bool?, bool?) bleStatusToRadio(BleStatus s) => switch (s) {
+      BleStatus.ready => (true, true),
+      BleStatus.poweredOff => (false, null),
+      BleStatus.unauthorized => (null, false),
+      _ => (null, null),
+    };
+
+class _Life with WidgetsBindingObserver {
+  _Life(this.link);
+  final NodeLink link;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    debugPrint('BMAPP nodelink lifecycle ${s.name}');
+    link.lifecycle(s);
   }
 }

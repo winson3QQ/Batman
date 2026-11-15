@@ -1,17 +1,21 @@
 // #329 design §4.3: NodeLink drives the scheduler core (core.dart) with the real radio. It owns the timer, the one
-// scan of a round and the one link of an attempt (both through BleGate with the registry's NodeLink token); the
-// login + status read of an attempt is a Prober (the OwnerSession one is prober.dart; tests use fakes). Pages and
-// the app lifecycle tell it what is on screen; the lease registry tells it when an operation holds Bluetooth.
+// scan of a round and the one link of an attempt (both through BleGate with the registry's NodeLink token, which
+// exists only while no lease is held); the login + status read of an attempt is a Prober (the OwnerSession one is
+// prober.dart; tests use fakes). Pages and the app lifecycle tell it what is on screen; the lease registry tells it
+// when an operation holds Bluetooth.
 import 'dart:async';
+
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 
 import 'ble_gate.dart';
 import 'core.dart';
 import 'lease.dart';
 
-/// One attempt's login + status read on an open link, for record [id]. Returns the core's outcome; `noResponse`
-/// when msg2 did not come within [msg2] (§4.3.3-3). It must stop when [cancelled] completes.
+/// One attempt's login + status read on an open link, for record [id]. [due] completes when the attempt's 8 s from
+/// the start of the connect to msg2 are over (§4.3.3-3): without msg2 by then it is `noResponse`. It must stop when
+/// [cancelled] completes.
 abstract class Prober {
-  Future<Outcome> probe(GateLink link, String id, {required Duration msg2, required Future<void> cancelled});
+  Future<Outcome> probe(GateLink link, String id, {required Future<void> due, required Future<void> cancelled});
 }
 
 /// The phone's node records and their file times (A23), read after start-up and after every lease release.
@@ -26,7 +30,8 @@ class NodeLink implements LeaseListener {
     required this.readRecords,
     required this.now,
     required this.after,
-  }) {
+    DateTime Function()? wall,
+  }) : wall = wall ?? DateTime.now {
     reg.listeners.add(this);
   }
 
@@ -38,26 +43,39 @@ class NodeLink implements LeaseListener {
   final int Function() now;
   final After after;
 
+  /// Wall-clock time, for 「讀取於 HH:MM」 only (the core's clock is monotonic and stops in deep sleep; review pr1
+  /// A-m8).
+  final DateTime Function() wall;
+
+  /// §4.3.3-3: from the start of the connect to msg2, one budget.
   static const msg2 = Duration(seconds: 8);
-  static const connectMax = Duration(seconds: 8); // inside the 8 s to msg2
+  static const scanRetry = Duration(milliseconds: 500); // a refused scan start is tried again after this (B-M4)
+  static const scanEndedRetry = Duration(seconds: 2); // the radio ended the scan by itself (A-M3)
 
   final _changed = StreamController<void>.broadcast();
 
   /// Fires after every change a screen may show (a read, a conclusion, a precondition).
   Stream<void> get changed => _changed.stream;
 
+  /// The wall-clock time of each node's last status read.
+  final Map<String, DateTime> readWall = {};
+
   GateScan? _scan;
   bool _scanStarting = false;
+  Cancel? _scanWait;
   Attempt? _attempt;
   GateLink? _link;
   Completer<void>? _cancel;
   Cancel? _timer;
   bool _disposed = false;
+  List<Rec> _recs = const [];
+  final Set<String> _writtenWaiting = {}; // records written under a lease released while another one was taken
 
   // ---- events from the app ----------------------------------------------------------------------------------
 
   Future<void> start(Page page, {String? node}) async {
-    core.setRecords(await readRecords());
+    _recs = await readRecords();
+    core.setRecords(_recs);
     core.startup(now(), page, node: node);
     _pump();
   }
@@ -75,6 +93,19 @@ class NodeLink implements LeaseListener {
   void foreground() {
     core.foreground(now());
     _pump();
+  }
+
+  /// T20: paused / hidden / detached are the background; resumed is the foreground; inactive (a dialog, the
+  /// notification shade) changes nothing.
+  void lifecycle(AppLifecycleState s) {
+    switch (s) {
+      case AppLifecycleState.resumed:
+        foreground();
+      case AppLifecycleState.paused || AppLifecycleState.hidden || AppLifecycleState.detached:
+        background();
+      case AppLifecycleState.inactive:
+        break;
+    }
   }
 
   void refresh() {
@@ -106,12 +137,36 @@ class NodeLink implements LeaseListener {
   @override
   void released(Lease l, {required bool revoked}) {
     // §4.4 釋放之後: read the records again (a claim added one, a removal deleted one), drop the memos of the
-    // records written under it, a round 6 s later
-    readRecords().then((recs) {
+    // records written under it, a round 6 s later. An older page (raw lease) does not report what it wrote: the
+    // records that appeared, went or changed time are taken as written by it (review pr1 A-M2).
+    final before = _recs;
+    readRecords().then<List<Rec>?>((r) => r, onError: (Object _) => null).then((recs) {
       if (_disposed) return;
-      core.releaseLease(now(), written: l.writtenNodes, recs: recs);
+      final written = {..._writtenWaiting, ...l.writtenNodes};
+      if (recs != null) {
+        if (l.kind == LeaseKind.raw) written.addAll(_changedIds(before, recs));
+        _recs = recs;
+      }
+      if (reg.current != null) {
+        // another lease was taken while the records were read: the core stays leased (review pr1 A-M5 / B-M2);
+        // the written records wait for that lease's release
+        if (recs != null) core.setRecords(recs);
+        _writtenWaiting.addAll(written);
+        return;
+      }
+      _writtenWaiting.clear();
+      core.releaseLease(now(), written: written, recs: recs); // records unreadable: the old list (A-m6)
       _pump();
     });
+  }
+
+  static Set<String> _changedIds(List<Rec> a, List<Rec> b) {
+    final was = {for (final r in a) r.id: r.mtime};
+    final now = {for (final r in b) r.id: r.mtime};
+    return {
+      for (final id in {...was.keys, ...now.keys})
+        if (was[id] != now[id]) id,
+    };
   }
 
   // ---- the loop ------------------------------------------------------------------------------------------------
@@ -124,8 +179,9 @@ class NodeLink implements LeaseListener {
     final a = _attempt;
     if (a != null && !identical(core.running, a)) _abort();
     if (core.roundActive) {
-      if (_scan == null && !_scanStarting) _startScan();
-      if (_attempt == null && _scan != null) {
+      if (_scan == null && !_scanStarting && _scanWait == null) _startScan();
+      // the next attempt starts only once the last link is gone (review pr1 B-m1)
+      if (_attempt == null && _scan != null && gate.links == 0) {
         final next = core.next(t);
         if (next != null) _run(next);
       }
@@ -140,51 +196,71 @@ class NodeLink implements LeaseListener {
     if (w != null) _timer = after(Duration(milliseconds: w - t), _pump);
   }
 
+  void _retryScan(Duration d) {
+    _scanWait?.call();
+    _scanWait = after(d, () {
+      _scanWait = null;
+      _pump();
+    });
+  }
+
   Future<void> _startScan() async {
     _scanStarting = true;
+    GateScan? s;
     try {
-      _scan = await gate.scan(reg.token, (address) {
-        core.onScan(now(), address);
-        if (_attempt == null) _pump();
+      s = await gate.scan(reg.nodeLinkToken, (address) {
+        if (core.onScan(now(), address) && _attempt == null) _pump();
+      }, ended: (_) {
+        // the radio ended the scan (Bluetooth off, no permission): the round goes on without one; the status
+        // stream tells the core why, and a new scan is tried a little later
+        if (identical(_scan, s)) _scan = null;
+        _retryScan(scanEndedRetry);
       });
     } on Refused {
-      // a lease took the radio meanwhile: nothing to do, the round is cancelled by it
+      // a lease took the radio, or the last scan is still stopping: never again in the same microtask (B-M4)
+      _scanStarting = false;
+      _retryScan(scanRetry);
+      return;
     } finally {
       _scanStarting = false;
     }
+    if (s.open) _scan = s;
     _pump();
   }
 
   Future<void> _run(Attempt a) async {
     _attempt = a;
     final cancel = _cancel = Completer<void>();
+    // §4.3.3-3: one 8 s budget from the start of the connect to msg2, on the injected clock
+    final due = Completer<void>();
+    final stopDue = after(msg2, () => due.isCompleted ? null : due.complete());
+    GateLink? mine;
     Outcome o;
     try {
-      final link = _link = gate.connect(reg.token, a.addr, timeout: connectMax);
-      // the 8 s budget is timed with the injected clock (the same clock as the core), not a Dart timeout
-      final timedOut = Completer<bool>();
-      final stop = after(connectMax, () => timedOut.isCompleted ? null : timedOut.complete(false));
+      final link = mine = _link = gate.connect(reg.nodeLinkToken, a.addr, timeout: msg2);
       final up = await Future.any<bool>([
         link.state.firstWhere((s) => s, orElse: () => false),
-        timedOut.future,
+        due.future.then((_) => false),
         cancel.future.then((_) => false),
       ]);
-      stop();
       if (!up || cancel.isCompleted) {
         o = const Outcome(Res.noResponse);
       } else {
-        o = await prober.probe(link, a.id, msg2: msg2, cancelled: cancel.future);
+        o = await prober.probe(link, a.id, due: due.future, cancelled: cancel.future);
       }
     } on Refused {
       o = const Outcome(Res.noResponse);
     } catch (_) {
       o = const Outcome(Res.noResponse); // one attempt's exception ends that attempt only (§4.3.3-4, F50)
     }
-    await _link?.close();
-    _link = null;
+    stopDue();
+    // close this attempt's own link only: a late end never closes the next attempt's (review pr1 A-m1 / B-m1)
+    await mine?.close();
+    if (identical(_link, mine)) _link = null;
     if (!identical(_attempt, a)) return; // aborted: the core no longer waits for it
     _attempt = null;
     _cancel = null;
+    if (o.res == Res.body) readWall[a.id] = wall();
     core.result(now(), a, o);
     _pump();
   }
@@ -196,11 +272,14 @@ class NodeLink implements LeaseListener {
     if (c != null && !c.isCompleted) c.complete();
     final l = _link;
     _link = null;
-    l?.close();
+    // the next attempt waits for this link to be gone; then plan again
+    l?.close().then((_) => _pump());
   }
 
   Future<void> _dropAll() async {
     _abort();
+    _scanWait?.call();
+    _scanWait = null;
     final s = _scan;
     _scan = null;
     await s?.stop();

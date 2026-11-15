@@ -147,43 +147,60 @@ class BleGate implements LeaseListener {
   final List<GateScan> _scans = [];
   final List<GateLink> _links = [];
   final List<int> _scanStarts = [];
-  final List<String> refused = []; // a log line per refusal (T-G1)
+  final List<String> refused = []; // a log line per refusal (T-G1); the last 200 only (review pr1 B-M4)
 
   int get scans => _scans.length;
   int get links => _links.length;
 
   void _timer(Duration d, void Function() f) => after(d, f);
 
-  void _gate(Token t, String what) {
-    if (!reg.valid(t)) {
-      refused.add('$what: $t is not the current token');
+  void _refuse(String line) {
+    refused.add(line);
+    if (refused.length > 200) refused.removeRange(0, refused.length - 200);
+  }
+
+  void _gate(Token? t, String what) {
+    if (t == null || !reg.valid(t)) {
+      _refuse('$what: $t is not the current token');
       throw Refused('not the current token');
     }
   }
 
-  /// Start the one scan. A start beyond 4 in 30 s waits inside the gate until it is allowed (§4.2).
-  Future<GateScan> scan(Token t, void Function(String address) seen) async {
+  /// Start the one scan. A start beyond 4 in 30 s waits inside the gate until it is allowed (§4.2). [ended] is called
+  /// once if the radio ends the scan by itself (an error such as Bluetooth off or no permission, or the stream
+  /// closing); the scan is closed then (review pr1 A-M3 / B-M5).
+  Future<GateScan> scan(Token? t, void Function(String address) seen, {void Function(Object? error)? ended}) async {
     _gate(t, 'scan');
     if (_scans.isNotEmpty) {
-      refused.add('scan: a scan is already running');
+      _refuse('scan: a scan is already running');
       throw Refused('a scan is already running');
     }
-    final s = GateScan._(this, t);
+    final s = GateScan._(this, t!); // _gate refused a null token
     _scans.add(s);
     final w = _waitForScanSlot();
     if (w > 0) {
       final c = Completer<void>();
       _timer(Duration(milliseconds: w), c.complete);
       await c.future;
-      if (!s.open || !reg.valid(t)) {
+      if (!s.open || !reg.valid(s.token)) {
         _scans.remove(s);
         throw Refused('revoked while waiting for a scan slot');
       }
     }
     _scanStarts.add(now());
-    s._sub = backend.scan().listen(seen);
+    void end(Object? e) {
+      if (!s.open) return;
+      s.stop();
+      ended?.call(e);
+    }
+
+    s._sub = backend.scan().listen(seen, onError: (Object e) => end(e), onDone: () => end(null));
     return s;
   }
+
+  /// An older page (raw lease) started a scan on the shared FlutterReactiveBle: it counts against the 4 in 30 s too
+  /// (A10; review pr1 A-m7).
+  void noteScanStart() => _scanStarts.add(now());
 
   int _waitForScanSlot() {
     final t = now();
@@ -193,13 +210,13 @@ class BleGate implements LeaseListener {
   }
 
   /// Open the one link.
-  GateLink connect(Token t, String address, {Duration timeout = const Duration(seconds: 15)}) {
+  GateLink connect(Token? t, String address, {Duration timeout = const Duration(seconds: 15)}) {
     _gate(t, 'connect');
     if (_links.isNotEmpty) {
-      refused.add('connect: a link is already open');
+      _refuse('connect: a link is already open');
       throw Refused('a link is already open');
     }
-    final l = GateLink._(this, t, address);
+    final l = GateLink._(this, t!, address); // _gate refused a null token
     _links.add(l);
     l._sub = backend.connect(address, timeout).listen(l._on, onError: (_) => l._on(false), onDone: () => l._on(false));
     return l;

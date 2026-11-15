@@ -286,12 +286,14 @@ class NodeLinkCore {
     }
   }
 
-  /// One BLE address seen by this round's scan (the driver reports each visible address; repeats are fine).
-  void onScan(int now, String a) {
+  /// One BLE address seen by this round's scan (the driver reports each visible address; repeats are fine). True = new
+  /// to this round (the driver re-plans only then; review pr1 A-m9 / B-m3).
+  bool onScan(int now, String a) {
     lastSeen[a] = now;
     final r = _round;
-    if (r == null || r.seen.contains(a)) return;
+    if (r == null || r.seen.contains(a)) return false;
     r.seen.add(a);
+    return true;
   }
 
   // ---- rounds --------------------------------------------------------------------------------------------------

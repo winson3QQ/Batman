@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
 import 'say.dart';
+import 'src/nodelink/raw_use.dart';
 import 'src/rust/api/simple.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
@@ -19,20 +20,26 @@ final provdStatus = Uuid.parse('540aa38c-0086-4d5c-a9c0-c7c9d1e1bd42');
 void _log(String s) => debugPrint('BMAPP ble $s');
 
 class ScanPage extends StatefulWidget {
-  const ScanPage({super.key, this.ble});
+  const ScanPage({super.key, this.ble, this.use});
+
+  /// #329 §4.4: the raw lease this page runs under (null in tests of the page alone)
+  final RawUse? use;
   final FlutterReactiveBle? ble; // #329 §4.2: the app's one instance
 
   @override
   State<ScanPage> createState() => _ScanPageState();
 }
 
-class _ScanPageState extends State<ScanPage> {
+class _ScanPageState extends State<ScanPage> with RawBusy<ScanPage> {
+  @override
+  RawUse? get rawUse => widget.use;
   late final _ble = widget.ble ?? FlutterReactiveBle();
   final _found = <String, DiscoveredDevice>{};
   final _status = <String, String>{};
   StreamSubscription<DiscoveredDevice>? _scan;
   String _note = '';
-  bool _busy = false;
+  bool get _busy => rawBusy; // #329 §4.4: busy = the raw lease is held (it outlives a pop until the work ends)
+  set _busy(bool v) => rawBusy = v;
 
   @override
   void dispose() {
@@ -52,6 +59,7 @@ class _ScanPageState extends State<ScanPage> {
       _found.clear();
       _note = '正在搜尋附近的節點…';
     });
+    rawScanStarted();
     _scan = _ble.scanForDevices(withServices: [provdService], scanMode: ScanMode.lowLatency).listen((d) {
       if (!_found.containsKey(d.id)) _log('found id=${d.id} rssi=${d.rssi} name=[${d.name}] uuids=${d.serviceUuids}');
       setState(() => _found[d.id] = d);
@@ -111,10 +119,8 @@ class _ScanPageState extends State<ScanPage> {
     final r = await done.future.timeout(const Duration(seconds: 30), onTimeout: () => '30 秒內沒有回應');
     await conn.cancel(); // drops the link: the node advertises again
     _log('disconnected id=${d.id}');
-    setState(() {
-      _status[d.id] = r;
-      _busy = false;
-    });
+    _status[d.id] = r;
+    rawIdle();
   }
 
   @override

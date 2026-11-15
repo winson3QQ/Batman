@@ -52,6 +52,9 @@ StatusView view(String row, String color) => StatusView(
 
 /// Each frame from the node pops the next scripted step; the status page request answers with [statusRow].
 class FakeSession implements OwnerSession {
+  bool disposed = false;
+  @override
+  void dispose() => disposed = true;
   FakeSession(this.script, {this.statusRow = '3', this.color = 'green'});
   final List<OwnerStep> script;
   final String statusRow, color;
@@ -65,8 +68,9 @@ class FakeSession implements OwnerSession {
     return null; // the next frame carries what follows
   }
 
+  bool throwOnStatus = false;
   @override
-  OwnerStep requestStatusPage() => step(OwnerKind.write);
+  OwnerStep requestStatusPage() => throwOnStatus ? throw StateError('bridge') : step(OwnerKind.write);
   @override
   StatusView statusView({required bool hasNet, required bool hasMnet}) => view(statusRow, color);
   @override
@@ -75,12 +79,13 @@ class FakeSession implements OwnerSession {
 
 class FakeRust implements RustLibApi {
   FakeSession session = FakeSession([]);
+  bool throwOnStatus = false;
   @override
   Future<int> crateApiClaimFrameLimit({required List<int> ctrl, required int mtu}) async => 244;
   @override
   (OwnerSession, OwnerStep) crateApiOwnerOwnerSessionStart(
           {required List<int> recordPlain, required List<int> ownerPub, required int frameLimit}) =>
-      (session, step(OwnerKind.write));
+      (session..throwOnStatus = throwOnStatus, step(OwnerKind.write));
   @override
   dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
 }
@@ -110,19 +115,26 @@ void main() {
   setUpAll(() => RustLib.initMock(api: rust));
 
   Future<Outcome> probe(List<OwnerStep> script,
-      {String row = '3', String color = 'green', int frames = 99, Duration msg2 = const Duration(seconds: 8)}) async {
+      {String row = '3',
+      String color = 'green',
+      int frames = 99,
+      Duration msg2 = const Duration(seconds: 8),
+      Future<void>? cancelled,
+      BleBackend? backend,
+      SessionProber? prober}) async {
     rust.session = FakeSession([...script], statusRow: row, color: color);
     final reg = LeaseRegistry(after: (d, f) => () {});
     final radio = Radio();
-    final gate = BleGate(radio, reg, now: () => 0, after: (d, f) => () {});
+    final gate = BleGate(backend ?? radio, reg, now: () => 0, after: (d, f) => () {});
     final link = gate.connect(reg.token, 'a1');
     await Future<void>.delayed(Duration.zero);
-    final p = SessionProber(
-      openRecord: (id) async => Uint8List(8),
-      ownerPub: () async => Uint8List(65),
-      signOwner: (input) async => Uint8List(70),
-    );
-    final f = p.probe(link, 'Y1', msg2: msg2, cancelled: Completer<void>().future);
+    final p = prober ??
+        SessionProber(
+          openRecord: (id) async => Uint8List(8),
+          ownerPub: () async => Uint8List(65),
+          signOwner: (input) async => Uint8List(70),
+        );
+    final f = p.probe(link, 'Y1', due: Future<void>.delayed(msg2), cancelled: cancelled ?? Completer<void>().future);
     for (var i = 0; i < frames; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 1));
       radio.tx.add([1]);
@@ -165,13 +177,81 @@ void main() {
     expect(rust.session.signs, [70]);
   });
 
-  test('no frame from the node within the msg2 budget -> noResponse', () async {
+  test('no frame from the node within the msg2 budget -> noResponse at the budget, not at the 20 s answer limit', () async {
+    final sw = Stopwatch()..start();
     final o = await probe([], frames: 0, msg2: const Duration(milliseconds: 50));
     expect(o.res, Res.noResponse);
+    expect(sw.elapsedMilliseconds, lessThan(1000), reason: 'review pr1 B-M6b: the msg2 budget itself ends it');
   });
 
   test('a step that would write a record in a read -> the node is given up, nothing written', () async {
     final o = await probe([step(OwnerKind.loggedIn, loginEnd: 1), step(OwnerKind.persistNet)]);
     expect(o.res, Res.broken);
   });
+
+  // ---- review pr1 (A-M4 / B-M3, B-m2, A-m10, B-M5, B-m6, A-m2 M9) ----------------------------------------------
+
+  test('RB-4 / RA-4: a device that never answers the MTU exchange ends at the msg2 budget', () async {
+    final sw = Stopwatch()..start();
+    final o = await probe([], frames: 0, msg2: const Duration(milliseconds: 50), backend: StallRadio());
+    expect(o.res, Res.noResponse);
+    expect(sw.elapsedMilliseconds, lessThan(1000), reason: 'msg2 budget 50 ms');
+  });
+
+  test('a probe stuck in Keystore stops when the attempt is cancelled (M9)', () async {
+    final cancel = Completer<void>();
+    final p = SessionProber(
+        openRecord: (id) => Completer<Uint8List?>().future, // never returns
+        ownerPub: () async => Uint8List(65),
+        signOwner: (i) async => Uint8List(70));
+    final f = probe([], frames: 0, prober: p, cancelled: cancel.future);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    cancel.complete();
+    final o = await f.timeout(const Duration(seconds: 1), onTimeout: () => const Outcome(Res.body, 'HUNG'));
+    expect((o.res, o.view), (Res.noResponse, ''));
+  });
+
+  test('B-m2: the session is disposed and the opened record zeroed when the attempt ends', () async {
+    final rec = Uint8List.fromList(List.filled(8, 7));
+    final p = SessionProber(
+        openRecord: (id) async => rec, ownerPub: () async => Uint8List(65), signOwner: (i) async => Uint8List(70));
+    final o = await probe([step(OwnerKind.loggedIn, loginEnd: 1), step(OwnerKind.answer)], prober: p);
+    expect(o.res, Res.body);
+    expect(rust.session.disposed, isTrue);
+    expect(rec, everyElement(0));
+  });
+
+  test('A-m10: an exception after the login is broken, before it no answer', () async {
+    rust.throwOnStatus = true;
+    try {
+      expect((await probe([step(OwnerKind.loggedIn, loginEnd: 1)])).res, Res.broken);
+    } finally {
+      rust.throwOnStatus = false;
+    }
+    final p = SessionProber(
+        openRecord: (id) async => throw StateError('store'), ownerPub: () async => Uint8List(65), signOwner: (i) async => Uint8List(70));
+    expect((await probe([], frames: 0, prober: p)).res, Res.noResponse);
+  });
+
+  test('B-M5: a key refused while signing is reported (2.4), and the attempt ends', () async {
+    final errors = <Object>[];
+    final p = SessionProber(
+        openRecord: (id) async => Uint8List(8),
+        ownerPub: () async => Uint8List(65),
+        signOwner: (i) async => throw StateError('keyLevel'),
+        keyError: errors.add);
+    final o = await probe([step(OwnerKind.sign), step(OwnerKind.ended, loginEnd: 5)], prober: p);
+    expect(o.res, Res.noResponse);
+    expect(errors, hasLength(1));
+  });
+
+  test('B-m6: before the login an unexpected step or an ended without a login end is no answer', () async {
+    expect((await probe([step(OwnerKind.persistNet)])).res, Res.noResponse);
+    expect((await probe([step(OwnerKind.ended)])).res, Res.noResponse);
+  });
+}
+
+class StallRadio extends Radio {
+  @override
+  Future<int> requestMtu(String address, int mtu) => Completer<int>().future; // never answers
 }

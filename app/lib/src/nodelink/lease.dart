@@ -52,6 +52,21 @@ class Lease {
     }
   }
 
+  /// An older page's work (§4.4 原始佔用的頁面, review pr1 A-M1 / B-M1): the lease is 「進行中」 from now until the returned
+  /// function is called (once; later calls do nothing), so a page that is popped while its claim or login still runs
+  /// keeps the lease until that work ends, at most 420 s after the pop. Throws when the lease is no longer valid.
+  Cancel hold() {
+    if (!valid) throw StateError('lease $name is no longer valid');
+    _busy++;
+    var done = false;
+    return () {
+      if (done) return;
+      done = true;
+      _busy--;
+      if (_busy == 0 && _gone && !_ended) release();
+    };
+  }
+
   /// The page's dispose: idle -> release at once; busy -> release when the work ends, at most 420 s from now.
   void pageGone() {
     if (_ended || _gone) return;
@@ -88,6 +103,10 @@ class LeaseRegistry {
 
   Lease? get current => _lease;
   Token get token => _current;
+
+  /// NodeLink's own credential: the current token only while no lease is held (§4.1; review pr1 A-M5 / B-M2). A
+  /// lease holder's token is never handed to NodeLink, so the gate refuses NodeLink while a lease is held.
+  Token? get nodeLinkToken => _lease == null ? _current : null;
   bool valid(Token t) => identical(t, _current);
 
   /// A second request is refused (null): the caller shows 「另一個操作還在進行：<名稱>」 with [current]'s name.
