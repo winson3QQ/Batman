@@ -1556,6 +1556,7 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
   /// gone); its answer goes to the update, which says what is next. A timeout or a lost link = `lost`, no session =
   /// `noLink`. Unlike [_ask] nothing is logged or shown here (D8: the bulk/open answer carries secrets).
   Future<SwAction> _askSw(SwUpdate sw, SwHold h, int waitMs) async {
+    if (!mounted) return sw.noLink(nowMs: h.now()); // a gone page asks nothing, as in _ask (review pr1 r6 L-m4)
     if (_session == null && _lastNode != null && !_busy) await _login(_lastNode!);
     final s = _session;
     if (s == null || _busy) return sw.noLink(nowMs: h.now());
