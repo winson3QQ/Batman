@@ -17,6 +17,8 @@ import '../src/rust/api/owner.dart' show StatusView, leaveConfirmText;
 import 'add_pages.dart' show NickPage;
 import 'home_logic.dart';
 import 'home_page.dart' show nodeInfo;
+import 'join_pages.dart' show UpdateImportPage;
+import 'send_key.dart';
 import 'settings_pages.dart' show CountryPage, opDeps, opLine;
 import 'theme.dart';
 import 'ui_state.dart';
@@ -137,6 +139,17 @@ class _MorePageState extends State<MorePage> {
               title: Btn.leaveNetwork,
               onTap: () => _push(LeavePage(app: a, ui: widget.ui, id: widget.id, deps: widget.deps))),
       ]),
+      // §2.10: the team rows, dev builds only (T-S5)
+      if (a.devTrust)
+        BatCard(children: [
+          SendKeyButton(app: a, id: widget.id, row: true),
+          if (a.nets.now.anyMnet)
+            BatRow(
+                key: const Key('more-paste-key'),
+                icon: Icons.content_paste,
+                title: '貼上隊長給的新密碼',
+                onTap: () => _push(UpdateImportPage(app: a, ui: widget.ui))),
+        ]),
       BatCard(children: [
         BatRow(icon: Icons.build_outlined, title: '技術資訊（給維修人員看）', onTap: () => setState(() => _tech = !_tech)),
         if (_tech)
