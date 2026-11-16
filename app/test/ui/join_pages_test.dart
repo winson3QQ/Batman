@@ -59,6 +59,7 @@ class TeamRust extends FakeRust {
   UpdateState updateState = UpdateState.advance;
   final seen = <String>[];
   List<int>? z; // the z handed to Rust (the page's own copy: zeroed after, B-m5)
+  Object? approveThrows; // T-P5-L: Rust refuses the approval with this
 
   @override
   InviteView crateApiMemberParseInvite({required String hex}) {
@@ -93,6 +94,8 @@ class TeamRust extends FakeRust {
       required String confirmedSas,
       required bool replace}) {
     seen.add('approve sas=$confirmedSas replace=$replace');
+    final e = approveThrows;
+    if (e != null) throw e;
     this.z = z;
     return step(OwnerKind.persistMnet, detail: '[IMPORT] 已匯入網路「山隊」', rel: 'mnet/nn');
   }
