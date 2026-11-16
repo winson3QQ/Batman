@@ -96,7 +96,9 @@ void main() {
   ) async {
     await captured(() async {
       final w = World(['0000aa01'], {'0000aa01': ''});
-      final a = await open(t, w, (a) => JoinTeamPage(app: a, ui: UiState(MemStore())));
+      final store = MemStore()..ids = ['0000aa01'];
+      final ui = UiState(store); // T-U6 / B-m10: the team pages never write it, so no name or code can be in it
+      final a = await open(t, w, (a) => JoinTeamPage(app: a, ui: ui));
       wire(w);
       await paste(t, 'INVITE');
       await t.enterText(find.byKey(const Key('join-name')), '小明LOG');
@@ -105,7 +107,7 @@ void main() {
       await settle(t);
       expect(find.byType(MyRequestPage), findsOneWidget, reason: 'the flow ran');
       await t.pumpWidget(const SizedBox());
-      final b = await open(t, w, (a) => ImportApprovalPage(app: a, ui: UiState(MemStore())));
+      final b = await open(t, w, (a) => ImportApprovalPage(app: a, ui: ui));
       wire(w);
       await paste(t, 'APPROVAL');
       await t.tap(find.byKey(const Key('sasConfirm')));
@@ -113,6 +115,8 @@ void main() {
       expect(w.disk, contains('cas mnet/nn'), reason: 'the flow ran');
       clean(a, 'member');
       clean(b, 'import');
+      await t.runAsync(ui.background);
+      expect([store.writes, store.removes], [0, 0], reason: 'T-U6: ui/state-v1 untouched by the team flows');
     });
   });
 
