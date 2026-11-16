@@ -71,6 +71,7 @@ class P4Session extends Session {
   int pageReads = 0;
   bool cutNext = false; // Rust's after_left: the next status view is cut once
   String leaveMode = 'left'; // left / refused (a non-zero reply, read as NotLeft)
+  bool pageSilent = false; // the status page read is never answered
 
   @override
   OwnerStep requestSettings() {
@@ -124,7 +125,7 @@ class P4Session extends Session {
                 return st(OwnerKind.answer, detail: '[LEFT] 已離開隊伍網路', left: true);
               }()
             : st(OwnerKind.answer, detail: '[REQ_FAIL] 沒有離開網路（節點仍在隊伍網路裡，代碼 11）— 請再按一次'),
-        const (fPage + 1) => st(OwnerKind.answer, detail: '[STATUS] 狀態已更新'),
+        const (fPage + 1) => pageSilent ? null : st(OwnerKind.answer, detail: '[STATUS] 狀態已更新'),
         const (fSw + 1) => st(OwnerKind.answer, sw: true),
         _ => super.onFrame(frame: frame),
       };
@@ -286,6 +287,20 @@ void main() {
       expect((a.text, sw.answers), ('answered', 1));
       expect(sw.nows, [BigInt.from(7777)], reason: 'the update clock, not the app clock (review D M1)');
       expect(r.c.alive, isTrue);
+      await r.c.close();
+    });
+
+    test('code review B m2: the lease goes after the answer reached the update -> that action, never lost on top', () async {
+      final r = rig();
+      final sw = FakeSwLink();
+      r.radio.silent = true;
+      final f = r.run(() => r.c.askSw(sw, () => BigInt.from(3), 15000), ms: 5000);
+      await r.clock.run(500);
+      await r.lease.release(); // taken back while the request waits
+      r.radio.tx.add([fSw + 1]); // the node answers
+      final a = await f;
+      expect((a.text, sw.answers), ('answered', 1));
+      expect(sw.nows, [BigInt.from(3)], reason: 'no lost() after the answer was handed over');
       await r.c.close();
     });
 

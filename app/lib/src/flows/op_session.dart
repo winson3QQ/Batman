@@ -12,6 +12,8 @@
 // - No record is written here.
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../nodelink/handoff.dart' show LoginHandoff;
 import '../nodelink/lease.dart';
 import '../nodelink/node_link.dart' show LoginForEnd, LoginForResult;
@@ -33,6 +35,10 @@ enum OpEnd {
 
   /// The lease went away (taken back, or not valid any more).
   leaseLost,
+
+  /// Something else went wrong (a bug, an error nobody expected): the outcome is unknown. Never up to the page as an
+  /// exception (code review A m11 / B m10: a page would stay 「正在送出…」 with its back button blocked).
+  failed,
 }
 
 class OpReply {
@@ -108,6 +114,9 @@ class OpSession {
     } on StateError {
       // the lease is not valid any more (hold), or a second request at once (a page bug): never up to the page
       return const OpReply(OpEnd.leaseLost);
+    } catch (e) {
+      debugPrint('BMAPP op $name failed: ${e.runtimeType}'); // the type only
+      return const OpReply(OpEnd.failed);
     } finally {
       await c?.close(); // the console before the lease (§4.4, review A m11 / B m12)
       hold?.call();
@@ -166,6 +175,9 @@ class OpenSession {
       return await request(c);
     } on StateError {
       return failed(const OpReply(OpEnd.leaseLost));
+    } catch (e) {
+      debugPrint('BMAPP op failed: ${e.runtimeType}');
+      return failed(const OpReply(OpEnd.failed));
     } finally {
       _running--;
       if (_gone && _running == 0) await _c?.close(); // before the hold goes: the lease follows it (review B m3)

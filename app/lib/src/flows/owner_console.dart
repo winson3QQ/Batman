@@ -379,7 +379,13 @@ class OwnerConsole {
   /// plan §2.3: leaseLost only from the lease itself, whatever ended the request.
   ConsoleReply _leaseCheck(ConsoleReply r) => lease.valid
       ? r
-      : ConsoleReply(ReplyKind.leaseLost, r.text, persistedRel: r.persistedRel, sessionAlive: r.sessionAlive, keyError: r.keyError);
+      : ConsoleReply(ReplyKind.leaseLost, r.text,
+          persistedRel: r.persistedRel,
+          sessionAlive: r.sessionAlive,
+          keyError: r.keyError,
+          left: r.left,
+          settings: r.settings,
+          value: r.value); // #329 PR 4 code review B m2: what the answer already made is kept
 
   /// One request (nodes.dart `_ask` without its login and resend branch). [wait] runs from each write to the node.
   Future<ConsoleReply> _ask(OwnerStep Function(OwnerSession) req,
@@ -553,7 +559,9 @@ class OwnerConsole {
         unclear: swUnansweredMark,
         derive: (s, st) => st.sw ? sw.answered(s, now()) : null);
     final v = r.value;
-    if (r.kind == ReplyKind.answer && v is SwAction) return v;
+    // the node's answer was handed to the update already (swAnswer ran): its action, whatever came after (code review
+    // B m2: never `lost` on top of it)
+    if (v is SwAction) return v;
     _session = null; // the request may still be outstanding in that session (nodes.dart:1621)
     return sw.lost(now());
   }

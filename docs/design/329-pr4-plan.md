@@ -363,3 +363,15 @@
 | D m9 背景、更新時間、goneMax | MINOR | §3.3 加列；§2.8 數字；§2.7 `release()` |
 
 兩個 MAJOR 都是一行層級的規定、各有負對照，v3 凍結不再開計畫審查；實作後的兩位程式碼審查要逐條核對這兩條（同 PR 3 v18 的做法）。
+
+## 附錄 B. 實作時和計畫不同的地方（程式碼審查第 1 輪核對過；code-review-pr4-A.md、-B.md）
+
+| # | 計畫 | 實作 | 理由 / 等價的證據 |
+|---|---|---|---|
+| I1 | §2.7：把 nodes.dart 的 `_netNames` 與「`StatusView` → `StatusFields`」抽成兩邊共用的函式 | 只共用了判定 `memberEntryOf`（member_ui.dart）；`adminApplied` 從 `NetIndex` 的 APPLIED net 紀錄算；`leaveFieldsOf` 只取離開頁要顯示的判定句、⚠️ 行、未完成那一行 | 審查 A 逐條對過兩邊判定等價（hasNet = netFiles > 0；applied 都要求紀錄打得開；`_raw4` = Rust 的 `last4()`）。舊控制台的 `_netNames` 還要給名稱與 team 區塊用，PR 6 刪舊控制台時這份就只剩一份 |
+| I2 | §6 第 2 步：`console_paths.dart` 共用表加設定 / 離開列 | 沒加 | 舊控制台的設定按鈕不帶 unclear 句（nodes.dart:1694、:1714），兩邊的預期不同，不能共用一張表；新的行為由 owner_console_pr4_test 涵蓋 |
+| I3 | §2.8 3a：更新頁在 NodeLink 的 precondition 成立時顯示藍牙 / 權限提示列 | 沒做 | 更新中藍牙被關時，登入回 precondition → `sw.noLink`，流程照現況顯示 Rust 的句子（基準行為）。少的是「為什麼」那一列 → #329 checklist |
+| I4 | §5：sw 回答不出現在 log 擷取的測試 | 沒有專門的測試 | 程式不記（sw 的 `detail` 是空字串，owner.rs:1650；OwnerConsole 不記回答內容）→ #329 checklist |
+| I5 | §2.0：`OpSession` 只轉 `StateError` | 其他例外也轉成 `OpEnd.failed`（「操作出錯，結果不明」） | 審查 A m11 / B m10：例外冒到頁面會讓頁面停在「正在送出…」、返回鍵被擋 |
+
+沒有會失敗的測試、留著的守衛：離開後的 `link.refresh()`；`openSwUpdate` 的 `context.mounted` 分支；`SwHolds.take` 的 done 檢查（防禦性）。

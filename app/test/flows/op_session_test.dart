@@ -136,6 +136,24 @@ void main() {
       expect(f.rigs.first.radio.written.length, 1, reason: 'sent once');
     });
 
+    test('code review B m5: the lease goes during the login -> leaseLost, nothing written', () async {
+      final f = Fx(rust, logins: 1)..slowLogin = Completer<void>();
+      final r = f.run(() => OpSession.once(f.d, 'Y1', 'x', (c, g) => c.settings(), gone: () => false));
+      await f.rigs.first.clock.run(500);
+      await f.rigs.first.lease.release(); // taken back while the login runs
+      f.slowLogin!.complete();
+      final x = await r;
+      expect(x.end, OpEnd.leaseLost);
+      expect((f.consoles, f.rigs.first.radio.written.length), (0, 0));
+    });
+
+    test('code review A m11 / B m10: any other error -> failed, never an exception to the page', () async {
+      final f = Fx(rust, logins: 1);
+      final r = await f.run(() => OpSession.once(f.d, 'Y1', 'x', (c, g) => throw ArgumentError('bug'), gone: () => false));
+      expect(r.end, OpEnd.failed);
+      expect(f.reg.current, isNull, reason: 'released all the same');
+    });
+
     test('a lease that is no longer valid -> leaseLost, never an exception to the page', () async {
       final f = Fx(rust, logins: 1);
       final l = f.rigs.first.lease;
@@ -193,6 +211,21 @@ void main() {
       expect((await r).kind, ReplyKind.answer);
       await f.rigs.first.clock.run(500);
       expect(o.seen, ['released alive=false']);
+    });
+
+    test('code review B m5: the page goes during the login -> nothing sent, the session closed', () async {
+      final f = Fx(rust)..slowLogin = Completer<void>();
+      final s = (await OpenSession.open(f.d, 'Y1', '軟體更新'))!;
+      final r = f.run(() => s.run<OpReply?>((c) async {
+            await c.settings();
+            return null;
+          }, failed: (w) => w));
+      await f.rigs.first.clock.run(500);
+      await s.pageGone();
+      f.slowLogin!.complete();
+      final why = await r;
+      expect((why?.end, f.consoles), (OpEnd.gone, 0));
+      expect(f.rigs.first.radio.written, isEmpty);
     });
 
     test('after pageGone nothing starts', () async {

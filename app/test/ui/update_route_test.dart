@@ -8,6 +8,7 @@ import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/rust/api/owner.dart' show OwnerSession;
 import 'package:batman_app/src/rust/api/swupdate.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
+import 'package:batman_app/src/nodelink/node_link.dart' show LoginForEnd;
 import 'package:batman_app/swupdate.dart';
 import 'package:batman_app/ui/settings_pages.dart' show WifiPage;
 import 'package:batman_app/ui/update_route.dart';
@@ -17,7 +18,8 @@ import 'package:flutter_test/flutter_test.dart';
 import '../flows/op_session_test.dart' show Fx;
 import '../flows/owner_console_pr4_test.dart' show FakeSwLink;
 import '../nodes_update_send_test.dart' as nus show FakeRust;
-import 'pages_test.dart' show app, host, id, keys;
+import 'pages_test.dart' show app, host, id, keys, sv;
+import 'package:batman_app/src/nodelink/core.dart' show Concl, Kind;
 import 'package:batman_app/ui/home_page.dart' show HomePage;
 import 'package:batman_app/ui/node_page.dart' show NodePage;
 import 'ui_state_test.dart' show MemStore;
@@ -150,6 +152,34 @@ void main() {
     expect(n, greaterThan(0));
   });
 
+  testWidgets('code review A m3: no session (the reboot) -> noLink, on the update clock too', (t) async {
+    final (f, _, link, _) = await openIt(t);
+    f.loginEnd = LoginForEnd.notFound;
+    f.rigs.first.radio.drop();
+    await settle(t, f);
+    await t.tap(find.text('套用並重開'));
+    await settle(t, f);
+    expect(find.text('連不到節點'), findsOneWidget);
+    expect(link.nows.toSet(), {BigInt.from(4242)}, reason: 'every call of the update, noLink included');
+  });
+
+  testWidgets('code review A m1 / B m1: a page listening to AppLink.sw under the update page: no setState during build',
+      (t) async {
+    t.binding.defaultBinaryMessenger.setMockMethodCallHandler(swChannel, (c) async => null);
+    final f = Fx(rust);
+    final a = app();
+    final link = Link();
+    await t.pumpWidget(host(_Listener(a: a, child: Builder(
+        builder: (c) => TextButton(
+            onPressed: () => openSwUpdate(c, a, UiState(MemStore()), id,
+                deps: f.d, make: () => (link as SwLink, Hold(Flow())), specifier: () => ''),
+            child: const Text('node'))))));
+    await t.tap(find.text('node'));
+    await settle(t, f);
+    expect(t.takeException(), isNull);
+    expect(find.text('已準備好'), findsOneWidget);
+  });
+
   testWidgets('T-U3: done -> the update leaves AppLink.sw when the page closes', (t) async {
     final (f, a, _, _) = await openIt(t);
     await t.tap(find.text('套用並重開'));
@@ -195,6 +225,30 @@ void main() {
     AppLink.forgetForTest();
   });
 
+  testWidgets('code review A m9 / B m9: a hold of a node no longer on the phone is not counted as a todo', (t) async {
+    final a = app();
+    final h = SwHold(Flow())..last = act(SwKind.show_, buttons: [SwButton.apply]);
+    a.sw.take('ffffffffffffffffffff0000', () => (FakeSwLink(), h)); // removed through the old console
+    a.link.core.states[id]! // the phone's one node, read and fine: the hero would show a todo count
+      ..kind = Kind.read
+      ..view = 'green'
+      ..readAt = a.link.now()
+      ..extra = sv('green')
+      ..last = Concl.read;
+    await t.pumpWidget(host(HomePage(app: a, ui: UiState(MemStore()), devTrust: false, keys: keys())));
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await t.pump();
+    expect(find.textContaining('件事要你處理'), findsNothing);
+    // the control: the same hold for the node on the phone is counted
+    a.sw.take(id, () => (FakeSwLink(), SwHold(Flow())..last = act(SwKind.show_, buttons: [SwButton.apply])));
+    await t.pump();
+    expect(find.textContaining('有 1 件事要你處理'), findsOneWidget);
+    a.link.dispose();
+    await t.pumpWidget(const SizedBox());
+    await t.pump(const Duration(seconds: 10));
+    AppLink.forgetForTest();
+  });
+
   testWidgets('another operation holds the lease -> no update page', (t) async {
     t.binding.defaultBinaryMessenger.setMockMethodCallHandler(swChannel, (c) async => null);
     final f = Fx(rust)..busy = true;
@@ -219,6 +273,38 @@ void main() {
     await t.tap(find.text('去設定手機 Wi-Fi'));
     await settle(t, f);
     expect(find.byType(WifiPage), findsOneWidget);
+    // code review A m4: 5.6 got the lease (the update page's was back) and read the current name
+    expect(find.text('node-ap'), findsWidgets);
+    expect(find.textContaining('另一個操作還在進行'), findsNothing);
+    expect(f.reg.current, isNull);
     expect(identical(a.sw.of(id)?.$2, hold), isTrue);
   });
+}
+
+/// A page that rebuilds whenever AppLink.sw notifies (as the node page and the home page do).
+class _Listener extends StatefulWidget {
+  const _Listener({required this.a, required this.child});
+  final AppLink a;
+  final Widget child;
+  @override
+  State<_Listener> createState() => _ListenerState();
+}
+
+class _ListenerState extends State<_Listener> {
+  @override
+  void initState() {
+    super.initState();
+    widget.a.sw.addListener(_changed);
+  }
+
+  void _changed() => setState(() {});
+
+  @override
+  void dispose() {
+    widget.a.sw.removeListener(_changed);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }

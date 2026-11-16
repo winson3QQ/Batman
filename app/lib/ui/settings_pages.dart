@@ -2,6 +2,8 @@
 // and each send is one OpSession.once (the lease only while it runs). Success only when Rust gives the settings
 // (§2.1); anything else is the node's reason, 「結果不明」 or 「沒有送出」 as the reply says. The passphrase is taken
 // out of its field only after the login, right before the request, and never logged (§5).
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../say.dart' show screenText;
@@ -41,6 +43,7 @@ String opLine(OpReply r) => switch (r.end) {
       OpEnd.gone => '',
       OpEnd.leaseLost => r.reply == null ? '這個操作被中斷了，沒有送出。請再試一次。' : screenText(r.reply!.text),
       OpEnd.done => screenText(r.reply!.text),
+      OpEnd.failed => '操作出錯，結果不明。請重新讀取後再決定要不要再做一次。',
     };
 
 /// The settings when the operation succeeded (Rust gave them), else null.
@@ -138,9 +141,13 @@ class _WifiPageState extends State<WifiPage> {
       _again = false;
     });
     final r = await OpSession.once(_d, widget.id, '手機 Wi-Fi', (c, gone) {
-      // §2.4 (review D m6): out of the field only now, after the login, right before the request
+      // §2.4 (review D m6): out of the field only now, after the login, right before the request; checked once more
+      // (code review B m7: what is sent is what was checked)
       final pass = _pass.text;
       _pass.clear();
+      if (apPassProblem(pass) != null || apSsidProblem(ssid) != null) {
+        return Future.value(const ConsoleReply(ReplyKind.notSent, '[REQ_FAIL] 名稱或密碼不符合節點的規定，沒有送出'));
+      }
       return c.setAp(ssid, pass);
     }, gone: () => !mounted);
     if (!mounted) return;
@@ -153,7 +160,7 @@ class _WifiPageState extends State<WifiPage> {
         _again = !v.read;
       } else {
         _line = opLine(r);
-        _again = r.end == OpEnd.done && r.reply!.kind == ReplyKind.unclear;
+        _again = r.end == OpEnd.failed || (r.end == OpEnd.done && r.reply!.kind == ReplyKind.unclear);
       }
     });
   }
@@ -180,6 +187,7 @@ class _WifiPageState extends State<WifiPage> {
             TextField(
               key: const Key('wifi-ssid'),
               controller: _ssid,
+              enabled: !_sending, // code review B m7: the values sent are the ones on screen
               autocorrect: false,
               enableSuggestions: false,
               decoration: InputDecoration(border: const OutlineInputBorder(), labelText: '名稱', errorText: ssidBad),
@@ -187,6 +195,7 @@ class _WifiPageState extends State<WifiPage> {
             TextField(
               key: const Key('wifi-pass'),
               controller: _pass,
+              enabled: !_sending,
               obscureText: !_show,
               autocorrect: false,
               enableSuggestions: false,
@@ -237,19 +246,29 @@ class CountryPage extends StatefulWidget {
 class _CountryPageState extends State<CountryPage> {
   late final OpDeps _d = widget.deps ?? opDeps(widget.app);
   String? _cc; // read in this page's settings read
-  bool _reading = false, _sending = false;
+  bool _reading = false, _sending = false, _again = false;
   String _line = '';
+  StreamSubscription<void>? _sub;
 
   @override
   void initState() {
     super.initState();
+    // code review A m2: the menu follows NodeLink's reads while the page is open (after a leave, its refresh)
+    _sub = widget.app.link.changed.listen((_) => mounted ? setState(() {}) : null);
     _read();
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
   }
 
   Future<void> _read() async {
     setState(() {
       _reading = true;
       _line = '';
+      _again = false;
     });
     final r = await OpSession.once(_d, widget.id, '國家', (c, gone) => c.settings(), gone: () => !mounted);
     if (!mounted) return;
@@ -306,6 +325,8 @@ class _CountryPageState extends State<CountryPage> {
         _line = '已更新。';
       } else {
         _line = opLine(r);
+        // code review A m2 / B m8: an outcome not known (as 5.6) -> 重新讀取
+        _again = r.end == OpEnd.failed || (r.end == OpEnd.done && r.reply!.kind == ReplyKind.unclear);
       }
     });
   }
@@ -335,7 +356,7 @@ class _CountryPageState extends State<CountryPage> {
         if (no != null && no.isNotEmpty) Text(no, key: const Key('country-why'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.sub)),
         if (_line.isNotEmpty) Text(_line, key: const Key('country-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
       ], foot: [
-        if (cur == null && !_reading) BatButton('重新讀取', kind: BtnKind.secondary, onPressed: _sending ? null : _read),
+        if ((cur == null || _again) && !_reading) BatButton('重新讀取', kind: BtnKind.secondary, onPressed: _sending ? null : _read),
         Text('後四碼 ${last4(widget.id)}', textAlign: TextAlign.center, style: TextStyle(fontSize: Fs.meta, color: t.sub)),
       ]),
     );

@@ -3,6 +3,7 @@
 // 「結果不明」 + 重新讀取, T-W5 the passphrase in no log / reply and the field's flags, T-W6 the country menu's limits,
 // T-W7 the confirm dialog, T-W8 the lease released after each read.
 import 'package:batman_app/secure_screen.dart';
+import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/core.dart';
 import 'package:batman_app/src/nodelink/node_link.dart' show LoginForEnd;
 import 'package:batman_app/src/rust/frb_generated.dart';
@@ -46,6 +47,16 @@ void main() {
     await t.pumpWidget(host(WifiPage(app: a, ui: UiState(MemStore()), id: id, deps: f.d)));
     await settle(t, f);
     return f;
+  }
+
+  /// [page] pushed over a base route (back on a root route never pops: a PopScope test needs a route under it)
+  Future<void> pushed(WidgetTester t, Widget page) async {
+    await t.pumpWidget(host(Builder(
+        builder: (c) => TextButton(
+            onPressed: () => Navigator.of(c).push(MaterialPageRoute(builder: (_) => page)), child: const Text('base')))));
+    await t.tap(find.text('base'));
+    await t.pump();
+    await t.pump(const Duration(seconds: 1));
   }
 
   TextField field(WidgetTester t, String key) => t.widget<TextField>(find.byKey(Key(key)));
@@ -151,6 +162,24 @@ void main() {
       expect((p.obscureText, p.keyboardType), (false, TextInputType.visiblePassword));
     });
 
+    testWidgets('code review A m5: while sending, back does not close the page; the fields cannot change (B m7)', (t) async {
+      await allowSecure(t);
+      final f = Fx(rust);
+      await pushed(t, WifiPage(app: app(), ui: UiState(MemStore()), id: id, deps: f.d));
+      await settle(t, f);
+      f.rigs[1].radio.silent = true;
+      await t.enterText(find.byKey(const Key('wifi-pass')), secret);
+      await t.pump();
+      await t.tap(find.widgetWithText(FilledButton, '送出'));
+      await settle(t, f);
+      expect(field(t, 'wifi-ssid').enabled, isFalse);
+      await t.state<NavigatorState>(find.byType(Navigator)).maybePop();
+      await t.pump(const Duration(seconds: 1));
+      await t.pump(); // a popped route goes on the frame after its transition
+      await t.pump(const Duration(seconds: 5));
+      expect(find.byType(WifiPage), findsOneWidget);
+    });
+
     testWidgets('the page is a SecureScreen', (t) async {
       await openWifi(t);
       expect(find.byType(SecureScreen), findsOneWidget);
@@ -158,7 +187,7 @@ void main() {
   });
 
   group('5.8 country', () {
-    Future<(Fx, Object)> openCountry(WidgetTester t, {int nodeState = 1, bool fresh = true}) async {
+    Future<(Fx, Object)> openCountry(WidgetTester t, {int nodeState = 1, bool fresh = true, bool push = false}) async {
       final f = Fx(rust);
       final a = app();
       final s = a.link.core.states[id]!;
@@ -170,7 +199,12 @@ void main() {
           ..extra = sv('yellow', nodeState: nodeState)
           ..last = Concl.read;
       }
-      await t.pumpWidget(host(CountryPage(app: a, ui: UiState(MemStore()), id: id, deps: f.d)));
+      final page = CountryPage(app: a, ui: UiState(MemStore()), id: id, deps: f.d);
+      if (push) {
+        await pushed(t, page);
+      } else {
+        await t.pumpWidget(host(page));
+      }
       await settle(t, f);
       return (f, a);
     }
@@ -207,6 +241,45 @@ void main() {
       await t.pumpAndSettle();
       expect(find.byType(AlertDialog), findsNothing);
       expect(f.logins, 1);
+    });
+
+    testWidgets('code review A m2: the menu follows the NodeLink reads while the page is open', (t) async {
+      final (_, ao) = await openCountry(t, nodeState: 2);
+      final a = ao as AppLink;
+      expect(rowEnabled(t, 'TW'), isFalse);
+      a.link.core.states[id]!.extra = sv('yellow', nodeState: 1); // the next read: not in a network any more
+      a.link.radio(); // nothing changes in NodeLink but it tells its listeners
+      await t.pump();
+      await t.pump(); // the stream delivers after this frame
+      expect(rowEnabled(t, 'TW'), isTrue);
+      await a.link.dispose();
+    });
+
+    testWidgets('code review A m2 / B m8: the outcome not known -> 重新讀取', (t) async {
+      final (f, _) = await openCountry(t);
+      f.rigs[1].radio.silent = true;
+      await t.tap(find.byKey(const Key('country-TW')));
+      await t.pumpAndSettle();
+      await t.tap(find.widgetWithText(FilledButton, '改'));
+      await settle(t, f);
+      f.rigs[1].radio.drop();
+      await settle(t, f);
+      expect(find.textContaining('結果不明'), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, '重新讀取'), findsOneWidget);
+    });
+
+    testWidgets('code review A m5: while sending, back does not close the page', (t) async {
+      final (f, _) = await openCountry(t, push: true);
+      f.rigs[1].radio.silent = true;
+      await t.tap(find.byKey(const Key('country-TW')));
+      await t.pumpAndSettle();
+      await t.tap(find.widgetWithText(FilledButton, '改'));
+      await settle(t, f);
+      await t.state<NavigatorState>(find.byType(Navigator)).maybePop();
+      await t.pump(const Duration(seconds: 1));
+      await t.pump(); // a popped route goes on the frame after its transition
+      await t.pump(const Duration(seconds: 5));
+      expect(find.byType(CountryPage), findsOneWidget);
     });
 
     testWidgets('T-W6: no fresh read of the node -> the menu cannot be used', (t) async {

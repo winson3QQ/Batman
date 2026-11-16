@@ -254,7 +254,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final ids = a.link.core.states.keys.toList()..sort();
     final infos = [for (final id in ids) nodeInfo(a, id, widget.ui)];
     final nets = a.nets.now;
-    final todos = _pending + a.reg.unsavedTodos.length + nets.todos.length + a.sw.unfinishedIds.length;
+    final todos = _pending + a.reg.unsavedTodos.length + nets.todos.length + a.sw.unfinishedOf(a.link.core.states.containsKey).length;
     final firstRounds = a.link.core.roundsRun < 3;
     final h = decideHome(
         HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: nets.records));
@@ -324,14 +324,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               action: Btn.finishIt,
               onAction: () => _form(makes: false, todo: j)),
         // #329 PR 4 §2.8 (design §4.8): an update prepared and not applied (memory only, as the update itself)
-        for (final id in a.sw.unfinishedIds)
-          if (a.link.core.states.containsKey(id))
-            BatBanner(
-                look: Look.warn,
-                title: '軟體更新還沒做完',
-                text: '${nodeInfo(a, id, widget.ui).name}：更新已經準備好，還沒套用。',
-                action: Btn.finishIt,
-                onAction: () => _open(id, update: true)),
+        for (final id in a.sw.unfinishedOf(a.link.core.states.containsKey))
+          BatBanner(
+              look: Look.warn,
+              title: '軟體更新還沒做完',
+              text: '${nodeInfo(a, id, widget.ui).name}：更新已經準備好，還沒套用。',
+              action: Btn.finishIt,
+              onAction: () => _open(id, update: true)),
         if (infos.isNotEmpty) ...[
           const BatLabel('我的節點'),
           BatCard(children: [

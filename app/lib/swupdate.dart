@@ -150,7 +150,10 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
 
   void _show(SwAction a) {
     _h.last = a;
-    widget.onShown?.call(); // #329 PR 4 §2.8: the home page's todo follows (review C m8)
+    // #329 PR 4 §2.8: the home page's todo follows (review C m8); after this frame — the first action is shown from
+    // initState, while the route is being built (code review A m1 / B m1)
+    final n = widget.onShown;
+    if (n != null) scheduleMicrotask(n);
     if (mounted) setState(() => _a = a);
   }
 

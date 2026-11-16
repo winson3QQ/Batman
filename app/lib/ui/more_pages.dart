@@ -187,11 +187,15 @@ class LeavePage extends StatefulWidget {
 }
 
 class _LeavePageState extends State<LeavePage> {
+  // the old status page's ⚠️ line (member_ui.dart StatusPageView; code review B m4)
+  static String _warn(StatusFields f) => f.warning.isEmpty ? '' : '⚠️ ${f.warning}';
+
   late final OpDeps _d = widget.deps ?? opDeps(widget.app);
   List<String>? _dialog; // [title, body]
   bool _running = false, _done = false;
   String _line = '';
   StatusFields? _after;
+  bool _stale = false; // left, but the read after it read nothing (LeaveResult.stale)
 
   AppLink get a => widget.app;
 
@@ -260,6 +264,7 @@ class _LeavePageState extends State<LeavePage> {
       if (op.end == OpEnd.done && r != null) {
         _line = screenText(r.line ?? leaveNotAsked);
         _after = r.fields;
+        _stale = r.stale;
       } else {
         _line = opLine(op);
       }
@@ -283,9 +288,13 @@ class _LeavePageState extends State<LeavePage> {
         if (f != null) ...[
           // leave v4.1 §2: the unfinished-change line right under the verdict when key 10 is absent, else after the ⚠️ line
           Text(f.sentence, key: const Key('leave-after'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
-          for (final l in f.unfinishedUnderVerdict ? [f.unfinished, f.warning] : [f.warning, f.unfinished])
+          for (final l in f.unfinishedUnderVerdict ? [f.unfinished, _warn(f)] : [_warn(f), f.unfinished])
             if (l.isNotEmpty) Text(l, style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.sub)),
         ],
+        // leave v4.1 §2 (code review A m10): the old console marks the page stale here
+        if (_stale)
+          Text('離開後沒有讀到節點的狀態，稍後回節點頁看。', key: const Key('leave-stale'),
+              style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.sub)),
       ], foot: [
         if (!_done) ...[
           BatButton(_running ? '正在離開…' : Btn.leaveNetwork,

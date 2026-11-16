@@ -35,4 +35,8 @@ class SwHolds extends ChangeNotifier {
   }
 
   List<String> get unfinishedIds => [for (final id in _m.keys) if (unfinished(id)) id];
+
+  /// The ones still on this phone (code review A m9 / B m9: the old console's removal does not drop a hold; the home
+  /// page's count and its banners use the same list).
+  List<String> unfinishedOf(bool Function(String id) known) => [for (final id in unfinishedIds) if (known(id)) id];
 }

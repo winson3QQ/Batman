@@ -7,7 +7,8 @@ import 'package:batman_app/src/flows/owner_console.dart' show SwLink;
 import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/core.dart';
 import 'package:batman_app/src/nodelink/node_link.dart' show LoginForEnd;
-import 'package:batman_app/src/rust/api/owner.dart' show StatusView;
+import 'package:batman_app/src/rust/api/owner.dart' show NetView, StatusView;
+import 'package:batman_app/src/flows/net_index.dart' show NetEntry, NetSnapshot;
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/swupdate.dart' show SwFlow, SwHold;
 import 'package:batman_app/ui/add_pages.dart' show AddedPage;
@@ -165,11 +166,22 @@ void main() {
   });
 
   group('離開網路', () {
-    Future<(Fx, AppLink)> openLeave(WidgetTester t, {String netId = 'ab12'}) async {
+    Future<(Fx, AppLink)> openLeave(WidgetTester t, {String netId = 'ab12', bool push = false}) async {
       final f = Fx(rust);
       final a = app();
       read(a, view(netId: netId));
-      await t.pumpWidget(host(LeavePage(app: a, ui: UiState(MemStore()), id: id, deps: f.d)));
+      final page = LeavePage(app: a, ui: UiState(MemStore()), id: id, deps: f.d);
+      if (push) {
+        // over a base route: back on a root route never pops (a PopScope test needs a route under it)
+        await t.pumpWidget(host(Builder(
+            builder: (c) => TextButton(
+                onPressed: () => Navigator.of(c).push(MaterialPageRoute(builder: (_) => page)), child: const Text('base')))));
+        await t.tap(find.text('base'));
+        await t.pump();
+        await t.pump(const Duration(seconds: 1));
+      } else {
+        await t.pumpWidget(host(page));
+      }
       await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
       await t.pump();
       return (f, a);
@@ -223,6 +235,42 @@ void main() {
       await settle(t, f);
       expect(find.textContaining('結果不明'), findsOneWidget);
       expect((f.rigs.first.session as P4Session).asked, ['network/leave'], reason: 'no read after an unknown end');
+    });
+
+    testWidgets('code review A m6: an applied net record of that network -> the dialog admin sentence', (t) async {
+      final f = Fx(rust);
+      final a = app();
+      read(a, view(netId: 'ab12'));
+      a.nets.setForTest(NetSnapshot(netFiles: 1, nets: [
+        NetEntry('ab12', const NetView(netId: 'ab12', meshId: 'bm', netName: 'n', applied: true, country: 'US', members: [])),
+      ]));
+      await t.pumpWidget(host(LeavePage(app: a, ui: UiState(MemStore()), id: id, deps: f.d)));
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await t.pump();
+      expect(rust.dialogs.last, startsWith('7d2c ab12 admin=true'));
+    });
+
+    testWidgets('code review A m10: left, but the read after it read nothing -> says so', (t) async {
+      final (f, _) = await openLeave(t);
+      (f.rigs.first.session as P4Session).pageSilent = true;
+      await t.tap(find.widgetWithText(FilledButton, Btn.leaveNetwork));
+      for (var i = 0; i < 7; i++) {
+        await settle(t, f); // past the 15 s of the read
+      }
+      expect(find.text('已離開隊伍網路'), findsOneWidget);
+      expect(find.byKey(const Key('leave-stale')), findsOneWidget);
+    });
+
+    testWidgets('code review A m5: while the leave runs, back does not close the page', (t) async {
+      final (f, _) = await openLeave(t, push: true);
+      f.rigs.first.radio.silent = true;
+      await t.tap(find.widgetWithText(FilledButton, Btn.leaveNetwork));
+      await settle(t, f);
+      await t.state<NavigatorState>(find.byType(Navigator)).maybePop();
+      await t.pump(const Duration(seconds: 1));
+      await t.pump(); // a popped route goes on the frame after its transition
+      await t.pump(const Duration(seconds: 5));
+      expect(find.byType(LeavePage), findsOneWidget);
     });
 
     testWidgets('取消 sends nothing', (t) async {
