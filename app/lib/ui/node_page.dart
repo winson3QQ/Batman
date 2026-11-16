@@ -1,17 +1,17 @@
 // #329 design §5.5 (boards 5.1-5.7): one node. Its status (read on entry, then every 60 s by NodeLink), its
-// technical data, and 「從這支手機移除這台節點」 (T17). Network / Wi-Fi / update pages come in PR 3 / 4.
+// network group (PR 3), 手機 Wi-Fi and 更多 (PR 4 §2.3; technical data and 「從這支手機移除這台節點」 are in 更多).
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl show Page;
-import '../src/nodelink/lease.dart';
 import 'home_logic.dart';
 import 'home_page.dart' show nodeInfo;
 import '../src/flows/net_index.dart' show NetEntry;
+import 'more_pages.dart' show MorePage;
 import 'net_pages.dart' show CheckNetPage, NetFormPage, goMake;
-import 'theme.dart';
+import 'settings_pages.dart' show WifiPage;
 import 'ui_state.dart';
 import 'widgets.dart';
 
@@ -27,7 +27,6 @@ class NodePage extends StatefulWidget {
 
 class _NodePageState extends State<NodePage> {
   StreamSubscription<void>? _sub;
-  bool _tech = false;
 
   @override
   void initState() {
@@ -47,55 +46,9 @@ class _NodePageState extends State<NodePage> {
     super.dispose();
   }
 
-  Future<void> _remove(String name) async {
-    final t = BatTheme.of(context);
-    final yes = await showDialog<bool>(
-      context: context,
-      builder: (c) => AlertDialog(
-        backgroundColor: t.surf,
-        title: Text('要從這支手機移除$name嗎？', style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
-        content: Text('這支手機會忘記它，之後不能再管理它。要再新增，只能請維修人員重新燒錄。',
-            style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
-        // §3.2: the main button, and 取消 as a text button under it (review r2 C-m10)
-        actions: [
-          Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            BatButton(Btn.remove, kind: BtnKind.danger, onPressed: () => Navigator.pop(c, true)),
-            const SizedBox(height: 6),
-            BatButton(Btn.cancel, kind: BtnKind.text, onPressed: () => Navigator.pop(c, false)),
-          ]),
-        ],
-      ),
-    );
-    if (yes != true || !mounted) return;
-    final a = widget.app;
-    final lease = await a.link.acquire('移除節點', LeaseKind.session);
-    if (!mounted) return;
-    if (lease == null) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('另一個操作還在進行：${a.reg.current?.name ?? ''}')));
-      return;
-    }
-    String? err;
-    try {
-      // T17: keep a copy first; no copy -> nothing is deleted
-      final kept = await lease.run(() => a.writer.keepCopy(lease, 'node/${widget.id}'));
-      if (!kept) {
-        err = '沒有辦法先留一份副本，所以沒有移除。紀錄維持原樣。';
-      } else {
-        await lease.run(() => a.writer.remove(lease, 'node/${widget.id}'));
-      }
-    } catch (e) {
-      debugPrint('BMAPP remove node failed: ${e.runtimeType}'); // the detail stays out of the main screen
-      err = '沒有移除成功，紀錄維持原樣。請再試一次；一直如此請找維修人員。';
-    }
-    await lease.release();
-    if (err == null) await widget.ui.forget(widget.id); // §5.5: its nickname and status go too
-    if (!mounted) return;
-    if (err != null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
-      return;
-    }
-    Navigator.of(context).pop();
+  Future<void> _open(Widget page) async {
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
+    if (mounted) setState(() {});
   }
 
   /// §2.8 (code review A M-1 / B M2): 建立網路 on the check page -> 4.1 in make mode for this node; the check page's
@@ -145,12 +98,14 @@ class _NodePageState extends State<NodePage> {
     if (!a.link.core.states.containsKey(widget.id)) {
       return const BatPage(title: '節點', body: [Text('這台節點已經不在這支手機上。')]);
     }
-    final t = BatTheme.of(context);
     final n = nodeInfo(a, widget.id, widget.ui);
     final (look, line, meta) = nodeRowWords(n, firstRounds: a.link.core.roundsRun < 3);
     final v = n.view;
     final next = [
+      // #329 PR 4 §2.3 (leave v4.1 §2): the unfinished-change line, right under the verdict when info key 10 is absent
+      if (n.fresh && v != null && v.unfinished.isNotEmpty && v.unfinishedUnderVerdict) v.unfinished,
       if (n.fresh && v != null && v.warning.isNotEmpty) v.warning,
+      if (n.fresh && v != null && v.unfinished.isNotEmpty && !v.unfinishedUnderVerdict) v.unfinished,
       if (n.fresh && v != null && v.lagNote.isNotEmpty) v.lagNote,
       if (n.shownWhy != null) whyNext(n.shownWhy!),
     ];
@@ -164,33 +119,24 @@ class _NodePageState extends State<NodePage> {
           time: n.readWall == null ? null : (n.fresh ? '讀取於 ${hhmmss(n.readWall!)}' : meta),
           onRefresh: a.link.refresh,
         ),
-        BatCard(children: [
-          BatRow(
-              icon: Icons.build_outlined,
-              title: '技術資訊（給維修人員看）',
-              onTap: () => setState(() => _tech = !_tech)),
-          if (_tech)
-            Padding(
-              padding: const EdgeInsets.all(14),
-              child: SelectableText(
-                [
-                  '後四碼 ${last4(widget.id)}',
-                  if (v != null) ...['版本 ${v.version}', if (v.netId.isNotEmpty) '網路 ${v.netId}', ...v.tech],
-                ].join('\n'),
-                style: TextStyle(fontFamily: 'monospace', fontSize: Fs.meta, height: 1.5, color: t.ink),
-              ),
-            ),
-        ]),
         ...?_network(a, n),
-        const BatLabel('會影響這支手機的動作'),
+        // #329 PR 4 §2.3 (design §5.5): 手機 Wi-Fi, 軟體更新, 更多 (隊員: PR 5)
+        const BatLabel('手機 Wi-Fi'),
         BatCard(children: [
           BatRow(
-            icon: Icons.delete_outline,
-            title: '從這支手機移除這台節點',
-            sub: '之後要再新增它，只能請維修人員重新燒錄',
-            danger: true,
-            onTap: () => _remove(n.name),
-          ),
+              key: const Key('node-wifi'),
+              icon: Icons.wifi,
+              title: '手機 Wi-Fi',
+              sub: '給手機連的 Wi-Fi 名稱和密碼',
+              onTap: () => _open(WifiPage(app: a, ui: widget.ui, id: widget.id))),
+        ]),
+        BatCard(children: [
+          BatRow(
+              key: const Key('node-more'),
+              icon: Icons.more_horiz,
+              title: Btn.more,
+              sub: '改暱稱、國家、離開網路、技術資訊、移除',
+              onTap: () => _open(MorePage(app: a, ui: widget.ui, id: widget.id))),
         ]),
       ],
     );

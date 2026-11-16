@@ -119,6 +119,9 @@ void main() {
       await t.runAsync(ui.load);
       await t.runAsync(() => ui.noteReads({id: ('ok', DateTime.utc(2026))}));
       await t.pumpWidget(host(NodePage(app: a, id: id, ui: ui)));
+      // #329 PR 4 §2.6: the removal moved into 更多 (the same code)
+      await t.tap(find.byKey(const Key('node-more')));
+      await t.pumpAndSettle();
       await t.tap(find.text('從這支手機移除這台節點'));
       await t.pumpAndSettle();
       return (a, ui, store);

@@ -11,6 +11,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'say.dart' show screenText;
+import 'src/rust/api/member.dart' show MnetView;
 import 'src/rust/api/owner.dart' show OwnerStep, TeamView;
 
 /// 254-app-team-status §4.2 (B-M2): an approval / removal dropped a duplicated mesh address from every entry that had
@@ -249,6 +250,10 @@ class LeaveResult {
   final StatusFields? fields;
   final bool stale;
 }
+
+/// The leave dialog's member sentence (leave v4.1 §2; remove-member §3.5): this mnet's own-node entry (key 7) is the
+/// node with [last4]. One rule for the old console and the new leave page (#329 PR 4 §2.7).
+bool memberEntryOf(MnetView mv, String last4) => mv.entryState.isNotEmpty && mv.deviceLast4 == last4;
 
 /// The leave line when the owner request ended without an answer and without a line of its own (busy, …).
 const leaveNotAsked = '[REQ_FAIL] 沒有送出 — 請再按一次';

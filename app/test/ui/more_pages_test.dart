@@ -1,0 +1,236 @@
+// #329 PR 4 §2.3 / §2.6 / §2.7: the node page's groups and its unfinished-change line (T-N2), 更多 (T-N3 the leave row
+// only on a fresh read, T-N4 the nickname without 3.5 / 3.6, removal back to the home page with the update hold gone),
+// and the leave page (T-L1 the three ends of leaveFlow, T-L2 the read after a leave on the same session, T-L3 the lease
+// back at the result, T-L4 the dialog's facts, 取消). Fake console: op_session_test's Fx.
+import 'package:batman_app/member_ui.dart' show leaveNotAsked;
+import 'package:batman_app/src/flows/owner_console.dart' show SwLink;
+import 'package:batman_app/src/nodelink/app_link.dart';
+import 'package:batman_app/src/nodelink/core.dart';
+import 'package:batman_app/src/nodelink/node_link.dart' show LoginForEnd;
+import 'package:batman_app/src/rust/api/owner.dart' show StatusView;
+import 'package:batman_app/src/rust/frb_generated.dart';
+import 'package:batman_app/swupdate.dart' show SwFlow, SwHold;
+import 'package:batman_app/ui/add_pages.dart' show AddedPage;
+import 'package:batman_app/ui/more_pages.dart';
+import 'package:batman_app/ui/node_page.dart';
+import 'package:batman_app/ui/ui_state.dart';
+import 'package:batman_app/ui/widgets.dart' show Btn;
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import '../flows/op_session_test.dart' show Fx;
+import '../flows/owner_console_pr4_test.dart' show FakeSwLink, P4Session;
+import '../nodes_update_send_test.dart' as nus show FakeRust;
+import 'pages_test.dart' show app, host, id;
+import 'ui_state_test.dart' show MemStore;
+
+class Rust extends nus.FakeRust {
+  final dialogs = <String>[];
+  final removed = <String>[];
+  @override
+  Future<bool> crateApiClaimStoreKeepCopy({required String dir, required String rel}) async => true;
+  @override
+  Future<void> crateApiClaimStoreRemove({required String dir, required String rel}) async => removed.add(rel);
+  @override
+  List<String> crateApiOwnerLeaveConfirmText(
+      {required String last4, required String netId, required bool adminApplied, required bool memberEntry}) {
+    dialogs.add('$last4 $netId admin=$adminApplied member=$memberEntry');
+    return ['要讓節點 …$last4 離開隊伍網路嗎？', '離開後這台的 HaLow 無線電會關閉。'];
+  }
+}
+
+StatusView view({String netId = '', bool canLeave = true, String unfinished = '', bool under = false, String warning = ''}) =>
+    StatusView(
+        color: 'green',
+        row: '3',
+        sentence: '已連上隊伍網路',
+        lagNote: '',
+        warning: warning,
+        nodeState: 2,
+        netId: netId,
+        version: 'v',
+        tech: const [],
+        fresh: true,
+        rateNote: '',
+        unfinished: unfinished,
+        unfinishedUnderVerdict: under,
+        canLeave: canLeave);
+
+void read(AppLink a, StatusView v, {bool fresh = true}) => a.link.core.states[id]!
+  ..kind = Kind.read
+  ..view = 'green'
+  ..readAt = fresh ? a.link.now() : a.link.now() - 400000
+  ..extra = v
+  ..last = Concl.read;
+
+class _Flow implements SwFlow {
+  @override
+  dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
+}
+
+void main() {
+  final rust = Rust();
+  setUpAll(() => RustLib.initMock(api: rust));
+  setUp(rust.dialogs.clear);
+
+  Future<void> settle(WidgetTester t, Fx f) async {
+    for (var i = 0; i < 6; i++) {
+      await t.runAsync(() async {
+        for (final r in f.rigs) {
+          await r.clock.run(500);
+        }
+      });
+      await t.pump(const Duration(milliseconds: 100));
+    }
+  }
+
+  group('node page', () {
+    for (final (under, order) in [(true, ['未完成', '注意']), (false, ['注意', '未完成'])]) {
+      testWidgets('T-N2: the unfinished-change line ${under ? 'right under the verdict' : 'after the ⚠️ line'}', (t) async {
+        final a = app();
+        read(a, view(unfinished: '未完成', under: under, warning: '注意'));
+        await t.pumpWidget(host(NodePage(app: a, id: id, ui: UiState(MemStore()))));
+        final next = find.textContaining('未完成');
+        expect(next, findsOneWidget);
+        final text = (t.widget<Text>(next)).data!;
+        expect(text.indexOf(order[0]) < text.indexOf(order[1]), isTrue, reason: text);
+      });
+    }
+
+    testWidgets('groups: 手機 Wi-Fi and 更多; no removal or tech data on the node page itself', (t) async {
+      final a = app();
+      await t.pumpWidget(host(NodePage(app: a, id: id, ui: UiState(MemStore()))));
+      expect(find.byKey(const Key('node-wifi')), findsOneWidget);
+      expect(find.byKey(const Key('node-more')), findsOneWidget);
+      expect(find.text('從這支手機移除這台節點'), findsNothing);
+    });
+  });
+
+  group('更多', () {
+    testWidgets('T-N3: 離開網路 only on a fresh read that can leave', (t) async {
+      for (final (fresh, can, shown) in [(true, true, true), (false, true, false), (true, false, false)]) {
+        final a = app();
+        read(a, view(canLeave: can), fresh: fresh);
+        await t.pumpWidget(host(MorePage(app: a, ui: UiState(MemStore()), id: id)));
+        expect(find.byKey(const Key('more-leave')), shown ? findsOneWidget : findsNothing, reason: 'fresh $fresh can $can');
+        await t.pumpWidget(const SizedBox());
+        AppLink.forgetForTest();
+      }
+    });
+
+    testWidgets('T-N4: 改暱稱 saves and comes back; never 3.5 / 3.6', (t) async {
+      final a = app();
+      final ui = UiState(MemStore()..ids = [id]);
+      await t.runAsync(ui.load);
+      await t.pumpWidget(host(MorePage(app: a, ui: ui, id: id)));
+      await t.tap(find.text('改暱稱'));
+      await t.pumpAndSettle();
+      expect(find.text('改暱稱'), findsWidgets);
+      expect(find.textContaining('已加入這支手機'), findsNothing);
+      await t.enterText(find.byType(TextField), '北門');
+      await t.tap(find.widgetWithText(FilledButton, Btn.save));
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await t.pumpAndSettle();
+      expect(find.byType(AddedPage), findsNothing);
+      expect(find.byType(MorePage), findsOneWidget);
+      expect(ui.nodes[id]?.nick, '北門');
+    });
+
+    testWidgets('removal: back to the home page, and the update left of it is dropped', (t) async {
+      final a = app();
+      final ui = UiState(MemStore()..ids = [id]);
+      await t.runAsync(ui.load);
+      a.sw.take(id, () => (FakeSwLink() as SwLink, SwHold(_Flow())));
+      await t.pumpWidget(host(Builder(
+          builder: (c) => TextButton(
+              onPressed: () => Navigator.of(c).push(MaterialPageRoute(builder: (_) => NodePage(app: a, id: id, ui: ui))),
+              child: const Text('home')))));
+      await t.tap(find.text('home'));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('node-more')));
+      await t.pumpAndSettle();
+      await t.tap(find.text('從這支手機移除這台節點'));
+      await t.pumpAndSettle();
+      await t.tap(find.widgetWithText(FilledButton, '移除'));
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await t.pumpAndSettle();
+      expect(find.text('home'), findsOneWidget, reason: 'the home page, not a node page that has nothing left');
+      expect(find.byType(NodePage), findsNothing);
+      expect(rust.removed, ['node/$id']);
+      expect(a.sw.of(id), isNull);
+      a.link.dispose();
+      await t.pumpWidget(const SizedBox());
+      AppLink.forgetForTest();
+    });
+  });
+
+  group('離開網路', () {
+    Future<(Fx, AppLink)> openLeave(WidgetTester t, {String netId = 'ab12'}) async {
+      final f = Fx(rust);
+      final a = app();
+      read(a, view(netId: netId));
+      await t.pumpWidget(host(LeavePage(app: a, ui: UiState(MemStore()), id: id, deps: f.d)));
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+      await t.pump();
+      return (f, a);
+    }
+
+    testWidgets('T-L4: the dialog is Rust\'s, from the fresh read\'s network and the device id\'s own last four', (t) async {
+      await openLeave(t);
+      expect(rust.dialogs, ['7d2c ab12 admin=false member=false']);
+      expect(find.text('要讓節點 …7d2c 離開隊伍網路嗎？'), findsOneWidget);
+    });
+
+    testWidgets('T-L1 / T-L2 / T-L3: left -> the read after it on the same session (cut once); the lease back at once',
+        (t) async {
+      final (f, _) = await openLeave(t);
+      await t.tap(find.widgetWithText(FilledButton, Btn.leaveNetwork));
+      await settle(t, f);
+      final s = f.rigs.first.session as P4Session;
+      expect(s.asked, ['network/leave', 'status page']);
+      expect(f.logins, 1, reason: 'one login: the read is on the same session');
+      expect(find.text('已離開隊伍網路'), findsOneWidget);
+      expect(t.widget<Text>(find.byKey(const Key('leave-after'))).data, '這台還沒加入隊伍網路', reason: 'the cut read');
+      expect(f.reg.current, isNull, reason: 'T-L3: released at the result, the page still open');
+      expect(find.byType(LeavePage), findsOneWidget);
+    });
+
+    testWidgets('T-L1: not left -> its line, no read after it', (t) async {
+      final (f, _) = await openLeave(t);
+      (f.rigs.first.session as P4Session).leaveMode = 'refused';
+      await t.tap(find.widgetWithText(FilledButton, Btn.leaveNetwork));
+      await settle(t, f);
+      expect((f.rigs.first.session as P4Session).asked, ['network/leave']);
+      expect(find.textContaining('沒有離開網路'), findsOneWidget);
+    });
+
+    testWidgets('T-L1: no session -> the login\'s line, nothing sent', (t) async {
+      final (f, _) = await openLeave(t);
+      f.loginEnd = LoginForEnd.notFound;
+      await t.tap(find.widgetWithText(FilledButton, Btn.leaveNetwork));
+      await settle(t, f);
+      expect(find.textContaining('沒有找到這台節點'), findsOneWidget);
+      expect(f.rigs.first.radio.written, isEmpty);
+      expect(find.text(leaveNotAsked), findsNothing);
+    });
+
+    testWidgets('T-L1: the link lost after network/leave went out -> 結果不明 (leave v4.1 §3)', (t) async {
+      final (f, _) = await openLeave(t);
+      f.rigs.first.radio.silent = true;
+      await t.tap(find.widgetWithText(FilledButton, Btn.leaveNetwork));
+      await settle(t, f);
+      f.rigs.first.radio.drop();
+      await settle(t, f);
+      expect(find.textContaining('結果不明'), findsOneWidget);
+      expect((f.rigs.first.session as P4Session).asked, ['network/leave'], reason: 'no read after an unknown end');
+    });
+
+    testWidgets('取消 sends nothing', (t) async {
+      final (f, _) = await openLeave(t);
+      await t.tap(find.widgetWithText(TextButton, Btn.cancel));
+      await t.pumpAndSettle();
+      expect(f.logins, 0);
+      expect(find.byType(LeavePage), findsNothing);
+    });
+  });
+}

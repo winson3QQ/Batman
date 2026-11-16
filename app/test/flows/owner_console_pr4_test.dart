@@ -70,6 +70,7 @@ class P4Session extends Session {
   bool setNonceOnly = false; // the set writes only an op/nonce (not sent) and goes silent
   int pageReads = 0;
   bool cutNext = false; // Rust's after_left: the next status view is cut once
+  String leaveMode = 'left'; // left / refused (a non-zero reply, read as NotLeft)
 
   @override
   OwnerStep requestSettings() {
@@ -117,10 +118,12 @@ class P4Session extends Session {
             'ended' => st(OwnerKind.ended, detail: '連線出錯（x）'),
             _ => st(OwnerKind.answer, detail: '[REQ_FAIL] 設定沒有成功：節點不接受這個值（代碼 2，原因 13）'),
           },
-        const (fLeave + 1) => () {
-            cutNext = true;
-            return st(OwnerKind.answer, detail: '[LEFT] 已離開隊伍網路', left: true);
-          }(),
+        const (fLeave + 1) => leaveMode == 'left'
+            ? () {
+                cutNext = true;
+                return st(OwnerKind.answer, detail: '[LEFT] 已離開隊伍網路', left: true);
+              }()
+            : st(OwnerKind.answer, detail: '[REQ_FAIL] 沒有離開網路（節點仍在隊伍網路裡，代碼 11）— 請再按一次'),
         const (fPage + 1) => st(OwnerKind.answer, detail: '[STATUS] 狀態已更新'),
         const (fSw + 1) => st(OwnerKind.answer, sw: true),
         _ => super.onFrame(frame: frame),

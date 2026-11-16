@@ -17,6 +17,7 @@ import 'ble_backend.dart';
 import 'ble_gate.dart';
 import 'core.dart';
 import 'lease.dart';
+import '../flows/sw_holds.dart';
 import 'node_link.dart';
 import 'prober.dart';
 import 'record_writer.dart';
@@ -36,6 +37,9 @@ class AppLink {
 
   /// The record store directory.
   final String records;
+
+  /// #329 PR 4 §2.8: the software updates left half-way (memory only).
+  final sw = SwHolds();
 
   /// #329 PR 3 §2.6: the phone's network records, summarised for the screens (computed after the startup check and
   /// after every lease release).
