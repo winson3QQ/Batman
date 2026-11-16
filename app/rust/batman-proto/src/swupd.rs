@@ -888,7 +888,14 @@ impl Flow {
                         self.status_tries += 1;
                         return self.wait(STALE_RETRY_MS, Then::Status, "正在讀節點的狀態…", None);
                     }
-                    Gate::Unread => return self.screen(T_STATUS_UNREAD.into(), "status: no trust (stale)".into(), vec![Button::Refresh]),
+                    Gate::Unread => {
+                        // #329 A13 (review r7 M-m1 / N-1): say 「過期」 only when the node said stale; an earlier
+                        // read's trust is not shown next to it (N-2)
+                        let stale = b.get(15).and_then(|m| text_key(m, "stale")) == Some(&Value::Bool(true));
+                        self.trust = String::new();
+                        let why = if stale { "status：快取過期（stale）" } else { "status：沒有 trust" };
+                        return self.screen(T_STATUS_UNREAD.into(), why.into(), vec![Button::Refresh]);
+                    }
                 }
                 self.send(Verb::Info, None, "正在讀節點的版本…")
             }
@@ -897,9 +904,15 @@ impl Flow {
                 self.wait(STATUS_RATE_MS, Then::Status, "正在讀節點的狀態…", None)
             }
             Reply::NoLink => self.screen(T_NOT_BACK.into(), String::new(), vec![Button::Refresh]),
-            // #329 A13: why, on the technical line — the reply kind and the error code only, never a body (D8)
-            Reply::Err { code, .. } => self.screen(T_STATUS_UNREAD.into(), format!("status: code {code}"), vec![Button::Refresh]),
-            _ => self.screen(T_STATUS_UNREAD.into(), "status: no answer".into(), vec![Button::Refresh]),
+            // #329 A13: why, on the technical line — the reply kind and the error code only, never the detail
+            Reply::Err { code, .. } => {
+                self.trust = String::new();
+                self.screen(T_STATUS_UNREAD.into(), format!("status：代碼 {code}"), vec![Button::Refresh])
+            }
+            _ => {
+                self.trust = String::new();
+                self.screen(T_STATUS_UNREAD.into(), "status：沒有回答".into(), vec![Button::Refresh])
+            }
         }
     }
 
