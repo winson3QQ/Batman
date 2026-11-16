@@ -12,9 +12,11 @@ import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl;
 import '../src/nodelink/raw_use.dart';
 import '../src/rust/api/owner.dart' show StatusView, listPending;
+import '../src/flows/net_index.dart' show JoinTodo;
 import 'add_pages.dart';
 import 'home_logic.dart';
 import 'intro_pages.dart';
+import 'net_pages.dart' show NetFormPage;
 import 'node_page.dart';
 import 'settings_page.dart';
 import 'theme.dart';
@@ -176,8 +178,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _addNode();
       case HomeAction.seeNode:
         if (h.node != null) _open(h.node!);
-      // the network flows come in PR 3: until then these open the older console, where the same button is
-      case HomeAction.joinNetwork || HomeAction.makeNetwork || HomeAction.seeRequest || HomeAction.joinTeam:
+      // #329 PR 3: 建立 / 加入網路 are the new pages (4.1); only a team network (mnet) or a request (mpend) still go
+      // to the older console, where the member's join is (D3, PR 5)
+      case HomeAction.makeNetwork:
+        _form(makes: true, node: h.node);
+      case HomeAction.joinNetwork when a.nets.now.records != NetRecords.mnet:
+        _form(makes: false, node: h.node);
+      case HomeAction.joinNetwork || HomeAction.seeRequest || HomeAction.joinTeam:
         _back(openUnderLease(context, a, '我的節點', (u) => NodesPage(ble: a.ble, use: u)));
       case HomeAction.refresh:
         a.link.refresh();
@@ -187,6 +194,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         break;
     }
   }
+
+  /// 4.1 (§2.4 / §2.5): make or join, [node] ticked; [todo]: 「節點加入網路沒有做完」 (its network, 「放棄這次加入」).
+  void _form({required bool makes, String? node, JoinTodo? todo}) => _back(Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => NetFormPage(
+          app: a, ui: widget.ui, makes: makes, ticked: {?node}, todo: todo, devTrust: widget.devTrust))));
 
   /// Opens a system settings page; when the phone has none, says where to go instead (review r2 D-m8).
   Future<void> _settings(String method, String otherwise) async {
@@ -307,7 +319,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               title: '節點加入網路沒有做完',
               text: '${nodeInfo(a, j.deviceId, widget.ui).name} 加入「${j.net.view.netName.isEmpty ? j.net.view.meshId : j.net.view.netName}」還沒有完成。',
               action: Btn.finishIt,
-              onAction: () => _back(openUnderLease(context, a, '我的節點', (u) => NodesPage(ble: a.ble, use: u)))),
+              onAction: () => _form(makes: false, todo: j)),
         if (infos.isNotEmpty) ...[
           const BatLabel('我的節點'),
           BatCard(children: [
