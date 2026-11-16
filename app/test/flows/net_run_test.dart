@@ -1,5 +1,6 @@
 // #329 PR 3 §2.5 / §2.8 / §2.9: NetRun (建立 / 加入網路, one node after the other) and CheckRun (檢查網路) on fake logins
 // and a fake console scripted by reply. Every rule is asserted by what the flows send and how the rows end.
+
 import 'dart:async';
 
 import 'package:batman_app/src/flows/net_index.dart';
@@ -32,6 +33,8 @@ class FakeConsole implements OwnerConsole {
 
   @override
   Future<ConsoleReply> makeNetwork({required String name, required int channel}) async {
+    final h = w.holdMake;
+    if (h != null) await h.future; // the request in progress
     final r = _next('make');
     final rel = r.persistedRel;
     if (rel != null) w.records[rel] = w.appliedAfterMake;
@@ -76,6 +79,7 @@ class World {
   final Map<String, String> dac = {};
   final logins = <String>[];
   bool appliedAfterMake = true;
+  Completer<void>? holdMake;
   bool aliveAfter = true;
   Why? blocked;
   bool leaseValid = true;

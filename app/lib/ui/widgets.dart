@@ -378,10 +378,20 @@ abstract final class Btn {
   static const start = '開始';
   static const finishIt = '繼續完成';
   static const joinTeam = '加入隊長的網路';
+  // #329 PR 3: the network pages (4.1-4.5, 檢查網路)
+  static const nextNode = '繼續下一台';
+  static const stopHere = '先停在這裡';
+  static const retryNode = '再試這一台';
+  static const checkAgain = '再檢查一次';
+  static const otherNode = '換一台檢查';
+  static const forgetJoin = '放棄這次加入';
+  static const done = '完成';
+  static const oldConsole = '到舊控制台';
 
   static const all = {
     refresh, addNode, makeNetwork, joinNetwork, checkNetwork, seeNode, allowBluetooth, openBluetooth, tryAgain, gotIt,
     remove, cancel, save, more, devOptions, about, leaveNetwork, requestJoin, showRequestAgain, sendNewKey,
     excludeThis, goOn, claim, seeRequest, joinTeam, openAppSettings, next, skipIntro, start, finishIt,
+    nextNode, stopHere, retryNode, checkAgain, otherNode, forgetJoin, done, oldConsole,
   };
 }

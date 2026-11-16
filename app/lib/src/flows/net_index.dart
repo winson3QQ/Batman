@@ -183,9 +183,10 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
         netFiles: netIds.length, nets: nets, anyMnet: mnets.isNotEmpty, anyMpend: mpends.isNotEmpty, todos: todos);
   }
 
-  // §2.6: after every lease release (a flow may have written a record)
+  // §2.6: after every lease release (a flow may have written a record). Not in the same call: a release often comes
+  // from a page's dispose, while the widget tree is locked, and a listener may set its state on the first notice.
   @override
-  void released(Lease l, {required bool revoked}) => unawaited(recompute());
+  void released(Lease l, {required bool revoked}) => scheduleMicrotask(() => unawaited(recompute()));
 
   @override
   void revoked(Token t) {}

@@ -8,7 +8,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' show WidgetsBinding, WidgetsBindingObserver, AppLifecycleState;
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
-import '../../key_abilities.dart' show KeyAbilities;
+import '../../key_abilities.dart' show KeyAbilities, KeyUse;
+import '../flows/owner_console.dart' show ConsolePlatform;
 import '../flows/net_index.dart';
 import '../rust/api/claim.dart' show storeKeepCopy, storeRemove, storeWriteSealed;
 import '../rust/api/owner.dart' show listNodes, netSummary, storeReadSealed, storeWriteCas;
@@ -21,7 +22,7 @@ import 'prober.dart';
 import 'record_writer.dart';
 
 class AppLink {
-  AppLink._(this.ble, this.reg, this.gate, this.link, this.prober, this.writer, this.records, this.nets);
+  AppLink._(this.ble, this.reg, this.gate, this.link, this.prober, this.writer, this.records, this.nets, this.console);
 
   /// The only FlutterReactiveBle of the app (§4.2): the older pages get this one too.
   final FlutterReactiveBle ble;
@@ -39,6 +40,9 @@ class AppLink {
   /// #329 PR 3 §2.6: the phone's network records, summarised for the screens (computed after the startup check and
   /// after every lease release).
   final NetIndex nets;
+
+  /// #329 PR 3 §2.3: what OwnerConsole needs from Kotlin and the record store.
+  final ConsolePlatform console;
 
   static AppLink? _one;
   static AppLink? get instance => _one;
@@ -135,7 +139,26 @@ class AppLink {
       log: (l) => debugPrint('BMAPP $l'),
     );
     reg.listeners.add(nets); // §2.6: computed again after every lease release
-    return _one = AppLink._(radio, reg, gate, link, prober, writer, records, nets);
+    final console = ConsolePlatform(
+      seal: (plain, aad) async => (await platform.invokeMethod<Uint8List>('seal', {'plain': plain, 'aad': aad}))!,
+      signOwner: signOwner,
+      signAdmin: (input) async => (await platform.invokeMethod<Uint8List>('signAdmin', {'input': input}))!,
+      publicKeys: () async => {
+        for (final e in (await platform.invokeMapMethod<String, dynamic>('publicKeys'))!.entries) e.key: e.value as Uint8List
+      },
+      readRecord: (rel) async {
+        // nodes.dart:738-746: plain null = none, or it does not open
+        final sealed = await storeReadSealed(dir: records, rel: rel);
+        if (sealed == null) return (BigInt.zero, null);
+        try {
+          return (sealed.generation, await platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad}));
+        } on PlatformException {
+          return (sealed.generation, null);
+        }
+      },
+      makeNetworkRefusal: () async => (await KeyAbilities.read(platform)).refusal(KeyUse.makeNetwork),
+    );
+    return _one = AppLink._(radio, reg, gate, link, prober, writer, records, nets, console);
   }
 }
 
