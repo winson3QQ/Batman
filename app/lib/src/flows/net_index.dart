@@ -138,13 +138,14 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
           todos: _now.todos);
       notifyListeners();
     }
-    final s = await _compute();
+    final s = await compute();
     if (gen != _gen) return; // a newer one runs
     _now = s;
     notifyListeners();
   }
 
-  Future<NetSnapshot> _compute() async {
+  /// One computation, not kept (a screen holding a lease reads the records itself with it, §2.8).
+  Future<NetSnapshot> compute() async {
     final List<String> netIds, mnets, mpends;
     try {
       netIds = await src.list('net');
