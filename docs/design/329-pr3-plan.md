@@ -1,4 +1,4 @@
-# #329 PR 3 實作計畫 v12：新增節點、建立 / 加入 / 檢查網路（新畫面）
+# #329 PR 3 實作計畫 v13：新增節點、建立 / 加入 / 檢查網路（新畫面）
 
 上層設計：`docs/design/329-app-uiux.md`（v12.1，已合併）§4.3.8、§4.3.9、§4.4、§4.7、§5.1、§5.3、§5.4、§9.1、§12。main = 29b0085。
 
@@ -18,7 +18,7 @@
 3. 多台迴圈（設計 §5.4：一台接一台、失敗時問繼續 / 停、結果頁）。
 4. 網路摘要表 `NetIndex`（設計 §4.3.8）與首頁按鈕去處。
 
-**版本紀錄**：v1–v7 共 14 位審查。 v8 的兩位審查（O、P）都是 APPROVE-WITH-CHANGES，MAJOR 都是我縮減時漏掉的舊行為或設計（檢查網路頁、送新密碼、`clearNotY`、pending 時的「建立網路」、和設計不同處沒列）；v9 照舊控制台與上層設計補回，不加新機制。v3 起每一輪的 MAJOR 都落在我在新頁面上**自己加的**建立條件、「重新建立」、結果推論與 Rust 新欄位，而這些在 join2 都已經有答案。v8 把它們全部拿掉，回到 join2 的行為。v1–v7 審查裡**關於新程式**（登入、交接、佔用、列檔、`openRawPage`、認領交接）的發現保留，見 §9。 v9 的兩位審查（Q、R）都是 APPROVE-WITH-CHANGES：節點頁的「建立網路」沒條件（Q-M1）、拔電後多筆 pending 與登入失敗也給建立（Q-M2）、佔用有兩個釋放者（R-M1）；v10 照設計 §5.1 / §5.5 與 join2 收斂，不加新機制，對應見 §9 末表。 v10 的兩位審查（S、T）都是 APPROVE-WITH-CHANGES：檢查網路頁「升級」「拿到回答」沒定義清楚（S-M1）、pending 建立者壞掉時新頁面沒有建立的出口（T-M1）；另外我在 v10 說「精確比對要新的 bridge 函式」是錯的，`nodeDacHash()` 早就有（owner.rs:991-994、lib/src/rust/api/owner.dart:107），v11 改用它。 v11 的兩位審查（U、V）：U 0 MAJOR；V 1 MAJOR（結果頁建立列的「再試這一台」沒定義，等於另一個沒條件的建立入口，V-M1 = U-m4），v12 照設計 :750 定義每一列的下一步。
+**版本紀錄**：v1–v7 共 14 位審查。 v8 的兩位審查（O、P）都是 APPROVE-WITH-CHANGES，MAJOR 都是我縮減時漏掉的舊行為或設計（檢查網路頁、送新密碼、`clearNotY`、pending 時的「建立網路」、和設計不同處沒列）；v9 照舊控制台與上層設計補回，不加新機制。v3 起每一輪的 MAJOR 都落在我在新頁面上**自己加的**建立條件、「重新建立」、結果推論與 Rust 新欄位，而這些在 join2 都已經有答案。v8 把它們全部拿掉，回到 join2 的行為。v1–v7 審查裡**關於新程式**（登入、交接、佔用、列檔、`openRawPage`、認領交接）的發現保留，見 §9。 v9 的兩位審查（Q、R）都是 APPROVE-WITH-CHANGES：節點頁的「建立網路」沒條件（Q-M1）、拔電後多筆 pending 與登入失敗也給建立（Q-M2）、佔用有兩個釋放者（R-M1）；v10 照設計 §5.1 / §5.5 與 join2 收斂，不加新機制，對應見 §9 末表。 v10 的兩位審查（S、T）都是 APPROVE-WITH-CHANGES：檢查網路頁「升級」「拿到回答」沒定義清楚（S-M1）、pending 建立者壞掉時新頁面沒有建立的出口（T-M1）；另外我在 v10 說「精確比對要新的 bridge 函式」是錯的，`nodeDacHash()` 早就有（owner.rs:991-994、lib/src/rust/api/owner.dart:107），v11 改用它。 v11 的兩位審查（U、V）：U 0 MAJOR；V 1 MAJOR（結果頁建立列的「再試這一台」沒定義，等於另一個沒條件的建立入口，V-M1 = U-m4），v12 照設計 :750 定義每一列的下一步。 v12 的兩位審查（W、X）：W 1 MAJOR、X 2 MAJOR，都是新程式自己的介面沒寫——`OwnerConsole` 回給頁面的形狀（X-M1；照抄會帶 `[ANSWER] ` 前綴），以及我 v12 新寫的「結果頁 `pushReplacement` 迴圈頁」會先放掉佔用（W-M1 = X-M2）；v13 補契約表、迴圈與結果改成同一個 route。
 
 ## 1. 事實（main 29b0085）
 
@@ -60,7 +60,19 @@
 
 - 新檔 `lib/src/flows/owner_console.dart`，舊控制台不改（PR 6 刪掉時重複消失）。
 - 複製：步驟迴圈、`ask`（逾時、unclear / notSent、重送一次、`ended`）、`makeNetwork`、`joinNetwork(rel)`、`confirmNetwork(rel)`、`linkCheck`、`sendUpdateFor(rel)`，與 join2 相關的國家 / 被移除過的問題（注入的對話框，計時規則同 nodes.dart:276-291）。**行為與句子和舊控制台相同。**
-- 和舊控制台只差在接線：登入用 `loginFor`；寫入用 `RecordWriter.writeCas(lease, …)`（`NoLease` 時照樣呼叫 `persistFailed`）；`join` / `confirm` 吃 `rel`；回傳 Rust 的句子給頁面（不是 `_say`）；文字紀錄不寫回答內容。
+- 和舊控制台只差在接線：登入用 `loginFor`；寫入用 `RecordWriter.writeCas(lease, …)`（`NoLease` 時照樣呼叫 `persistFailed`）；`join` / `confirm` 吃 `rel`；回 `ConsoleReply`（下面）給頁面（不是 `_say`）；文字紀錄不寫回答內容。
+- **回給頁面的契約（v12 X-M1、W-m1、W-m3、W-m4）**：舊 `_ask` 回字串（`'[ANSWER] ${detail}'`，nodes.dart:324；Rust 的 `Err(String)` 變成 `null` + `_askEnd`），新頁面不能照抄這個形狀。`OwnerConsole` 的每個請求回 `ConsoleReply`：
+
+  | 欄位 | 意思 |
+  |---|---|
+  | `kind` | `answer`（Rust 的 `OwnerKind.answer`）、`refused`（Rust 以 `Err(String)` 拒絕，例如 `NOT_LOGGED_IN`）、`unclear`（送出後逾時 / 斷線，Rust 的結果不明句子）、`notSent`（什麼都沒寫、沒送出）、`ended`、`leaseLost` |
+  | `text` | `answer`：Rust 的 `detail` 原樣，**不加** `[ANSWER] ` 前綴；其他：要顯示的句子（Rust 的，或舊控制台同一句） |
+  | `persistedRel` | 只在**第一個 `PersistNet` 寫入成功之後**才設（`writeCas` 回成功）；寫入失敗時是 `null`（owner.rs:1144-1151 那一步會 `[REQ_FAIL]`）。結果頁的「有 `rel`」就是看它 |
+  | `sendUpdate` / `pollLink` | 照 `OwnerKind.answer` 的旗標 |
+
+  - 判斷只在頁面做、只看這個型別：建立完成 / 檢查拿到回答 = `kind == answer && text.startsWith('[NET_STATE] ')`；加入成功 = `kind == answer && text.startsWith('[JOINED] ')`（v12 X m2；Dart 自己的 `_linkUnknown` 等句子不會是 `answer`）。
+  - `ask` **不自己登入**（舊 `_ask` 在 :521 會）：登入一律由頁面用 `loginFor`。舊 `_ask` 的「寫入失敗 → 重新登入再送一次」改成 `OwnerConsole` 先 `close()` 自己的連線、回 `notSent`，由頁面 `loginFor` 後再送一次（次數同舊控制台：一次；`BleGate` 一次一條，ble_gate.dart:226-231）。
+  - 測試（改壞對照）：`text` 加回 `[ANSWER] ` 前綴 → 檢查網路頁從不給「建立網路」的測試 FAIL；`persistedRel` 在寫入前就設 → 「寫入失敗 → 結果頁給再試」的測試 FAIL。
 - `leaseLost` 只看 `!lease.valid`（`Refused` 在佔用有效時 = 斷線，照 `ask` 的 unclear / notSent 處理）。
 - 原始碼鎖：`lib/src/flows/`、`lib/ui/`（`ui_state.dart` 除外）不准直接呼叫 `storeWriteCas` / `storeWriteSealed` / `storeRemove` / `storeKeepCopy`。
 - 防漂移：9b00ca6 的四條路徑測試改成表格驅動，同一組情境對 `OwnerConsole` 也跑。
@@ -77,7 +89,7 @@
   - 手機**沒有任何已建立的 net**（全部 pending）時，再給次要「建立網路」（v10 T-M1）：這和第 6 列「沒有 net → 建立」是同一條規則（pending 的網路還不能加入），也是 pending 的建立者壞掉 / 移除時新頁面唯一的出口（舊控制台的這顆按鈕一直在，nodes.dart:1726-1731）。手機已經有已建立的 net 時不給（設計 §5.3 :726：有 net 時刻意不給建立，免得拆成兩個網路）。
 - 節點頁的網路分組照設計 §5.5（:755）：這台 `node_state == 1` 而且手機有 net →「加入網路」（開 4.1 加入、預勾這一台）；手機有 pending 紀錄而這台可能是建立者 →「檢查網路」（§2.8，預選這一台）。節點頁**不放**「建立網路」；手機沒有 net 時建立的入口是首頁第 6 列與 3.5 / 3.6（v9 Q-M1、v10 S-m2）。
 - 「節點加入網路沒有做完」的待辦（設計 §5.1）→ 4.1 加入表單，目標 = 那筆網路、那一台預設勾。同一頁的「放棄這次加入」= 舊控制台的「忘記加入中的節點」（`_forgetJoining`，join2 §3.4）：按下時**自己拿一個 session 佔用、寫完就放**（4.1 平時不拿佔用；`acquire` 回來時頁面已不在 → 立刻 `release()`）。舊控制台 dev 版的「排除這台（換密碼）」分支（nodes.dart:1279-1283）不複製（D7）。設計 §5.1 :698 寫「同一頁」、:784 寫「開發者選項」，本計畫照 :698。
-- 按「開始」時在佔用下重新列一次檔：和 4.1 開頁時看到的不同（例如中間多了一筆 net）→ 不開始，請重開 4.1。這只是避免表單過期，不是新的規則。
+- 按「開始」時在佔用下重新列一次檔，和 4.1 的快照比：net 紀錄的集合、每筆的 `applied`、勾的節點都還在。不同 → 不開始，畫面換成新的快照請使用者再確認（v12 X m6）。4.1 自己做完「放棄這次加入」後更新快照，不會擋到自己。這只是避免表單過期，不是新的規則。
 
 ### 2.5 多台迴圈（設計 §5.4）
 
@@ -93,16 +105,16 @@
 - 每一台：上一台 `close()` 完成 → `loginFor` → 建立或加入。
   - 建立：`makeNetwork`。
     - 沒有 `PersistNet`（拿不到 `rel`）→ 整個流程停，顯示 Rust 的句子；不自動檢查（反向測試）。
-    - 有 `rel` → 在佔用下重讀**那一筆**紀錄。已建立 → 繼續。不是 → 照設計 §5.4 自動「檢查網路」一次：session 還在就直接 `confirmNetwork(rel)`；回 `NOT_LOGGED_IN` 或連線已斷（例如拔電，owner.rs:1173-1175）→ 先 `await close()` 這台的 `OwnerConsole`（`BleGate` 一次只開一條，ble_gate.dart:217-221；v11 U-m3）→ 再 `loginFor` 一次（60 s）→ `confirmNetwork`。等確認回答的時間照舊控制台 15 s（`_waitFor`，nodes.dart:91；v11 V m3）。之後重讀那一筆；仍不是 → 整個流程停，結果頁那一列給「檢查網路」（§2.8，借用同一個佔用）。A18 在真機確認。
+    - 有 `rel` → 在佔用下重讀**那一筆**紀錄。已建立 → 繼續。不是 → 照設計 §5.4 自動「檢查網路」一次：session 還在就直接 `confirmNetwork(rel)`；回 `NOT_LOGGED_IN` 或連線已斷（例如拔電，owner.rs:1173-1175）→ 先 `await close()` 這台的 `OwnerConsole`（`BleGate` 一次只開一條，ble_gate.dart:226-231；v11 U-m3）→ 再 `loginFor` 一次（60 s）→ `confirmNetwork`。等確認回答的時間照舊控制台 15 s（`_ask` 預設，nodes.dart:511-513；v11 V m3）。之後重讀那一筆；仍不是 → 整個流程停，結果頁那一列給「檢查網路」（§2.8，借用同一個佔用）。A18 在真機確認。
   - 加入：`joinNetwork(rel)` → 看**加入請求本身**的回答（P8）：`[JOINED]` = 成功。
     - 有 `send_update` → 接著 `sendUpdateFor(rel, member: false, confirm: false)`（照舊控制台 nodes.dart:668，不彈確認框）。送新密碼失敗 → 那一台記「已加入，新密碼沒有送出」+ Rust 的句子，算失敗、問繼續 / 停。
     - 有 `poll_link` → 連線檢查（每 10 s、120 s）。
   - 其他（Rust 的拒絕或結果不明句子、登入失敗）→ 顯示 Rust 的句子，問「繼續下一台 / 先停在這裡」（返回鍵 = 停）。
   - 先看 `core.blocked` 或 `precondition`：藍牙、權限、金鑰 → 整個流程停、不問。`leaseLost` → 整個流程停。
-- 頁面堆疊：4.1 由入口頁 push；按「開始」後迴圈頁取代 4.1（`pushReplacement`），結果頁取代迴圈頁；離開結果頁回到入口頁。
-- 結果頁：逐台列結果（成功 / 失敗原因 / 還沒做，設計 §5.4 :746）。停下之後還沒做的台不在這裡接著做（重開 4.1，設計 :748 的第 6 列會顯示它們）。每一列的下一步（照設計 :750，v11 V-M1、U-m4）：
-  - 建立列、**有 `rel`**（已寫入、已送出）→ 只有「檢查網路」；**不給**「再試這一台」（再建立會是第二個網路，owner.rs:1067-1088）。
-  - 建立列、沒有 `rel`（什麼都沒寫、沒送出）→「再試這一台」= 再 `makeNetwork` 一次。
+- 頁面堆疊（v12 W-M1、X-M2）：迴圈與結果是**同一個 route**（`NetRunPage`）的兩個階段，佔用在這個 route 的 `initState` 裡 `acquire`、`dispose` 時 `pageGone`；進結果階段只是換內容，佔用和頁面都還在。4.1 由入口頁 push；按「開始」→ 4.1 `pushReplacement(NetRunPage)`（4.1 不持有佔用，被換掉無妨）；離開 `NetRunPage` 回到入口頁。入口頁不靠 `await push` 回來做事（`pushReplacement` 會讓它提早回來），改聽 `NetIndex` 的變更通知重畫（§2.6）。
+- 結果頁：逐台列結果（成功 / 失敗原因 / 還沒做，設計 §5.4 :746）。「再試這一台」或「檢查網路」做完後，那一列換成最新的結果（v12 X m8）。對話框（繼續 / 停、國家、被移除過）開著時頁面消失 → 當成「停 / 不要」，照舊控制台（v12 X m5）。停下之後還沒做的台不在這裡接著做（重開 4.1，設計 :748 的第 6 列會顯示它們）。每一列的下一步（照設計 :750，v11 V-M1、U-m4）：
+  - 建立列、**有 `persistedRel`**（`PersistNet` 已寫入成功、已送出）→ 只有「檢查網路」；**不給**「再試這一台」（再建立會是第二個網路，owner.rs:1067-1088）。
+  - 建立列、沒有 `persistedRel`（什麼都沒寫成功、沒送出）→「再試這一台」= 再 `makeNetwork` 一次，之後照迴圈的建立規則（含自動檢查一次）。
   - 加入列 →「再試這一台」= `joinNetwork(rel)`（D5）。
   - 「再試這一台」「檢查網路」**借用**同一個佔用（各自在工作時拿 `hold`、做完先 `await close()` 再放 `hold`，不呼叫 `pageGone` / `release`）；「再試這一台」照迴圈的等待規則（`PopScope`、`keepScreenOn`、頁面消失就停）。
   - 結果頁本身沒有「建立網路」；建立網路的入口在檢查網路頁（§2.8）。
@@ -112,6 +124,7 @@
 
 - 由 `AppLink` 持有；啟動檢查通過與 `released` 之後各算一次；不在 `acquire` 的等待裡。佔用期間不重算；新頁面在佔用中要判斷某一筆有沒有建立完成時，直接重讀那一筆紀錄（`storeReadSealed` + Kotlin `open` + `netSummary` 取 `applied`），不看 `NetIndex`。「讀不到」頁的「再試一次」= 重算 `NetIndex`（§6 有測試）。
 - 列檔（和 `list_kind` 同規則：濾 `.` 檔；`PathNotFoundException` = 空，在 `toList()` 接；其他錯誤 = 列不出來）決定「有沒有」；解密只取名稱、`applied`、成員；壞的一筆記一行（只寫 net id 前 8 碼，不含內容；§6 有測試）。
+- 提供變更通知（`ChangeNotifier`）：首頁、4.1、節點頁聽它重畫，不靠 `await push` 回來（v12 X m7）。
 - 只留代號最新的一次；計算中 → 第 6 列、3.5 / 3.6 用中性的「加入網路」（PR 2 的 D-m9 做法）。
 - 待辦「節點加入網路沒有做完」：`joining` 的成員對到這支手機的節點（Rust `MemberView` 加 `deviceId`：`net_summary` 已有 `m.device_id`，一行 + 一個 Rust 測試）。
 
@@ -125,24 +138,25 @@
 
 - **先選對象、再拿佔用**：預選 = pending 紀錄裡建立者 `name`（`node-<last4>`）對到手機唯一一筆 `node/` 的那台（只是預選與顯示）；對不上或多筆 → 讓使用者選。頁面寫明「檢查的是節點 XXXX」。從節點頁進來時預選那一台。節點頁的「檢查網路」條件 = 手機有 pending 紀錄、而且它的建立者名稱對到這一台（同上的名稱比對；真正的判斷在登入後用 `nodeDacHash`，v11 V m6）。
 - 佔用：
-  - 拿到佔用（或借用）後，**重新列檔並解密 net 紀錄**，得到這一頁要用的兩個值：要檢查的 pending 清單、手機有沒有已建立的 net（不看 `NetIndex`：借用時剛建立的那一筆還不在裡面，`NetIndex` 也可能還在算；v11 V m2、U-m4）。列不出來 → 只給「再檢查一次」，不給建立。
+  - 拿到佔用（或借用）後，**重新列檔並解密 net 紀錄**，得到這一頁要用的兩個值：要檢查的 pending 清單、手機有沒有已建立的 net（不看 `NetIndex`：借用時剛建立的那一筆還不在裡面，`NetIndex` 也可能還在算；v11 V m2、U-m4）。列不出來 → 只給「再檢查一次」，不給建立。打不開的單筆照 `NetIndex` 同一個函式、同一規則（跳過、記一行只含 net id 前 8 碼；舊控制台也跳過）（v12 W-m5）。重新列檔後沒有要檢查的 pending → 「沒有需要檢查的網路」+「完成」，不給建立（v12 X m3）。
   - 從 4.1 或節點頁進來：本頁 `acquire`（回來時頁面已不在 → 立刻 `release()`）；工作時 `hold`；離開時 `pageGone()`。
   - 從結果頁進來：**借用**結果頁的佔用，工作時 `hold`、做完放，不呼叫 `pageGone` / `release`。
-  - 返回鍵：登入或確認進行中時 `PopScope` 擋住並顯示「正在檢查」；不開 `keepScreenOn`（登入 ≤ 60 s + 每筆確認 ≤ 60 s；切背景時照現況，Rust 回答不明 → 顯示句子）。
+  - 返回鍵：登入或確認進行中時 `PopScope` 擋住並顯示「正在檢查」；不開 `keepScreenOn`（登入 ≤ 60 s + 每筆確認 ≤ 15 s；切背景時照現況，Rust 回答不明 → 顯示句子）。
 - 登入對象 → 用**現有的**值判斷這台是哪幾筆的建立者：`MemberView.creator && dacHash == session.nodeDacHash()`（owner.rs:84-87、:114-119、:991-994；v10 S-m1、T-m3，不加 bridge 函式）。
   - 一筆都不是 → 「這台不是這些網路的建立者」+「換一台檢查」；不送確認、不給「建立網路」（手選錯台時不會出現 Rust 的「可以再建立一次」，owner.rs:478）。
   - 是 → 在**同一次登入**裡依序 `confirmNetwork` 這幾筆（從結果頁進來時先檢查剛建立的那一筆），每筆顯示 Rust 的句子（`confirm` 對錯的紀錄只會 `NoChange` / `OtherVersion`，netrec.rs:509-537；同一次登入連續確認可行，owner.rs:879-893、:1107-1114；節點唯讀動詞每條連線 burst 20）。
   - 每筆的判斷（v10 S-M1、T-m6）：
     - **拿到回答** = 這一筆**確認請求本身**的 Rust 回答，文字以 `[NET_STATE] ` **開頭**（owner.rs:484-491；不是「含有」——被入侵的節點能把字串塞進錯誤句子中間，owner.rs:645-650；Dart 自己的 `_makeUnclear`，nodes.dart:50，不算；v11 U-m1、V m1）。「還在設定中」「無法確定」這兩種回答也算拿到回答、照舊控制台會給「建立網路」（基準，測試鎖住）。`[REQ_FAIL]`、寫入失敗（`persistFailed`）、結果不明、連線斷 → 沒拿到回答，**整頁停**。
     - **升級** = 拿到回答後在佔用下重讀那一筆、`applied` 為真（`storeReadSealed` 那一筆 + Kotlin `open` + `netSummary`；不是 `AppLink.readRecords`，它只列 `node/`，app_link.dart:72-85）（§2.6，不看 `NetIndex`、不看句子）→ 停。
-- 每次工作結束（成功、失敗、停）都先 `await close()` 再更新畫面，返回結果頁後「再試這一台」才連得上（ble_gate.dart:217-221；v11 U-m2）。
+- 每次工作結束（成功、失敗、停）都先 `await close()` 再更新畫面，返回結果頁後「再試這一台」才連得上（ble_gate.dart:226-231；v11 U-m2）。
 - 結果：
   - 有一筆升級 → 顯示 Rust 的句子，「完成」。
   - 每一筆都拿到回答、都沒升級，而且手機沒有任何已建立的 net → 「再檢查一次」+ 次要「建立網路」（舊控制台一直有，nodes.dart:1730；和 §2.4 同一條「沒有已建立的 net 才建立」）。
   - 其他（登入失敗、沒拿到回答、不是建立者）→ 只有「再檢查一次」/「換一台檢查」。
 - 按「建立網路」：
-  - 自己拿佔用的：`close()` → pop（`pageGone()` 立刻釋放）→ 開 4.1 建立表單。
-  - 借用的：`close()` → pop 一個「去建立」的值給結果頁 → 結果頁 pop 自己（`pageGone()` 釋放）→ 開 4.1 建立表單（不在結果頁上面 push，否則 4.1 拿不到佔用；v10 T-m1）。
+  - 自己拿佔用的：`close()` → `pushReplacement(4.1 建立模式)`（本頁 dispose 時 `pageGone()` 釋放）。
+  - 借用的：`close()` → pop 一個「去建立」的值給 `NetRunPage` → `NetRunPage` `pushReplacement(4.1 建立模式)`（dispose 時 `pageGone()` 釋放；不在 `NetRunPage` 上面 push，否則 4.1 拿不到佔用；v10 T-m1、v12 X-M2）。
+  - 退場動畫結束前按 4.1 的「開始」，`acquire` 會因為佔用還在而回「另一個操作還在進行」（node_link.dart:153-154），再按一次即可（D9）。
 
 ## 3. 介面
 
@@ -155,7 +169,7 @@
 | 交接後的連線、訂閱、`FrameInbox`、`OwnerSession` | `OwnerConsole` |
 | net 紀錄（新頁面） | `OwnerConsole` 經 `RecordWriter`（舊控制台、`ClaimRecords` 照舊） |
 | `NetIndex` | `NetIndex` |
-| `keepScreenOn` | 多台迴圈（等待期間）；軟體更新頁（現況）。一次一個佔用，不重疊。檢查網路頁不用 |
+| `keepScreenOn` | `NetRunPage`（迴圈與結果頁「再試這一台」的等待期間）；軟體更新頁（現況）。一次一個佔用，不重疊。檢查網路頁不用 |
 | 暱稱 | `UiState.setNick` |
 | `AppLink.lastClaimNote` | `ClaimPage` 寫、首頁讀後清 |
 
@@ -193,7 +207,8 @@
   - 「建立網路」不是一直都在（舊控制台 nodes.dart:1726-1731 一直有）：只在手機沒有已建立的 net 時給——第 6 列與 3.5 / 3.6（沒有 net）、4.1 選到 pending 而且全部 pending（§2.4）、檢查網路頁每筆都拿到回答且沒升級（§2.8）。節點頁不放。手機已經有已建立的 net、又真的要另建一個網路時（拆隊）→ dev 用舊控制台；field 版在這一版沒有這個入口（§8）。
 - **D7** 「放棄這次加入」不含舊控制台 dev 版的「排除這台（換密碼）」分支；要排除時用舊控制台（PR 5 / 6 再處理）。
 - **D8** 節點頁網路分組：設計 :755 列「加入網路 / 檢查網路」，:758 的字面可讀成手機沒有 net 時也給建立；本計畫照 :312、:755——節點頁從不給「建立網路」，手機沒有 net 時這台的入口是首頁第 6 列與 3.5 / 3.6（v11 U-n1）。
-- **D9** 從檢查網路頁按「建立網路」→ 前一頁 pop，佔用在 dispose（退場動畫之後）才交回；4.1 的「開始」靠 `acquire` 等 `released`（§2.1，上限 5 s）接住這段空檔，不另加機制（v11 U-n2）。
+- **D9** 從檢查網路頁按「建立網路」→ 前一頁被換掉，佔用在 dispose（退場動畫之後）才交回；這段空檔內按 4.1 的「開始」會被拒（`acquire` 先看 `reg.current`，node_link.dart:153-154），畫面說「另一個操作還在進行」，再按一次即可。不另加機制（v11 U-n2、v12 W-m2）。
+- **D10** 檢查網路的等待：設計 §5.4 表（:738）寫 60 s；本計畫照舊控制台 `_ask` 的 15 s（nodes.dart:511-513），`OwnerConsole` 是舊控制台的複製（v12 W-m6）。
 
 ## 5. 安全
 
@@ -209,7 +224,7 @@
 2. `loginOutcome` 抽出 + `NodeLink.loginFor` + `HandoffProber` + `FrameInbox` + `acquire` 等 `released`。測試：T-L17（慢的 `readRecords`）、T-L18（`clearNotY`）、T-S3、掃描叫醒 / 名額 / 重掃 / 60 s 收尾、失敗關連線、交接不丟訊框、訊框依序。改壞各一。
 3. `OwnerConsole`（含 `_forgetJoining` 的複製）+ `RecordWriter` 寫入 + 原始碼鎖 + 表格驅動的四條路徑。測試：重送一次、unclear / notSent、逾時、國家問題不計時（推 400 s）、`ended`、`Refused` 且佔用有效 ≠ `leaseLost`、persist 時佔用收回 → `leaseLost` 且呼叫 `persistFailed`。改壞各一。
 4. `NetIndex` + `MemberView.deviceId` + 首頁第 6 列 / 待辦改用它。測試：T-L19、T-N2、列檔規則、計算中、「讀不到」→「再試一次」重算、壞的一筆的記錄行只有 net id 前 8 碼（斷言整行不含其他內容）。改壞各一。
-5. 多台迴圈 + 4.1–4.5 + 檢查網路頁。測試：T-M1(a)–(g)、T-M2、`[JOINED]` 只看加入請求的回答（連線檢查的 `[JOINED]` 不算）/ 已建立 判定（含國家未驗證的成功）、`send_update` → 送新密碼、建立後沒套用 → 自動檢查一次、沒有 `PersistNet` → 不自動檢查、自動檢查遇到 `NOT_LOGGED_IN` → 重新 `loginFor` 一次、pending（選到的那一筆）時 4.1 給「檢查網路」、全部 pending → 另有「建立網路」、有已建立的 net → 沒有、節點頁：從不給「建立網路」、節點已在網路但紀錄 pending → 有「檢查網路」、檢查網路頁：登入的不是建立者（`nodeDacHash` 對不上）→ 不送確認、沒有「建立網路」、兩筆 pending 且節點在第一筆 → 第一筆升級（重讀那一筆，不看 `NetIndex`；借用佔用時也一樣）、升級後寫入失敗 → 停、沒有「建立網路」、登入失敗 → 沒有「建立網路」、有已建立的 net → 沒有「建立網路」、`acquire` 回來時頁面已不在 → 立刻釋放、借用時不呼叫 `pageGone` / `release`、`close()` 等處理者（慢的 `writeCas` + 逾時 → 不會在 dispose 後呼叫 `netPersisted`）、結果頁：有 `rel` 的建立列沒有「再試這一台」（改壞 = 給再試 → FAIL）、沒有 `rel` 的建立列再試 = `makeNetwork`、加入列再試 = `joinNetwork`、檢查網路頁做完後「再試這一台」連得上（沒 `await close()` → `BleGate` 拒絕 → FAIL）、自動檢查重新登入前關掉前一條、拿到回答只認開頭的 `[NET_STATE] `（句子中間有這個字串的錯誤 → 沒有「建立網路」）、「還在設定中」「無法確定」→ 有「建立網路」（基準）、借用時剛建立的 pending 會被檢查（重新列檔，不看 `NetIndex`）、`pageGone` 之後不開新的登入、確認等 15 s、`sendUpdateFor` 失敗 → 那一台算失敗、「放棄這次加入」自己拿放佔用、頁面消失時等寫入完成才放 hold、`close()` 等進行中的步驟、借用的佔用不被釋放（T-M1(h)）、從結果頁建立 → 4.1 開始拿得到佔用（T-M1(i)）、T-R1、`NetIndex` 列不出來 → 4.1「讀不到」、表單過期、4.1 用 `Page.home`（真的 `NodeLinkCore`）、T-C2 / T-C3。改壞各一。
+5. 多台迴圈 + 4.1–4.5 + 檢查網路頁。測試：T-M1(a)–(g)、T-M2、`[JOINED]` 只看加入請求的回答（連線檢查的 `[JOINED]` 不算）/ 已建立 判定（含國家未驗證的成功）、`send_update` → 送新密碼、建立後沒套用 → 自動檢查一次、沒有 `PersistNet` → 不自動檢查、自動檢查遇到 `NOT_LOGGED_IN` → 重新 `loginFor` 一次、pending（選到的那一筆）時 4.1 給「檢查網路」、全部 pending → 另有「建立網路」、有已建立的 net → 沒有、節點頁：從不給「建立網路」、節點已在網路但紀錄 pending → 有「檢查網路」、檢查網路頁：登入的不是建立者（`nodeDacHash` 對不上）→ 不送確認、沒有「建立網路」、兩筆 pending 且節點在第一筆 → 第一筆升級（重讀那一筆，不看 `NetIndex`；借用佔用時也一樣）、升級後寫入失敗 → 停、沒有「建立網路」、登入失敗 → 沒有「建立網路」、有已建立的 net → 沒有「建立網路」、`acquire` 回來時頁面已不在 → 立刻釋放、借用時不呼叫 `pageGone` / `release`、`close()` 等處理者（慢的 `writeCas` + 逾時 → 不會在 dispose 後呼叫 `netPersisted`）、結果頁：有 `rel` 的建立列沒有「再試這一台」（改壞 = 給再試 → FAIL）、沒有 `rel` 的建立列再試 = `makeNetwork`、加入列再試 = `joinNetwork`、檢查網路頁做完後「再試這一台」連得上（沒 `await close()` → `BleGate` 拒絕 → FAIL）、自動檢查重新登入前關掉前一條、拿到回答只認開頭的 `[NET_STATE] `（句子中間有這個字串的錯誤 → 沒有「建立網路」）、「還在設定中」「無法確定」→ 有「建立網路」（基準）、借用時剛建立的 pending 會被檢查（重新列檔，不看 `NetIndex`）、`pageGone` 之後不開新的登入、確認等 15 s、再試中返回被擋、結果畫面出現時 `reg.current` 仍在（真的 `Navigator`；改壞 = 結果另開 route → FAIL）、`ConsoleReply.text` 沒有 `[ANSWER] ` 前綴、`persistedRel` 只在寫入成功後設、`ask` 不自己登入、加入成功只認開頭的 `[JOINED] `、重新列檔後沒有 pending →「沒有需要檢查的網路」、自己拿佔用時 `NetIndex` 計算中也能檢查、開始時快照不同 → 不開始、`NetIndex` 通知 → 首頁重畫、`sendUpdateFor` 失敗 → 那一台算失敗、「放棄這次加入」自己拿放佔用、頁面消失時等寫入完成才放 hold、`close()` 等進行中的步驟、借用的佔用不被釋放（T-M1(h)）、從結果頁建立 → 4.1 開始拿得到佔用（T-M1(i)）、T-R1、`NetIndex` 列不出來 → 4.1「讀不到」、表單過期、4.1 用 `Page.home`（真的 `NodeLinkCore`）、T-C2 / T-C3。改壞各一。
 6. `ClaimPage` 換樣式 + `openRawPageFor<T>` + `ClaimDone` + `setNick` + F41。`claim_*` 與 `openRawPage` 的測試不改判定；T-C3、T-V1、T-F41。改壞各一。
 7. 首頁、節點頁、3.5 / 3.6 接線；兩位程式審查；真機。
 
@@ -221,7 +236,7 @@
 ## 8. PR 內文要寫明的限制
 
 - 手機 Wi-Fi 在 PR 4；隊員路徑在舊控制台（PR 5）；field 版跑不起來（#255），「別人的手機」= dev 版；認領沒有步驟清單（D1）。
-- 手機已有已建立的網路、又要另建一個網路（拆隊）：新頁面不給，dev 用舊控制台；field 版這一版沒有入口（D6）。pending 紀錄在新頁面不能刪（照舊控制台）。兩項都寫進 #329 checklist。
+- 手機已有已建立的網路、又要另建一個網路（拆隊）：新頁面不給，dev 用舊控制台；field 版這一版沒有入口（D6）。pending 紀錄在新頁面不能刪（照舊控制台）。舊的 pending 刪不掉，所以那台節點頁的「檢查網路」會一直留著（v12 X m9）。兩項都寫進 #329 checklist。
 
 ## 9. v1–v6 審查保留下來的（關於新程式的；v7 的兩位審查在 v8 改方向時停掉，沒有報告）
 
@@ -305,3 +320,21 @@
 | V S-m5 重算時機 / 測試 | §2.6、§6 第 4 步 |
 | V 「放棄這次加入」acquire 後頁面不在 | §2.4 |
 | U-n1 / U-n2 | D8、D9 |
+
+### v12 審查 W、X 的對應（v13）
+
+| 項目 | 處理 |
+|---|---|
+| X-M1 / W-m1 / W-m3 / W-m4 `OwnerConsole` 回傳沒定義 | §2.3 `ConsoleReply` 表：`text` 不帶 `[ANSWER] `、`persistedRel` 寫入成功後才設、`ask` 不自己登入、寫入失敗回 `notSent` 由頁面重登再送；改壞對照兩條 |
+| W-M1 / X-M2 `pushReplacement` 放掉佔用、入口頁提早回來 | §2.5：迴圈與結果同一個 route `NetRunPage`；入口頁聽 `NetIndex` 通知；§2.8 誰 `pushReplacement` 4.1；§6 用真 `Navigator` 斷言 |
+| X m1 / W-m6 60 s vs 15 s | §2.8 改 15 s；D10 |
+| X m2 加入成功用開頭判斷 | §2.3 |
+| X m3 沒有 pending | §2.8 |
+| X m4 / W-m2 D9 說法不符 | D9 改寫 |
+| X m5 頁面消失時對話框開著 | §2.5：當成停 / 不要 |
+| X m6 開始時比對什麼 | §2.4 |
+| X m7 `NetIndex` 通知 | §2.6 |
+| X m8 結果列更新 | §2.5 |
+| X m9 舊 pending 的「檢查網路」一直在 | §8、#329 checklist |
+| W-m5 重新列檔遇到打不開的 | §2.8：同 `NetIndex` 規則 |
+| W nit `keepScreenOn` 寫入者、再試中返回、行號、自己拿佔用 + 計算中 | §3.1、§6、行號改正 |
