@@ -1,4 +1,4 @@
-# #329 PR 3 實作計畫 v6：新增節點、建立 / 加入 / 檢查網路
+# #329 PR 3 實作計畫 v7：新增節點、建立 / 加入 / 檢查網路
 
 上層設計：`docs/design/329-app-uiux.md`（v12.1，已合併）§4.1、§4.3.8、§4.3.9、§4.4、§4.7、§5.1、§5.3、§5.4、§7、§9.1、§12。main = 29b0085。
 
@@ -8,7 +8,9 @@
 - v3：E REJECT（1 BLOCKER / 3 MAJOR）、F REJECT（1 BLOCKER / 2 MAJOR）。兩位的 BLOCKER 都在 v3 新加的「重新建立」。
 - v4：G、H 都 APPROVE-WITH-CHANGES（各 0 BLOCKER / 3 MAJOR）。
 - v5：I APPROVE-WITH-CHANGES（0 / 3 MAJOR）、J APPROVE-WITH-CHANGES（0 / 1 MAJOR）。
-- v6（本版）：逐條對應見 §12 的 v5 段。建立者必須沒有 `netId` 也沒有 `unfinished`；有一台讀到的 `netId` 等於某筆 pending 時只給「檢查網路」；首頁顯示節點在哪個網路；建立閘門依模式分開；4.1 用 `Page.home` 讓剛認領的節點被讀到；加入判定加上 generation 前進；形狀釘子改成 golden JSON。
+- v6：K APPROVE-WITH-CHANGES（0 / 3 MAJOR）、L APPROVE-WITH-CHANGES（0 / 4 MAJOR）。兩位的 MAJOR 都在「從空欄位或 generation 推論節點狀態」。
+- v7（本版）：逐條對應見 §12 的 v6 段。**Rust 多回三個結構化欄位**（§2.9：狀態的 `netPresence`、檢查網路的 `netState` + `isCreator`、加入的 `joinEnd`），Dart 只照欄位判定、不再推論。「建立新的網路」只在每一筆 pending 都由建立者本人確認「沒有套用」之後才給；首頁對在別的網路的節點顯示警告（不靠網路名稱）。
+- v6 的內容（以下各節已併入 v7）：建立者必須沒有 `netId` 也沒有 `unfinished`；有一台讀到的 `netId` 等於某筆 pending 時只給「檢查網路」；首頁顯示節點在哪個網路；建立閘門依模式分開；4.1 用 `Page.home` 讓剛認領的節點被讀到；加入判定加上 generation 前進；形狀釘子改成 golden JSON。
 - v5 的內容（以下各節已併入 v6）：
   - 結果判定改用 Rust 真正的成員狀態：建立 / 檢查只看網路 `applied`；加入看這一台的成員項是否「已套用」（`!joining && !approved`），並用 Rust 測試釘住 `net_summary` 的輸出形狀（G-M1、H-M1）。
   - **只有沒套用的網路紀錄時，新頁面允許建立新的網路**（H-M3）：沒套用的網路不可能有其他成員（加入要求已套用，join2flow.rs:340-342），舊的那筆留著不動。兩個版本都有出口，不改 Rust，D4 的 field 死路消失；dev 的「到舊控制台重新建立」拿掉（G-M2、H-M2）。
@@ -122,11 +124,11 @@
   8. sign / seal 經包裝：金鑰錯誤記 `keyFail` 並 `keyErrorToRadio`。
 - `console.close()` 由 `NetworkRun` 呼叫。
 
-#### 2.2.1 結果契約：**重讀紀錄判定，不靠標籤**（P22）
+#### 2.2.1 結果契約：**用 Rust 的結構化欄位判定，不靠標籤、不猜**（P22）
 
-每個請求結束後，`OwnerConsole` 用 `rel` 重讀那筆 net 紀錄（唯讀：`storeReadSealed` + 平台 `open` + `netSummary`）。成員狀態照 Rust 的定義（netrec.rs:43、:212、:395、:524-533；join2flow.rs:530；owner.rs:122）：
-- 「已套用的成員」= `!joining && !approved`（`approved` 是隊員的節點、由隊長核准，不是「成功」）。
-- 建立者在 pending 紀錄裡沒有 device id；`confirm` 升級時也不補（netrec.rs:526-527）。所以**建立 / 檢查只看網路的 `applied`，不找成員項**。
+- **加入**看 Rust 的 `joinEnd`、**檢查**看 Rust 的 `netState`（§2.9 新增的欄位）；**建立**看重讀紀錄的 `applied`（Rust 只在收到 Applied 時寫已套用的紀錄）。
+- 每個請求結束後仍用 `rel` 重讀那筆 net 紀錄（唯讀：`storeReadSealed` + 平台 `open` + `netSummary`），但除了「建立」以外，重讀只用來更新顯示與 `NetIndex`。
+- 成員狀態照 Rust 的定義（netrec.rs:43、:212、:395、:524-533；join2flow.rs:530；owner.rs:122）：「已套用的成員」= `!joining && !approved`；建立者在 pending 紀錄裡沒有 device id、`confirm` 升級時也不補（netrec.rs:526-527）。這只用在 `NetIndex` 的顯示與待辦。
 
 **判定順序**（由上往下，第一個成立的就是結果）：
 
@@ -138,28 +140,17 @@
 | 4 | `noLink(LoginResult)` | 登入失敗 | 依原因的固定句（設計 §4.3.5） |
 | 5 | `noRecord` | 沒有 `rel`（建立在 `PersistNet` 之前就結束），或重讀時檔案不在 | Rust 的句子（去標籤）+ 建立者失敗 → 流程停 |
 | 6 | `unreadable` | 有 `rel`、檔案在，但打不開 | 「讀不到手機裡的網路紀錄」，流程停 |
-| 7 | 建立 / 檢查：`applied` / `notApplied` | 網路的 `applied` | 完成 / 本頁固定句「網路還沒有確認完成」+「檢查網路」（不顯示 Rust 那句「可以再建立一次同一個網路」，owner.rs:478：它和本頁的「建立新的網路」意思不同，v5 J m） |
-| 8 | 加入：`applied` | 有這台（`deviceId`）的成員項、`!joining && !approved`，**而且紀錄的 generation 比請求開始時前進**（NotSent 會把舊的已套用項目還原，join2flow.rs:509，v5 J m） | 「完成」→ 連線檢查 |
-| 9 | 加入：`joining` | 有這台的成員項、`joining` | Rust 的句子（去標籤）+「結果不明」+「再試這一台」 |
-| 10 | 加入：`absent` / `notSent` | 沒有這台的成員項，或 generation 沒前進；寫入前斷線（`SendTrack.wrote` 為假）時標 `notSent` | Rust 的句子（去標籤）+「再試這一台」（確定的拒絕再試一次也只會再被拒，無害） |
+| 7 | 建立：`applied` / `notApplied` | 建立回來後重讀網路的 `applied`（Rust 在收到 Applied 時才寫已套用的紀錄，P19） | 完成 / 本頁固定句「網路還沒有確認完成」+「檢查網路」（不顯示 Rust 那句「可以再建立一次同一個網路」，owner.rs:478） |
+| 8 | 檢查：`netState` | Rust 回的結構化欄位 `netState`（§2.9 R2） | applied → 完成；其他 → 本頁固定句 +（條件成立時）「建立新的網路」（§2.8） |
+| 9 | 加入：`joinEnd` | Rust 回的結構化欄位 `joinEnd`（§2.9 R3）：applied / unclear / refused / notSent / cancelled | applied → 「完成」→ 連線檢查；unclear → 「結果不明」+「再試這一台」；refused → Rust 的句子（去標籤）+「再試這一台」；notSent → 「還沒有寫入或送出，可以再試一次」 |
+| 10 | Dart 端結束（逾時、斷線、訊框錯誤），沒有 Rust 的結束答案 | `SendTrack.wrote` 為真 → `unclear`；為假 → `notSent` | 同上 |
 
-- **重讀的時機**：在 `ask` 回來之後（也就是這個請求的最後一步 `answer` / `ended` 之後）。Rust 只在收到 `netPersisted` 之後才往下走（owner.rs:1094-1110），所以這時寫入已經完成，不會讀到寫一半的紀錄（v4 G m1）。
-
+- **加入不再看紀錄的成員項或 generation 判定**（v6 K-M3、L-M3：NotSent 與國家被拒的還原各有兩次 CAS，generation 一樣會前進，join2flow.rs:450-458、:495-513、:583-590、:670-681）。分類只看 Rust 的 `joinEnd`；重讀只用來更新顯示與 `NetIndex`。所以逾時路徑的重讀時機也不影響分類（v6 L m）。
 - 連線檢查的結果另外記：`[CONNECTED]` 之外（120 s 沒連上、讀不到）→ 結果頁那一台寫「已加入，連線狀態未知」（現況 `_linkUnknown` 的意思），仍算完成。
-- **形狀釘子**：Rust 加一個測試，對以下各產生一筆紀錄：
-  - 剛建立的 pending；
-  - Applied 回來的建立者；
-  - confirm 升級後的建立者；
-  - 隊長加入成功的成員；
-  - 加入中的成員；
-  - 加入被拒（沒有這台）；
-  - NotSent 還原；
-  - NotReverted。
-
-  測試斷言 `net_summary` 回的 `applied`、`joining`、`approved`、`creator`、`deviceId`、generation，並把結果寫成一個 golden JSON（`app/test/fixtures/net_summary_shapes.json`，Rust 測試在內容不同時 FAIL）。Dart 的判定測試**讀同一個檔**，不手寫組合（v5 J m）。
+- **形狀釘子**（只剩建立用的 `applied` 與 `NetIndex` 的成員欄位）：Rust 加一個測試，對「剛建立的 pending」「Applied 回來的建立者」「confirm 升級後的建立者」「隊長加入成功的成員」「加入中的成員」各產生一筆紀錄，斷言 `net_summary` 的 `applied`、`joining`、`approved`、`creator`、`deviceId`，並寫成 golden JSON（`app/test/fixtures/net_summary_shapes.json`）。Dart 的 `NetIndex` 測試讀同一個檔；檔案不存在時兩邊的測試都 FAIL。
 - Rust 的句子只用來**顯示**（去掉標籤），不用來分類。
 - 例外原文、逾時句、`ended` 句只進技術資訊。
-- `GateLink` 的 `Refused` 在 `lease.valid` 時 = 斷線，照現況 `ask` 的 unclear / notSent / 重送一次處理；最後的分類仍以重讀紀錄為準。
+- `GateLink` 的 `Refused` 在 `lease.valid` 時 = 斷線，照現況 `ask` 的 unclear / notSent / 重送一次處理。
 
 ### 2.3 多台建網：`NetworkRun`
 
@@ -173,11 +164,12 @@
 | net / mnet / mpend 都沒有 | 建立表單：名稱（預設 `Batman`）、頻道（進階 40 / 42） |
 | 有 net、其中有打得開而且已套用的 | 加入表單：「加入哪一個網路」（只列這些；一筆就不問） |
 | 有 net、但都打不開 | 現有的重裝警告句，沒有「開始」 |
-| 有 net、都打得開、都沒有套用（pending），**而且有一台讀到的 `netId` 等於某筆 pending 的 net id** | 只有「檢查網路」，對象 = 那一台、那一筆（`confirm` 會把紀錄升級，v5 J-M1）；沒有「建立新的網路」 |
-| 有 net、都打得開、都沒有套用，沒有任何一台讀到這些 net id | 主要「檢查網路」（§2.8，句子寫明檢查的是哪一台：建立者）；次要「建立新的網路」→ 建立表單，表單上方提醒「上次建立的網路沒有確認完成。如果那台節點其實已經在網路裡，請先按『檢查網路』」 |
-| 只有 mnet / mpend | 不顯示表單，顯示 §2.5 那一列的句子（dev 版給舊控制台按鈕） |
+| 有 net、都打得開、都是 pending，而且**這次執行裡每一筆 pending 都已經由它的建立者確認「沒有套用」**（§2.8 的清除紀錄） | 建立表單，表單上方提醒「上次建立的網路沒有建立成功，舊的紀錄會留在手機上」 |
+| 有 net、都打得開、都是 pending，還有沒清除的 | 只有「檢查網路」（§2.8；有一台讀到的 `netId` 等於某筆 pending → 對象 = 那一台、那一筆，v5 J-M1）。**沒有**「建立新的網路」 |
+| 有 mnet / mpend（不論有沒有 pending 的 net） | 不顯示建立表單，顯示 §2.5 那一列的句子（dev 版給舊控制台按鈕）。有已套用的 net 時仍給加入表單 |
 
-- **4.1 跟著讀取結果即時更新**：4.1 開著（拿佔用之前）時把 `NodeLink` 的頁面設成 `Page.home`（讀所有節點；`Page.other` 不排任何讀取，core.dart:169，v5 I-M3），並訂閱 `NodeLink.changed`。剛認領完的節點讀到之後，就能勾、能當建立者。拿到佔用後自動讀取停止，清單就固定。離開 4.1 時照現況的 `_back` 把頁面設回首頁。測試用**真的 `NodeLinkCore`**（不是假的 NodeLink）。
+- **4.1 跟著讀取結果即時更新**：4.1 開著（拿佔用之前）時把 `NodeLink` 的頁面設成 `Page.home`（讀所有節點；`Page.other` 不排任何讀取，core.dart:169，v5 I-M3），並訂閱 `NodeLink.changed`。剛認領完的節點讀到之後，就能勾、能當建立者。拿到佔用後自動讀取停止，清單就固定。離開 4.1 時把頁面設回**進來之前的那一頁**（從節點頁進來就回 `Page.node` 那一台，v6 K m、L m）。測試用**真的 `NodeLinkCore`**（不是假的 NodeLink）。
+- 「讀到」的定義：這次執行裡、最近一次讀取在新鮮時間內（`NodeLinkCore.fresh`，和首頁同一個規則）；過期的讀取當成沒讀到。
 
 **節點清單**（`node/` 紀錄）：
 - 加入模式：
@@ -185,7 +177,11 @@
   - `netId` 是目標：手機紀錄裡這台已套用 → 不能勾，標「已在這個網路」；紀錄裡是加入中或沒有這台 → 可勾，標「補完加入」（v5 I m「太寬」）。
   - 沒讀到 → 可勾，標「目前讀不到」。
   - 預設勾「剛讀到、還沒加入網路」的。
-- 建立模式：建立者必須**讀到**、`nodeState` 是還沒加入、`netId` 是空的、而且 `unfinished` 是空的（套用中的節點 key 10 還不存在、key 11 = true，讀起來像「沒加入」，flow.rs:169-171，v5 I-M2 / J-M1）。沒讀到的節點可以勾，但不能當建立者。符合條件的有好幾台時，預設是清單上第一台，使用者可以點選換一台（「由這台建立」）。
+- 建立模式：
+  - 建立者必須**讀到**（新鮮），而且 Rust 回的 `netPresence == none`（§2.9 R1：key 10 不存在、key 11 = false，確定讀到）。`unknown`（info 讀不到 / 被限速）、`inProgress`、`inNet` 都不能當建立者（v6 K-M1、L-M1：不再用「欄位是空的」推論）。
+  - `inProgress` 或 `inNet` 的節點在建立模式**不能勾**（它在套用中或已在某個網路，v6 K-M2）。
+  - 沒讀到的節點可以勾，但不能當建立者。
+  - 符合條件的有好幾台時，預設是清單上第一台，使用者可以點選換一台（「由這台建立」）。
 - 從待辦或節點頁進來：那一台預設勾、一定可勾。
 - 至少一台。
 
@@ -213,16 +209,13 @@
    | 有打不開的 net | 不開始（重裝警告句） |
    | 有已套用的 net | 不開始，請重開 4.1 |
    | 沒有 net | 建立 |
-   | 有 net、都打得開、都是 pending，而且開始前最後一次讀取沒有任何一台的 `netId` 等於這些 net id | 建立（舊的 pending 留著不動） |
-   | 同上，但有一台讀到的 `netId` 等於某筆 pending 的 net id | 不開始，轉「檢查網路」（那一台、那一筆） |
+   | 有 net、都打得開、都是 pending，每一筆都在 §2.8 的清除紀錄裡 | 建立（舊的 pending 留著不動） |
+   | 有 net、都打得開、都是 pending，還有沒清除的 | 不開始，轉「檢查網路」 |
 
-   「都是 pending 時可以建立」的理由：pending 的網路不可能有其他成員。能把成員項寫進 net 紀錄的七條路徑（建立、加入、邀請 / 同意、移除、檢查網路、忘記加入中的成員、隊員匯入）都要求已套用，或只碰建立者（join2flow.rs:340-342、invite.rs:185-187、rekey.rs:98、netrec.rs:509-535；v5 審查 I 逐條核對）。所以新網路不會讓別的節點分裂。
-
-   剩下的風險是 pending 的建立者其實已經套用或正在套用。處理方式：
-   - 建立者條件排除它（`netId` 或 `unfinished` 非空）。
-   - 它讀到的 `netId` 等於某筆 pending 時，不給建立，只給「檢查網路」。
-   - 讀不到它時，最壞是它留在舊網路裡，要等離開（PR 4）才能加入新網路；首頁會顯示它所在的網路名稱（§2.5），使用者看得到。
-   - 表單上的提醒請使用者先按「檢查網路」。
+   「pending 都清除後可以建立」的理由：
+   - pending 的網路不可能有其他成員。能把成員項寫進 net 紀錄的七條路徑（建立、加入、邀請 / 同意、移除、檢查網路、忘記加入中的成員、隊員匯入）都要求已套用，或只碰建立者（join2flow.rs:340-342、invite.rs:185-187、rekey.rs:98、netrec.rs:509-535；v5 審查 I 逐條核對）。
+   - 唯一可能在那個網路裡的就是建立者，而「清除」= 建立者**本人**（Rust 的 `isCreator`）在同一次連線裡明確回答 `netState == notApplied`（§2.9 R2）。所以新網路不會讓任何節點分裂。
+   - 建立者讀不到、回答不明、在套用中、或登入的不是建立者 → 不清除，只能「檢查網路」（fail-closed）。建立者壞掉或遺失時沒有出口：寫進殘項，綁 field 版出貨（#255）；dev 版仍可用舊控制台（現況）。
 
    不開始時什麼都不送、不寫，放掉佔用。
 3. `PopScope` 擋返回、`keepScreenOn` 開（等待期間）。
@@ -230,13 +223,13 @@
 **每一台**（照設計 §5.4）：
 1. `console` 登入那一台（`loginFor`）。
 2. 建立者：`makeNetwork` → 重讀。`applied` → 繼續；其他 → **整個流程停**，結果頁給「檢查網路」（§2.8）。
-3. 加入者：每台開始前用 `rel` 重讀（新的 generation 與內容）→ `joinNetwork(rel)`（國家 / 加回問題照 §2.2）→ `sendUpdate` 時 `sendUpdateFor(rel)` → 重讀判定 → `applied` 時連線檢查（每 10 s、最多 120 s）。
+3. 加入者：每台開始前用 `rel` 重讀（新的 generation 與內容）→ `joinNetwork(rel)`（國家 / 加回問題照 §2.2）→ `sendUpdate` 時 `sendUpdateFor(rel)` → 依 `joinEnd` 判定 → `applied` 時連線檢查（每 10 s、最多 120 s）。
 
 **停止規則**：
 - 任何失敗之後**先看 `core.blocked`**；`noLink(precondition(…))`（含 `loginFor` 開始前即時讀金鑰得到的 `precondition(keys)`，它不經 `setRadio`，`core.blocked` 不會成立）也一樣。被擋 → 整個流程停，顯示 2.3 / 2.2 / 2.4 的原因，不問繼續。
 - `leaseLost`、`unreadable` → 整個流程停。
 - 建立者不是 `applied` → 整個流程停。
-- 加入者的其他結果（`noLink`、`absent`、`joining`、`notSent`）→ 問「繼續下一台 / 先停在這裡」；對話框被返回鍵關掉 = 停。
+- 加入者的其他結果（`noLink`、`refused`、`unclear`、`notSent`、`cancelled`）→ 問「繼續下一台 / 先停在這裡」；對話框被返回鍵關掉 = 停。
 
 **結果頁**：
 - 進入結果頁時：`console.close()`（最後一台恢復廣播）→ `keepScreenOn` 關。佔用留到離開結果頁（設計 §5.4）。
@@ -258,7 +251,7 @@
 - 另外提供 `netId → 網路名稱` 的對照，給首頁與節點頁顯示「節點在哪個網路」（§2.5）。
 - **Rust `MemberView` 加 `deviceId`**（`net_summary` 已有 `m.device_id`；改一行 + 一個 Rust 測試）。
 - 只保留代號最新的一次結果。計算中 → 第 6 列、3.5 / 3.6 都用中性的「加入網路」並顯示「正在讀取網路紀錄」，不顯示「建立網路」（剛認領完、佔用剛釋放時就是這個狀態，v3 E-m11）。
-- 「建立網路」按鈕只在：列得出來、三種檔都是 0。有 net 但都是 pending 時，主要是「檢查網路」，「建立新的網路」在 4.1 裡是次要（§2.3）。這裡只決定顯示；真正的閘門是 §2.3。
+- 「建立網路」按鈕只在：列得出來、沒有 mnet / mpend、沒有已套用或打不開的 net，而且 net 檔是 0 或每一筆 pending 都已清除（§2.8）。有還沒清除的 pending 時，主要是「檢查網路」，沒有「建立網路」。這裡只決定顯示；真正的閘門是 §2.3。
 
 ### 2.5 入口去處表
 
@@ -274,7 +267,7 @@
 | 首頁「新增節點」 | — | 3.x（§2.6） | 同 |
 | 3.5（0 檔） | — | 主要「建立網路」；次要「我是隊員，加入隊長的網路」 | 主要同；次要不顯示 |
 | 3.6（有 net） | — | 主要「加入網路」；次要「再加一台」 | 同 |
-| 節點列、節點頁 | 讀到的 `netId` 非空 | 顯示「在網路「<名稱>」」（`NetIndex` 對照得到）或「在另一個網路」（對照不到）；讓留在舊網路的建立者看得出來（v5 J-M1） | 同 |
+| 節點列、節點頁 | Rust 的 `netPresence`（§2.9 R1） | `inNet` 且是手機已套用的那個網路 → 照現況（正常）；`inNet` 但不是（別的網路或 pending 的網路）→ **警告**「節點 X 在另一個網路（不是這支手機的網路）」，首頁落在第 12 列的警告、不會是「一切正常」；`inProgress` → 「節點 X 正在套用網路設定」。不用網路名稱區分（名稱預設都是 `Batman`，v6 L-M4、K m） | 同 |
 | 節點頁「還沒加入網路」 | 同第 6 列 | 對象預設勾這一台 | 同 |
 | 待辦「節點加入網路沒有做完」 | §2.7 | 4.1 加入表單，目標 = 那筆網路、那一台預設勾 | 同 |
 | 待辦「建立網路沒有確認完」 | §2.7 | §2.8 | 同 |
@@ -295,21 +288,38 @@
 ### 2.7 待辦
 
 - 「節點加入網路沒有做完」：`NetIndex` 裡 `joining` 的成員，用 `deviceId` 精確對到 `node/<id>`；對不上的不成待辦。
-- 「建立網路沒有確認完」：手機**沒有任何已套用的 net**，而且有 pending 的 net 時，只列**一個**待辦，對象依序挑：
+- 「建立網路沒有確認完」：手機**沒有任何已套用的 net**，而且有**還沒清除**的 pending net 時（§2.8 的清除紀錄），只列**一個**待辦，對象依序挑：
   1. `net_id` 等於某一台讀到的 `netId` 的那一筆（節點真正所在的網路，v5 I-M2）；
   2. 否則檔案修改時間最新的那一筆。
+
+  每一筆 pending 都清除了 → 不列待辦，第 6 列給「建立網路」（§2.4）。
 
   點下去 → §2.8（對那一筆的 `rel`）。手機已經有已套用的 net 時，舊的 pending 不再列待辦（它們只是留在手機上的舊紀錄；清理寫進殘項）。
 
 ### 2.8 檢查網路（建立沒有確認完）
 
 - **對象**：那一筆 pending net 的建立者。用 `name` 的 `node-<last4>`（**不分大小寫**：Rust 的 `last4` 是 device id 原字，首頁顯示時轉大寫）對手機唯一一筆 `node/`；對不上或多筆 → 讓使用者從節點清單選。
-  - 不用 `dacHash` 對：要對到 `node/` 紀錄得先打開每一筆節點紀錄、再加一個 Rust 函式算 hash；而檢查是唯讀比對，對錯台只會「不符、不寫」（`netrec::confirm` 只在節點的 key 10 對得上時升級，owner.rs:1168-1178），用名稱加使用者選擇就夠。
-- 頁面：拿 session 佔用 → 登入對象 → `confirmNetwork(rel)` → 重讀網路的 `applied`。
-  - `applied` → 回首頁（之後可以加入其他台）。
-  - 不是 → 本頁固定句「網路還沒有確認完成」+ Rust 句子進技術資訊。次要按鈕「建立新的網路」**只在**這次登入讀到的這一台 `netId` 和 `unfinished` 都是空的時才出現（節點確定沒在任何網路、也沒在套用中；v5 I-M2）；否則只有「再檢查一次」。
-  - 按「建立新的網路」：**先放掉這一頁的佔用**，再開 4.1 建立表單（§2.3，舊的 pending 留著；4.1 自己按開始時再拿佔用，v5 I m）。
+  - 對錯台沒有危險：Rust 回 `isCreator = false`（§2.9 R2），不升級、也不清除。
+- 頁面：拿 session 佔用 → 登入對象 → `confirmNetwork(rel)` → Rust 回 `netState` 與 `isCreator`。
+  - `netState == applied` → 紀錄已由 Rust 升級；回首頁（之後可以加入其他台）。
+  - `isCreator && netState == notApplied` → 把 `rel` 記進**清除紀錄**（記憶體，`NetIndex` 持有，這次執行有效；重開 app 要重新檢查）。顯示「這個網路沒有建立成功」+ 主要按鈕「建立新的網路」。
+  - 其他（`inProgress`、`otherNetwork`、`unknown`、`isCreator == false`、登入失敗）→ 本頁固定句「網路還沒有確認完成」+ Rust 句子進技術資訊；只有「再檢查一次」（`inProgress` 的句子寫「節點正在套用，請稍等幾分鐘再檢查」）。
+  - 按「建立新的網路」：**先放掉這一頁的佔用**，再開 4.1 建立表單（§2.3；舊的 pending 留著，4.1 自己按開始時再拿佔用）。
 - 離開頁面時放佔用。
+
+### 2.9 Rust 的結構化欄位（新增，各附 Rust 測試；v6 K、L）
+
+讓 Dart 不必從文字或空欄位推論節點狀態。都只是「多回傳一個 Rust 已經算出來的值」，不改任何流程或紀錄格式。
+
+| # | 欄位 | 在哪裡算 | 值 |
+|---|---|---|---|
+| R1 | `StatusView.netPresence` | `status_view`，從同一次狀態頁讀到的 info（owner.rs:1300-1302、:2204-2217） | `none`（key 10 不存在、key 11 = false）/ `inProgress`（key 10 不存在、key 11 = true）/ `inNet`（key 10 是 16 位元組）/ `unknown`（info 沒讀到、被限速、格式不對） |
+| R2 | 檢查網路的 answer 帶 `netState`、`isCreator` | `info-confirm` 那一段（owner.rs:879-893），用 `flow::join_state(info, record.net_id)`（flow.rs:155-175）與 `record.pending_creator() == 這次登入的節點的 dac_hash` | `netState`：applied / inProgress / notApplied / otherNetwork / unknown；`isCreator`：bool |
+| R3 | 加入的 answer 帶 `joinEnd` | `join2_text` 旁邊（owner.rs:498-566，每一種結束都已經在這裡分好） | applied / unclear / refused / notSent / cancelled |
+
+- 三個欄位都經 flutter_rust_bridge 產生 Dart 型別（`OwnerStep`、`StatusView` 多一個欄位；舊的呼叫者不用改）。
+- Rust 測試：R1 四種值各一；R2 對「建立者回 notApplied / inProgress / otherNetwork / 被限速」「不是建立者」各一；R3 對 `join2_text` 現有的每一種結束各一（和現有的句子測試放一起）。
+- 改壞：R1 把 `unknown` 回成 `none`；R2 `isCreator` 永遠 true；R3 把 NotSent 還原回成 applied → 各自 FAIL。
 
 ## 3. 介面
 
@@ -327,6 +337,7 @@
 | `keepScreenOn`（視窗旗標，P25） | `NetworkRun`（等待時開；進結果頁、例外、頁面消失時在 `finally` 關）；軟體更新頁（現況）。一次只有一個佔用，兩者不會同時 | — |
 | `ui/state-v1` 暱稱 | `UiState.setNick` | 首頁、節點頁 |
 | `AppLink.lastClaimNote` | `ClaimPage` 寫 / 首頁讀後清掉 | — |
+| 清除紀錄（`rel` 的集合，記憶體） | §2.8 頁（只在 Rust 回 `isCreator && notApplied` 時加入） | 4.1、建立閘門、待辦、第 6 列 |
 | `ClaimPage` 的原始佔用 | `ClaimPage`（現況） | — |
 
 ### 3.2 契約
@@ -378,7 +389,8 @@
 - **D1** 認領留在 `ClaimPage`（原始佔用）、換樣式 + 兩處小補充；不給步驟清單與經過時間；`ClaimPage` 改走 `BleGate` 寫進殘項（PR 6）。
 - **D2** 舊控制台照舊。原始碼鎖：`lib/src/flows/`、`lib/ui/`（`ui_state.dart` 除外）不准出現 `storeWriteCas` / `storeWriteSealed` / `storeRemove` / `storeKeepCopy`。舊控制台（dev）仍能在 pending 存在時再按「建立網路」（現況，繞過新閘門）。
 - **D3** 隊員路徑、看申請仍開舊控制台（dev）；field 版不顯示按鈕；PR 5 換。
-- **D4** 有 net 但都是 pending 時，新頁面允許「建立新的網路」（舊的 pending 留著不動；設計 §5.3 寫「沒有任何 net 紀錄」才給建立）。理由：pending 的網路不可能有其他成員（join2flow.rs:340-342），新網路不會讓已在網路裡的節點分裂；這和現況舊控制台的行為一樣（`request_make_network` 每次產生新的網路編號），不改 Rust、兩個版本都有出口。主要按鈕仍是「檢查網路」。
+- **D4** 有 net 但都是 pending、而且每一筆都已由它的建立者本人確認「沒有套用」（Rust 的 `isCreator` 與 `netState`，§2.9 R2）時，新頁面允許「建立新的網路」，舊的 pending 留著不動（設計 §5.3 寫「沒有任何 net 紀錄」才給建立）。理由見 §2.3：pending 的網路不可能有其他成員，唯一可能在裡面的建立者已明確回答不在。建立者讀不到或回答不明 → 只能「檢查網路」；建立者壞掉或遺失時 field 版沒有出口（殘項，綁 #255 的 field 版出貨），dev 版仍可用舊控制台。
+- **D8** Rust 多回三個結構化欄位（§2.9 R1–R3）。設計沒有寫，但不加的話 Dart 只能從文字或空欄位推論節點狀態，v6 審查 K、L 證明這種推論會在該擋的時候放行。
 - **D5** 建立回來不是已套用 → 整個流程停、讓使用者按「檢查網路」（設計 §5.4 寫自動檢查一次）。理由：Rust 在結果不明時已自己檢查過一次（owner.rs `join_step` ReadInfo 分支），再自動做一次是重複；A18 在真機量。加入結果不明 → 「再試這一台」（設計寫「檢查網路」）：`confirm` 只會升級建立者，不會升級加入者（netrec.rs:524-527）。
 - **D6** 網路摘要表放在獨立的 `NetIndex`（設計 §4.3.8 放在 `NodeLink`）：`NodeLink` 只做藍牙排程，不碰 Keystore。
 - **D7** 首頁第 6 列多一個去處「檢查網路」（有 net 但都是 pending 時）。
@@ -401,6 +413,8 @@
 - **輸入面**：網路名稱（Rust 檢查）、暱稱（`setNick` 過濾）、勾選的節點（只能是 `node/` 紀錄的 id）。沒有新的平台方法（`keepScreenOn` 是現成的，P25）、檔案路徑、匯出元件。
 - **遠端 BLE / 惡意廣播**：8 s msg2 預算 + 「不是 Y」備忘，約 7 個不回應的位址能吃光 60 s（設計接受）；登入結果不認得的一律 `noResponse`，不會種下錯的「是 Y」。身分不符結束那一台並寫首頁。
 - **被入侵的節點**：每台加入都 CAS 同一筆 net 紀錄，但只能換掉它自己的成員項、國家只收兩個大寫字母（P21）；能用國家 / 加回問題對使用者發問（要使用者同意）。每台開始前重讀紀錄。結果分類看紀錄，不信節點的句子。
+  - 它能在狀態裡謊報 key 10（假裝在某筆 pending 的網路裡）或 key 11（假裝套用中），讓那筆 pending 永遠清除不了 → 只能「檢查網路」。這只是阻斷服務：出口是「從這支手機移除這台節點」（PR 2），之後那筆 pending 的建立者就對不上任何節點，使用者從節點清單選真正的建立者檢查（v6 K m、L m）。
+  - 它不能讓手機在別台還在網路裡時建立新網路：清除需要**建立者本人**（dac_hash 對得上）回答 notApplied；被入侵的建立者說謊時，最壞是它自己沒在新網路裡，不會讓其他節點分裂。
 - **本機無權限 app**：沒有新的入口。
 - **我們自己的錯**：建立閘門（佔用下列檔、fail-closed、每一列有改壞）；佔用語意（§3.4）；原始碼鎖（D2）。
 - **秘密**：`OwnerConsole` 只寫種類、代碼、後四碼；位址經 `NodeLink.mask`。舊控制台的 `_say` 會把回答寫進 logcat（現況）。
@@ -409,27 +423,28 @@
 ## 7. 步驟（每一步都跑全套、各自附改壞對照）
 
 1. ✅ 舊控制台補測試（9b00ca6，改壞 5/5）。
-2. `loginOutcome` 抽出（`SessionProber` 改呼叫，現有測試照過）+ `NodeLink.loginFor` + `HandoffProber` + `FrameInbox` + `acquire` 等上一個 `released`。
-   - 測試：T-L17（慢的 `readRecords`）、T-L18、T-S3；掃到新位址立刻嘗試；名額等待不計入 60 s；掃描被結束會重掃；60 s 到時進行中的連線被關；失敗嘗試會關連線；交接瞬間的訊框不丟；persist 等待中再來的訊框依序處理；交接成功時 session 沒被 dispose；不認得的登入結束 → 不種「是 Y」。
+2. **Rust 結構化欄位（§2.9 R1–R3）+ `MemberView.deviceId` + 形狀釘子（golden JSON）**；重新產生 bridge。
+   - 測試與改壞照 §2.9；`deviceId` 一個 Rust 測試；golden JSON 不存在或內容不同 → FAIL。
+3. `loginOutcome` 抽出（`SessionProber` 改呼叫，現有測試照過）+ `NodeLink.loginFor` + `HandoffProber` + `FrameInbox` + `acquire` 等上一個 `released`。
+   - 測試：T-L17（慢的 `readRecords`）、T-L18、T-S3；掃到新位址立刻嘗試；名額等待不計入 60 s；掃描被結束會重掃；60 s 到時進行中的連線被關；失敗嘗試會關連線；交接瞬間的訊框不丟；persist 等待中再來的訊框依序處理；交接成功時 session 沒被 dispose；不認得的登入結束 → 不種「是 Y」；`dispose` 收掉 `_lf*`。
    - 改壞：不掃描或用 `nodeLinkToken`；不叫醒；拿掉 N9 retry；身分不符不結束；失敗不關連線；60 s 不收尾；`acquire` 不等 `released`；交接丟暫存訊框；訊框不排隊；登入成功對成 `noResponse`。
-3. `OwnerConsole`（複製）+ 重讀判定的 `ConsoleResult` + `RecordWriter` 寫入 + 原始碼鎖。
-   - 測試：重送只一次；`notSent`；逾時進技術資訊；國家問題期間不計時（時鐘推 400 s 再答）；`ended` 放掉 session；`Refused` 且 lease 有效 → 不是 `leaseLost`；persist 時 lease 收回 → `leaseLost` 且有呼叫 `persistFailed`；「國家未驗證」的成功加入（沒有 `pollLink`）→ 重讀得 `applied`；Rust 的 `[JOIN_STATE]` 確定失敗 → 重讀得 `absent`；金鑰錯誤 → `keyFail`；`makeNetwork` 的 `rel` 取自 `PersistNet`。
-   - 判定測試：§2.2.1 的形狀釘子（Rust 測試）+ Dart 判定表每一列各一例，欄位組合取自那個 Rust 測試；建立 / 檢查只看 `applied`（confirm 升級後的建立者沒有 device id 也判成完成）；加入成功 = `!joining && !approved`。
-   - 9b00ca6 的四條路徑（國家、被移除過、連線檢查、檢查網路）改成表格驅動，同一組情境也對 `OwnerConsole` 跑；兩邊不同的地方（§2.2 差別 1–8）在表裡標成例外（v4 H m9：防止複製的控制台漂移）。
-   - 改壞各一（含：用 `approved` 判定加入成功、建立用成員項判定） + 原始碼鎖（新檔留一個直接呼叫 → FAIL）。
-4. `NetIndex` + Rust `MemberView.deviceId` + 首頁第 6 列、待辦改用它。
-   - 測試：T-L19；T-N2（0 檔 / 已套用 / 未套用 / 只有 mnet / 只有 mpend / 打不開 / 列不出 / 計算中）；待辦精確對應；`PathNotFoundException` = 空。
-   - 改壞：用解密結果決定有沒有；不濾 `.` 檔；計算中顯示「建立網路」；待辦只用後四碼；多筆 pending 時待辦不先挑 `netId` 對得上的那一筆。
-5. `NetworkRun` + 4.1–4.5。
-   - 測試：T-M1(a)–(h)、T-M2(a)–(c)、建立閘門表每一列（含「net 都是 pending → 可建立」「其中有已套用 → 不可建立」）、4.1 跟著讀取更新（剛認領完的節點讀到後可當建立者）、`precondition(keys)` 也停、連線檢查沒連上 → 「已加入，連線狀態未知」、T-C2 / T-C3。
-   - 改壞：建立閘門每一列各一（改用 `NetIndex` 不重新列檔、列檔例外當成空的、只看 net、目標打不開仍開始、表單與閘門不一致仍開始）；建立者不是 `applied` 仍繼續；前提類問繼續；不先看 `core.blocked`；換台不等關連線（驗事件順序：上一台 `close` 完成 → 下一台 `connect` 成功）；對話框返回當繼續；`netId` = 目標的節點不能勾；沒讀到的節點當建立者；pending 的閘門列改成「有任何 net 就不建立」（死路回來）；pending 的閘門列改成「有已套用的也可建立」（分裂）；4.1 不跟著讀取更新（含：4.1 用 `Page.other`，以真的 `NodeLinkCore` 測）；`precondition(keys)` 問繼續；加入模式被 mnet / mpend / 別的打不開的 net 擋住；`unfinished` 非空的節點當建立者；有一台讀到的 `netId` 等於某筆 pending 時仍給建立；加入判定不看 generation（NotSent 還原被當成完成）。
-6. §2.8 檢查網路 + 待辦「建立沒有確認完」。
-   - 測試 T-R1：已套用 → 回首頁；未套用 → Rust 句子 + 次要「建立新的網路」（dev 與 field 相同）；對錯台 → 不寫；名稱對應不分大小寫；多筆 pending 只列最新一筆的待辦；有已套用的 net 時不列待辦。
-   - 改壞：對象用 `last4`（pending 是空的）→ 找不到；名稱比對分大小寫；待辦列出每一筆 pending；有已套用的 net 仍列待辦；`netId` 或 `unfinished` 非空時仍給「建立新的網路」；按「建立新的網路」前不放佔用（4.1 拿不到）。
-7. `ClaimPage` 換樣式 + `openRawPageFor<T>` + `ClaimDone` + 3.2 `setNick` + F41 橫幅 + 開發用輸入只在 devTrust 顯示。
+4. `OwnerConsole`（複製）+ `ConsoleResult` + `RecordWriter` 寫入 + 原始碼鎖。
+   - 測試：重送只一次；`notSent`；逾時進技術資訊；國家問題期間不計時（時鐘推 400 s 再答）；`ended` 放掉 session；`Refused` 且 lease 有效 → 不是 `leaseLost`；persist 時 lease 收回 → `leaseLost` 且有呼叫 `persistFailed`；`joinEnd` 每一種 → 對應的結果（含「國家未驗證」的成功、NotSent 還原 → `notSent` 不是完成）；`netState` / `isCreator` 傳到結果；金鑰錯誤 → `keyFail`；`makeNetwork` 的 `rel` 取自 `PersistNet`；建立回來重讀 `applied`。
+   - 9b00ca6 的四條路徑改成表格驅動，同一組情境也對 `OwnerConsole` 跑；兩邊不同的地方（§2.2 差別 1–8）在表裡標成例外。
+   - 改壞各一（含：加入改用重讀紀錄判定、忽略 `joinEnd`） + 原始碼鎖（新檔留一個直接呼叫 → FAIL）。
+5. `NetIndex` + 首頁第 6 列、待辦、節點列改用它與 `netPresence`。
+   - 測試：T-L19；T-N2（0 檔 / 已套用 / 未套用 / 只有 mnet / 只有 mpend / 打不開 / 列不出 / 計算中 / pending 都已清除）；待辦精確對應；`PathNotFoundException` = 空；節點 `inNet` 但不是手機的網路 → 首頁第 12 列警告、不是「一切正常」；`inProgress` 的句子。
+   - 改壞：用解密結果決定有沒有；不濾 `.` 檔；計算中顯示「建立網路」；待辦只用後四碼；多筆 pending 時待辦不先挑 `netId` 對得上的那一筆；在別的網路的節點落到「一切正常」。
+6. `NetworkRun` + 4.1–4.5。
+   - 測試：T-M1(a)–(h)、T-M2(a)–(c)、建立閘門表每一列（加入模式只看目標；建立模式含「pending 都已清除 → 可建立」「還有沒清除的 → 不建立」）、4.1 跟著讀取更新（真的 `NodeLinkCore`；剛認領完的節點讀到後可當建立者）、離開 4.1 回到進來前的頁面、`precondition(keys)` 也停、連線檢查沒連上 → 「已加入，連線狀態未知」、T-C2 / T-C3。
+   - 改壞：建立閘門每一列各一（改用 `NetIndex` 不重新列檔、列檔例外當成空的、加入模式被 mnet / mpend 擋、目標打不開仍開始、表單與閘門不一致仍開始、還沒清除的 pending 仍建立）；建立者不是 `applied` 仍繼續；前提類問繼續；不先看 `core.blocked`；換台不等關連線（驗事件順序）；對話框返回當繼續；`netPresence` 是 `unknown` / `inProgress` 的節點當建立者；`inNet` 的節點在建立模式可勾；4.1 用 `Page.other`；離開 4.1 一律回首頁。
+7. §2.8 檢查網路 + 清除紀錄 + 待辦「建立沒有確認完」。
+   - 測試 T-R1：`applied` → 回首頁；`isCreator && notApplied` → 清除、出現「建立新的網路」；`inProgress` / `otherNetwork` / `unknown` / 不是建立者 → 只有「再檢查一次」；對錯台 → 不寫、不清除；名稱對應不分大小寫；待辦只列一筆還沒清除的；都清除後不列待辦；按「建立新的網路」前放佔用。
+   - 改壞：`isCreator` 不看就清除；`unknown` 當 `notApplied`；清除紀錄跨重開 app 保留；待辦列出每一筆 pending；按「建立新的網路」前不放佔用（4.1 拿不到）。
+8. `ClaimPage` 換樣式 + `openRawPageFor<T>` + `ClaimDone` + 3.2 `setNick` + F41 橫幅 + 開發用輸入只在 devTrust 顯示。
    - `claim_*` 測試不改判定；`openRawPage` 的現有測試不改。測試：T-C3、T-V1（暱稱 24 / 25、控制字元、方向字元）、T-F41、`ClaimDone` 三種成功路徑、`setNick` 與 `noteReads` 並行都留下。
    - 改壞：`ClaimDone` 被丟掉；`setNick` 不過濾；開發用輸入在 field 顯示；舊的 `openRawPage` 改成新簽名（`busy != null` 永遠真）。
-8. 首頁、節點頁、3.5 / 3.6 接線；兩位程式審查；真機。
+9. 首頁、節點頁、3.5 / 3.6 接線；兩位程式審查；真機。
 
 ## 8. 真機（要使用者同意；開始前另列副作用）
 
@@ -449,8 +464,7 @@
 - 隊員路徑只有 dev 版、還在舊控制台（PR 5）。
 - field 版現在跑不起來（#255），所以「別人的手機」= 安裝 dev 版。
 - 認領期間沒有步驟清單與經過時間（D1）。
-- 網路建立後沒有套用時，出口是「檢查網路」或「建立新的網路」（舊的 pending 紀錄留在手機上，D4）。舊控制台（dev）仍能繞過新的建立閘門。
-- 舊的建立者如果其實已經套用了舊網路、又讀不到它（所以擋不住建立），它會留在舊網路裡；首頁會顯示它在「另一個網路」，但要等 PR 4 的離開才能把它加進新網路。
+- 網路建立後沒有套用時，出口是「檢查網路」；建立者本人確認「沒有套用」後才能「建立新的網路」（舊的 pending 紀錄留在手機上，D4）。建立者壞掉或遺失時 field 版沒有出口（dev 版用舊控制台）。舊控制台（dev）仍能繞過新的建立閘門。
 
 ## 10. 要使用者決定的
 
@@ -461,9 +475,41 @@
 - `ClaimPage` 改走 `BleGate` / `RecordWriter`、步驟清單與經過時間（D1，PR 6）。
 - S10：認領時的 BLE 位址進技術資訊。
 - 隊員加入、看申請的新頁面（D3，PR 5）。
-- 手機上留下的舊 pending net 紀錄的清理（D4）：之後若要丟掉，需要 Rust 的檢查結果帶結構化 `net_state` 與「登入的是不是建立者」（v3 審查 E-B1、F-B1 的條件），並留副本。
+- 手機上留下的舊 pending net 紀錄的清理（D4）：Rust 的 R2 欄位已經能判斷，之後可以加「丟掉這筆紀錄（留副本）」。
+- **field 版出貨前必須解決**（綁 #255）：建立者壞掉或遺失時，pending 網路沒有出口（D4）。
 
 ## 12. 審查的對應
+
+### v6 審查 K
+
+| 項目 | 處理 |
+|---|---|
+| M1 空欄位不等於「沒在網路」；§2.8 拿不到 netId | §2.9 R1 `netPresence`（`unknown` 和 `none` 分開）；R2 檢查網路的答案自己帶 `netState`、`isCreator` |
+| M2 套用中的舊建立者，新網路仍能用別台建好 | 「建立新的網路」只在每一筆 pending 都由建立者本人確認 notApplied 後才給（§2.3、§2.8）；`inProgress` / `inNet` 的節點在建立模式不能勾 |
+| M3 generation 前進分不出還原 | §2.9 R3 `joinEnd`；加入不再看紀錄判定 |
+| m golden JSON 的 generation | 不再用 generation；golden JSON 只剩 `net_summary` 的欄位 |
+| m 逾時路徑的重讀時機 | 分類不看重讀（§2.2.1） |
+| m 網路名稱都是 Batman | §2.5 用 `netPresence` 與網路編號判斷，不靠名稱 |
+| m 從節點頁進 4.1 | §2.3 回到進來前的頁面 |
+| m「讀到」的新鮮度 | §2.3 定義 |
+| m 被入侵的節點謊報造成死路 | §6 |
+
+### v6 審查 L
+
+| 項目 | 處理 |
+|---|---|
+| M1 建立者規則在 info 沒讀到時也成立 | §2.9 R1；建立者要 `netPresence == none` |
+| M2 §2.8 按鈕沒有資料來源 | §2.9 R2 |
+| M3 generation 擋不住 NotSent 還原 | §2.9 R3 |
+| M4 預設名稱分不出兩個網路 | §2.5 首頁警告（第 12 列），不靠名稱 |
+| m 逾時重讀時機 | 同 K m |
+| m 建立者壞掉或遺失 | §4 D4、§11（綁 #255） |
+| m 4.1 表與閘門在 pending + mnet / mpend、pending + 打不開不一致 | §2.3 4.1 表與建立閘門對齊（有 mnet / mpend → 隊員句子；有打不開 → 重裝警告） |
+| m golden JSON 不存在時要 FAIL | §2.2.1 |
+| m 從節點頁進 4.1 | 同 K m |
+| m 被入侵的節點假報 key 10 | §6 |
+| m 首頁網路名稱顯示的測試 | §7 步驟 5 |
+| m §12 對照表 | 本節 |
 
 ### v5 審查 I
 
