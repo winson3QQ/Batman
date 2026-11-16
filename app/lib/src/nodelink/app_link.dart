@@ -9,8 +9,9 @@ import 'package:flutter/widgets.dart' show WidgetsBinding, WidgetsBindingObserve
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
 import '../../key_abilities.dart' show KeyAbilities;
+import '../flows/net_index.dart';
 import '../rust/api/claim.dart' show storeKeepCopy, storeRemove, storeWriteSealed;
-import '../rust/api/owner.dart' show listNodes, storeReadSealed, storeWriteCas;
+import '../rust/api/owner.dart' show listNodes, netSummary, storeReadSealed, storeWriteCas;
 import 'ble_backend.dart';
 import 'ble_gate.dart';
 import 'core.dart';
@@ -20,7 +21,7 @@ import 'prober.dart';
 import 'record_writer.dart';
 
 class AppLink {
-  AppLink._(this.ble, this.reg, this.gate, this.link, this.prober, this.writer, this.records);
+  AppLink._(this.ble, this.reg, this.gate, this.link, this.prober, this.writer, this.records, this.nets);
 
   /// The only FlutterReactiveBle of the app (§4.2): the older pages get this one too.
   final FlutterReactiveBle ble;
@@ -34,6 +35,10 @@ class AppLink {
 
   /// The record store directory.
   final String records;
+
+  /// #329 PR 3 §2.6: the phone's network records, summarised for the screens (computed after the startup check and
+  /// after every lease release).
+  final NetIndex nets;
 
   static AppLink? _one;
   static AppLink? get instance => _one;
@@ -116,7 +121,21 @@ class AppLink {
     WidgetsBinding.instance.addObserver(_Life(link));
     // §4.3.3-1: Bluetooth off / no permission are the overlay 2.3 / 2.2, at once (review pr1 A-M3 / B-M5)
     wireRadio(radio.statusStream, link);
-    return _one = AppLink._(radio, reg, gate, link, prober, writer, records);
+    final nets = NetIndex(
+      NetSource(
+        list: (kind) => listKind(records, kind),
+        open: (rel) async {
+          final sealed = await storeReadSealed(dir: records, rel: rel);
+          if (sealed == null) return null;
+          return platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad});
+        },
+        summary: (p) => netSummary(recordPlain: p),
+        nodeIds: () => listNodes(dir: records),
+      ),
+      log: (l) => debugPrint('BMAPP $l'),
+    );
+    reg.listeners.add(nets); // §2.6: computed again after every lease release
+    return _one = AppLink._(radio, reg, gate, link, prober, writer, records, nets);
   }
 }
 

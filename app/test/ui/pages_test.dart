@@ -1,11 +1,12 @@
 // #329 §9.1 for the new pages: T-N1 (「從這支手機移除這台節點」), T-H4 (an entry a key cannot serve is grey with its
 // reason), T-U5 (a stored read time in the future says only 「之前讀過」).
-import 'dart:async';
+import 'dart:io';
 
 import 'package:batman_app/key_abilities.dart';
 import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/core.dart';
-import 'package:batman_app/src/rust/api/owner.dart' show StatusView;
+import 'package:batman_app/src/flows/net_index.dart';
+import 'package:batman_app/src/rust/api/owner.dart' show MemberView, NetView, StatusView;
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/ui/home_logic.dart';
 import 'package:batman_app/ui/home_page.dart';
@@ -83,11 +84,22 @@ KeyAbilities keys({bool claim = true}) => KeyAbilities.from({
       'softOwnerEnc': false,
     });
 
-AppLink app() {
+AppLink app({String filesDir = '/x'}) {
   AppLink.forgetForTest();
-  final a = AppLink.create(platform: const MethodChannel('dev.batman/platform'), filesDir: '/x', ble: StatusBle());
+  final a = AppLink.create(platform: const MethodChannel('dev.batman/platform'), filesDir: filesDir, ble: StatusBle());
   a.link.core.setRecords(const [Rec(id, 1)]);
   return a;
+}
+
+/// #329 PR 3 §2.6: a records folder holding these network record files (NetIndex lists the folders itself).
+String recordsDir({List<String> nets = const [], List<String> mnets = const [], List<String> pends = const []}) {
+  final d = Directory.systemTemp.createTempSync('bm-recs');
+  for (final (kind, names) in [('net', nets), ('mnet', mnets), ('mpend', pends)]) {
+    for (final n in names) {
+      File('${d.path}/records/$kind/$n').createSync(recursive: true);
+    }
+  }
+  return d.path;
 }
 
 Widget host(Widget w) => MaterialApp(theme: batThemeData(Brightness.light), home: w);
@@ -159,11 +171,8 @@ void main() {
     (<String>[], <String>[], <String>[], '建立網路', '加入隊長的網路'),
   ]) {
     testWidgets('r2 C-M1: row 6 with nets $nets mnets $mnets pends $pends -> $button', (t) async {
-      rust
-        ..nets = nets
-        ..mnets = mnets
-        ..pends = pends;
-      final a = app();
+      final a = app(filesDir: recordsDir(nets: nets, mnets: mnets, pends: pends));
+      await t.runAsync(a.nets.recompute); // as main does once the startup check passed
       a.link.core.states[id]!
         ..kind = Kind.read
         ..view = 'red'
@@ -432,11 +441,27 @@ void main() {
     AppLink.forgetForTest();
   });
 
+  testWidgets('#329 PR 3 §2.6: a node of this phone that did not finish joining is a todo on the home page', (t) async {
+    final a = app();
+    const n = NetView(netId: 'q', meshId: 'bm-q', netName: '小隊', applied: true, country: 'US', members: []);
+    const m = MemberView(
+        name: 'node-0002', last4: '0002', deviceId: id, joining: true, prevCountry: '', dacHash: '', creator: false, approved: false);
+    a.nets.setForTest(const NetSnapshot(netFiles: 1, nets: [NetEntry('q', n)], todos: [JoinTodo(NetEntry('q', n), m)]));
+    await t.pumpWidget(host(HomePage(app: a, ui: UiState(MemStore()..ids = [id]), devTrust: false, keys: keys())));
+    await t.pump();
+    expect(find.text('節點加入網路沒有做完'), findsOneWidget);
+    expect(find.textContaining('加入「小隊」還沒有完成'), findsOneWidget);
+    a.nets.setForTest(const NetSnapshot());
+    await t.pump();
+    expect(find.text('節點加入網路沒有做完'), findsNothing, reason: 'the banner follows NetIndex');
+    a.link.dispose();
+    await t.pumpWidget(const SizedBox());
+    AppLink.forgetForTest();
+  });
+
   testWidgets('r3 E-m3: before the network records were looked at, row 6 offers the neutral 加入網路, never 建立網路',
       (t) async {
-    final gate = Completer<void>();
-    rust.netsGate = gate.future;
-    final a = app();
+    final a = app(filesDir: recordsDir()); // NetIndex not computed yet: computing
     a.link.core.states[id]!
       ..kind = Kind.read
       ..view = 'red'
@@ -448,9 +473,7 @@ void main() {
     await t.pump();
     expect(find.widgetWithText(FilledButton, Btn.joinNetwork), findsOneWidget);
     expect(find.text(Btn.makeNetwork), findsNothing);
-    gate.complete();
-    rust.netsGate = null;
-    await t.pump();
+    await t.runAsync(a.nets.recompute);
     await t.pump();
     expect(find.text(Btn.makeNetwork), findsOneWidget, reason: 'looked at: no record -> 建立網路');
     a.link.dispose();

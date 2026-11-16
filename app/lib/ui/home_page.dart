@@ -11,8 +11,7 @@ import '../nodes.dart';
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl;
 import '../src/nodelink/raw_use.dart';
-import '../src/rust/api/owner.dart' show StatusView, listPending, listNets;
-import '../src/rust/api/member.dart' show listMnets, listPends;
+import '../src/rust/api/owner.dart' show StatusView, listPending;
 import 'home_logic.dart';
 import 'intro_pages.dart';
 import 'node_page.dart';
@@ -80,7 +79,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   StreamSubscription<void>? _sub;
   Timer? _tick;
   int _pending = 0;
-  NetRecords _records = NetRecords.unknown; // until the records were looked at: the neutral button (review r3 E-m3)
 
   AppLink get a => widget.app;
 
@@ -92,12 +90,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _remember();
       if (mounted) setState(() {});
     });
+    a.nets.addListener(_netsChanged); // #329 PR 3 §2.6: row 6 and the join todos follow the network records
     _tick = Timer.periodic(const Duration(seconds: 15), (_) => mounted ? setState(() {}) : null);
     _todos();
   }
 
+  void _netsChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    a.nets.removeListener(_netsChanged);
     WidgetsBinding.instance.removeObserver(this);
     _sub?.cancel();
     _tick?.cancel();
@@ -126,21 +130,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   /// §5.1 todos this version knows: an unfinished claim (devTrust only, F48) and a lease taken back (§4.4).
+  /// Row 6's records and the join todos come from NetIndex (#329 PR 3 §2.6).
   Future<void> _todos() async {
-    // §5.1 row 6: which network records the phone holds (names only, nothing opened)
-    var recs = NetRecords.none;
-    try {
-      if ((await listNets(dir: a.records)).isNotEmpty) {
-        recs = NetRecords.net;
-      } else if ((await listMnets(dir: a.records)).isNotEmpty) {
-        recs = NetRecords.mnet;
-      } else if ((await listPends(dir: a.records)).isNotEmpty) {
-        recs = NetRecords.mpend;
-      }
-    } catch (_) {
-      recs = NetRecords.unknown; // could not tell: the neutral 加入網路 into the console, never 建立網路 (review r2 D-m9)
-    }
-    _records = recs;
     var n = 0;
     if (widget.devTrust) {
       try {
@@ -213,10 +204,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final t = BatTheme.of(context);
     final ids = a.link.core.states.keys.toList()..sort();
     final infos = [for (final id in ids) nodeInfo(a, id, widget.ui)];
-    final todos = _pending + a.reg.unsavedTodos.length;
+    final nets = a.nets.now;
+    final todos = _pending + a.reg.unsavedTodos.length + nets.todos.length;
     final firstRounds = a.link.core.roundsRun < 3;
     final h = decideHome(
-        HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: _records));
+        HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: nets.records));
     // the status area's time is only ever a fresh read's: an older one is not 「讀取於」 (review r3 E-m8 / C-m8)
     final freshest = infos.where((n) => n.fresh).map((n) => n.readWall).whereType<DateTime>().fold<DateTime?>(null, (x, y) => x == null || y.isAfter(x) ? y : x);
     // a row about one node shows that node's read time, and only a fresh one (review r2 C-m8)
@@ -266,6 +258,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               action: Btn.gotIt, onAction: () => setState(() => a.reg.unsavedTodos.remove(m))),
         if (_pending > 0)
           BatBanner(look: Look.warn, title: '上次新增節點沒有做完', action: Btn.finishIt, onAction: _addNode),
+        // §5.1: a node of this phone that started joining a network and did not finish (NetIndex, `forgettable`)
+        for (final j in nets.todos)
+          BatBanner(
+              look: Look.warn,
+              title: '節點加入網路沒有做完',
+              text: '${nodeInfo(a, j.deviceId, widget.ui).name} 加入「${j.net.view.netName.isEmpty ? j.net.view.meshId : j.net.view.netName}」還沒有完成。',
+              action: Btn.finishIt,
+              onAction: () => _back(openUnderLease(context, a, '我的節點', (u) => NodesPage(ble: a.ble, use: u)))),
         if (infos.isNotEmpty) ...[
           const BatLabel('我的節點'),
           BatCard(children: [

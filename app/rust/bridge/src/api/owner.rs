@@ -79,6 +79,9 @@ pub struct MemberView {
     pub name: String,
     /// the device id's last 4 ("" when the record does not know it: a node from before join2)
     pub last4: String,
+    /// #329 PR 3 §2.6: the whole device id ("" when the record does not know it: a node from before join2, or the
+    /// creator while pending), to match a joining member to this phone's node record
+    pub device_id: String,
     pub joining: bool,
     /// the node's country before this phone changed it ("" = not changed)
     pub prev_country: String,
@@ -114,6 +117,7 @@ pub fn net_summary(record_plain: Vec<u8>) -> Result<NetView, String> {
         .into_iter()
         .map(|m| MemberView {
             last4: m.device_id.as_deref().map(|d| d[d.len().saturating_sub(4)..].to_string()).unwrap_or_default(),
+            device_id: m.device_id.clone().unwrap_or_default(),
             name: m.name,
             joining: m.state == MemberState::Joining,
             prev_country: m.prev_country.unwrap_or_default(),
@@ -1848,6 +1852,8 @@ mod tests {
         let v = net_summary(plain.clone()).unwrap();
         assert_eq!((v.mesh_id.as_str(), v.applied, v.members.len()), ("bm-abababababab", true, 1));
         assert_eq!((v.members[0].last4.as_str(), v.members[0].joining, v.members[0].prev_country.as_str()), ("2233", true, "JP"));
+        // #329 PR 3 §2.6: the whole device id, to match a joining member to the phone's node record
+        assert_eq!(v.members[0].device_id, "aabbccddeeff00112233");
         let st = net_forget_joining(plain.clone(), 5, nodecert::hex_lower(&[0xb2; 32])).unwrap();
         assert_eq!((st.kind, st.expected_gen, st.generation), (OwnerKind::PersistNet, 5, 6));
         assert!(st.detail.starts_with("[JOIN_STATE] 已忘記加入中的節點 node-2233；這台的國家可能仍是"), "{}", st.detail);
@@ -2186,6 +2192,7 @@ mod tests {
         let mut r = NetRec::made(base()); // pending: the creator ([0xa1; 32]) is derived as joining
         let v = net_summary(netrec::encode(&r)).unwrap();
         assert_eq!((v.members.len(), v.members[0].joining, v.members[0].creator), (1, true, true));
+        assert_eq!(v.members[0].device_id, "", "the pending creator has no device id (joined members only, join2flow.rs:362)");
         assert_eq!(net_forget_joining(netrec::encode(&r), 1, nodecert::hex_lower(&[0xa1; 32])).err().as_deref(), Some("建立網路的節點不能忘記"));
         r.state = netrec::APPLIED.into();
         assert!(!net_summary(netrec::encode(&r)).unwrap().members.iter().any(|m| m.joining));

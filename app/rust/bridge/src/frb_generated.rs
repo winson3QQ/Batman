@@ -27,12 +27,12 @@
 
 // Section: imports
 
-use crate::api::claim::*;
 use crate::api::member::*;
-use crate::api::owner::*;
-use crate::api::rekey::*;
 use crate::api::replay::*;
-use crate::api::swupdate::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::swupdate::*;
+use crate::api::rekey::*;
+use crate::api::owner::*;
+use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -1924,12 +1924,13 @@ return crate::api::member::JoinReqView{sas: var_sas, name: var_name, device_suff
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut var_name = <String>::sse_decode(deserializer);
 let mut var_last4 = <String>::sse_decode(deserializer);
+let mut var_deviceId = <String>::sse_decode(deserializer);
 let mut var_joining = <bool>::sse_decode(deserializer);
 let mut var_prevCountry = <String>::sse_decode(deserializer);
 let mut var_dacHash = <String>::sse_decode(deserializer);
 let mut var_creator = <bool>::sse_decode(deserializer);
 let mut var_approved = <bool>::sse_decode(deserializer);
-return crate::api::owner::MemberView{name: var_name, last4: var_last4, joining: var_joining, prev_country: var_prevCountry, dac_hash: var_dacHash, creator: var_creator, approved: var_approved};}
+return crate::api::owner::MemberView{name: var_name, last4: var_last4, device_id: var_deviceId, joining: var_joining, prev_country: var_prevCountry, dac_hash: var_dacHash, creator: var_creator, approved: var_approved};}
                 }
                 
                 impl SseDecode for crate::api::member::MnetView {
@@ -2763,6 +2764,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::member::JoinReqView> for crat
                     [
                     self.name.into_into_dart().into_dart(),
 self.last4.into_into_dart().into_dart(),
+self.device_id.into_into_dart().into_dart(),
 self.joining.into_into_dart().into_dart(),
 self.prev_country.into_into_dart().into_dart(),
 self.dac_hash.into_into_dart().into_dart(),
@@ -3555,6 +3557,7 @@ crate::api::member::ImportState::Replace => { 3 }
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<String>::sse_encode(self.name, serializer);
 <String>::sse_encode(self.last4, serializer);
+<String>::sse_encode(self.device_id, serializer);
 <bool>::sse_encode(self.joining, serializer);
 <String>::sse_encode(self.prev_country, serializer);
 <String>::sse_encode(self.dac_hash, serializer);
@@ -3973,12 +3976,12 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 
 // Section: imports
 
-use crate::api::claim::*;
 use crate::api::member::*;
-use crate::api::owner::*;
-use crate::api::rekey::*;
 use crate::api::replay::*;
-use crate::api::swupdate::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::swupdate::*;
+use crate::api::rekey::*;
+use crate::api::owner::*;
+use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
@@ -4073,12 +4076,12 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::claim::*;
 use crate::api::member::*;
-use crate::api::owner::*;
-use crate::api::rekey::*;
 use crate::api::replay::*;
-use crate::api::swupdate::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::swupdate::*;
+use crate::api::rekey::*;
+use crate::api::owner::*;
+use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;

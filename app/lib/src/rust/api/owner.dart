@@ -245,6 +245,10 @@ class MemberView {
 
   /// the device id's last 4 ("" when the record does not know it: a node from before join2)
   final String last4;
+
+  /// #329 PR 3 §2.6: the whole device id ("" when the record does not know it: a node from before join2, or the
+  /// creator while pending), to match a joining member to this phone's node record
+  final String deviceId;
   final bool joining;
 
   /// the node's country before this phone changed it ("" = not changed)
@@ -262,6 +266,7 @@ class MemberView {
   const MemberView({
     required this.name,
     required this.last4,
+    required this.deviceId,
     required this.joining,
     required this.prevCountry,
     required this.dacHash,
@@ -273,6 +278,7 @@ class MemberView {
   int get hashCode =>
       name.hashCode ^
       last4.hashCode ^
+      deviceId.hashCode ^
       joining.hashCode ^
       prevCountry.hashCode ^
       dacHash.hashCode ^
@@ -286,6 +292,7 @@ class MemberView {
           runtimeType == other.runtimeType &&
           name == other.name &&
           last4 == other.last4 &&
+          deviceId == other.deviceId &&
           joining == other.joining &&
           prevCountry == other.prevCountry &&
           dacHash == other.dacHash &&
