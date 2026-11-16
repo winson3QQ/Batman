@@ -44,9 +44,9 @@ final service = Uuid.parse('540aa38c-0086-4d58-a9c0-c7c9d1e1bd42');
 final chars = [for (final c in const ['9', 'a', 'b']) Uuid.parse('540aa38c-0086-4d5$c-a9c0-c7c9d1e1bd42')]; // RX, TX, ctrl
 
 // frames of the fake protocol: the node answers every write [n] with [n + 1]
-const fLogin = 1, fInfo = 10, fSend = 20, fStatus = 30;
+const fLogin = 1, fInfo = 10, fSend = 20, fStatus = 30, fLink = 40, fConfirm = 50;
 
-OwnerStep step(OwnerKind kind, {int? frame, String detail = '', String rel = '', Uint8List? info}) => OwnerStep(
+OwnerStep step(OwnerKind kind, {int? frame, String detail = '', String rel = '', Uint8List? info, bool pollLink = false}) => OwnerStep(
     kind: kind,
     frames: [if (frame != null) Uint8List.fromList([frame])],
     signInput: Uint8List(1),
@@ -56,7 +56,7 @@ OwnerStep step(OwnerKind kind, {int? frame, String detail = '', String rel = '',
     generation: BigInt.two,
     aad: Uint8List(1),
     expectedGen: BigInt.one,
-    pollLink: false,
+    pollLink: pollLink,
     hex: '',
     sas: '',
     renewed: false,
@@ -78,8 +78,45 @@ class FakeSession implements OwnerSession {
   OwnerStep? onFrame({required List<int> frame}) => switch (frame[0]) {
         const (fLogin + 1) => step(OwnerKind.loggedIn, detail: 'in'),
         const (fInfo + 1) => step(OwnerKind.answer, detail: 'info', info: Uint8List.fromList([7])),
-        _ => step(OwnerKind.answer, detail: 'sent'),
+        const (fLink + 1) => step(OwnerKind.answer, detail: '[CONNECTED] 節點已連上隊伍網路'),
+        const (fConfirm + 1) => step(OwnerKind.answer, detail: '[NET_OK] 網路已套用'),
+        _ => step(OwnerKind.answer, detail: 'sent', pollLink: rust.pollAfterJoin),
       };
+
+  // #329 PR 3 step 1: the console paths that had no test (join with ConfirmCountry / ConfirmRemoved, link check,
+  // confirm network), pinned before they move into OwnerConsole
+  @override
+  OwnerStep requestJoinNetwork(
+      {required List<int> recordPlain,
+      required BigInt recordGen,
+      required List<int> adminPub,
+      required List<int> ownerEncPub,
+      required bool removedConfirmed}) {
+    rust.sends.add('join removed=$removedConfirmed');
+    if (rust.joinMode == 'removed' && !removedConfirmed) {
+      return step(OwnerKind.confirmRemoved, detail: '[JOIN_STATE] 這台節點之前被排除過');
+    }
+    if (rust.joinMode == 'country') return step(OwnerKind.confirmCountry, detail: '[COUNTRY] 節點的國家是 TW，要改成 US 嗎');
+    return step(OwnerKind.write, frame: fSend);
+  }
+
+  @override
+  OwnerStep? countryConfirmed({required bool yes}) {
+    rust.sends.add('country $yes');
+    return yes ? step(OwnerKind.write, frame: fSend) : step(OwnerKind.answer, detail: '[JOIN_STATE] 已取消');
+  }
+
+  @override
+  OwnerStep requestLinkCheck({required BigInt secsSinceJoin}) {
+    rust.sends.add('link');
+    return step(OwnerKind.write, frame: fLink);
+  }
+
+  @override
+  OwnerStep requestConfirmNetwork({required List<int> recordPlain, required BigInt recordGen}) {
+    rust.sends.add('confirm');
+    return step(OwnerKind.write, frame: fConfirm);
+  }
 
   @override
   OwnerStep requestInfo() => step(OwnerKind.write, frame: fInfo);
@@ -143,6 +180,8 @@ class FakeRust implements RustLibApi {
   final calls = <String>[]; // record writes and the removal's start
   final sends = <String>[]; // request_send_update calls
   final records = <String>{}; // the records on "disk"
+  String joinMode = 'plain'; // #329 PR 3 step 1: plain / country / removed
+  bool pollAfterJoin = false; // the join answer asks for the link check
 
   @override
   Future<List<String>> crateApiOwnerListNodes({required String dir}) async => [deviceId];
@@ -370,7 +409,9 @@ void main() {
       ..calls.clear()
       ..sends.clear()
       ..records.clear()
-      ..records.addAll(records);
+      ..records.addAll(records)
+      ..joinMode = 'plain'
+      ..pollAfterJoin = false;
     node.written.clear();
     final m = t.binding.defaultBinaryMessenger;
     m.setMockMethodCallHandler(const MethodChannel('dev.batman/platform'), (c) async {
@@ -448,7 +489,69 @@ void main() {
     expect(find.textContaining('正在把這台節點加入網路 '), findsOneWidget);
     expect(find.textContaining('加入隊伍網路'), findsNothing);
     expect(find.textContaining('這支手機還沒有隊伍網路'), findsNothing);
-    expect(rust.sends, isEmpty);
+    expect(rust.sends, ['join removed=false'], reason: 'the owner join itself, never the member one');
+    await longWait(t);
+  });
+
+  // ---- #329 PR 3 step 1: the console paths without a test, pinned before they move into OwnerConsole ----------------
+  // Each fails on a console that skips the step: no country question / its answer not sent; no 「確定，加回」 restart;
+  // no link check after a join that asks for it; no confirm request.
+
+  testWidgets('PR3-1 ConfirmCountry: the node asks, the user says 改 -> countryConfirmed(true), then the join goes on',
+      (t) async {
+    await open(t, records: {'node/$deviceId', 'net/$netId'});
+    rust.joinMode = 'country';
+    await press(t, find.byType(ListTile));
+    await press(t, find.widgetWithText(FilledButton, '加入網路'));
+    expect(find.text('要改這台節點的國家嗎？'), findsOneWidget);
+    await press(t, find.text('改'));
+    expect(rust.sends, ['join removed=false', 'country true']);
+    expect(node.written, contains(fSend), reason: 'the join was sent after the answer');
+    await longWait(t);
+  });
+
+  testWidgets('PR3-1 ConfirmCountry: 不要 -> countryConfirmed(false), nothing sent', (t) async {
+    await open(t, records: {'node/$deviceId', 'net/$netId'});
+    rust.joinMode = 'country';
+    await press(t, find.byType(ListTile));
+    await press(t, find.widgetWithText(FilledButton, '加入網路'));
+    await press(t, find.text('不要'));
+    expect(rust.sends, ['join removed=false', 'country false']);
+    expect(node.written, isNot(contains(fSend)));
+    await longWait(t);
+  });
+
+  testWidgets('PR3-1 ConfirmRemoved: asked, 確定，加回 -> the join starts again with removedConfirmed', (t) async {
+    await open(t, records: {'node/$deviceId', 'net/$netId'});
+    rust.joinMode = 'removed';
+    await press(t, find.byType(ListTile));
+    await press(t, find.widgetWithText(FilledButton, '加入網路'));
+    expect(find.text('這台之前被排除過'), findsOneWidget);
+    await press(t, find.text('確定，加回'));
+    expect(rust.sends, ['join removed=false', 'join removed=true']);
+    await longWait(t);
+  });
+
+  testWidgets('PR3-1 after a join that asks for it, the link is checked until [CONNECTED]', (t) async {
+    await open(t, records: {'node/$deviceId', 'net/$netId'});
+    rust.pollAfterJoin = true;
+    await press(t, find.byType(ListTile));
+    await press(t, find.widgetWithText(FilledButton, '加入網路'));
+    for (var i = 0; i < 4; i++) {
+      await t.pump(const Duration(seconds: 10));
+      await settle(t, 5);
+    }
+    expect(rust.sends.where((s) => s == 'link'), isNotEmpty, reason: rust.sends.join(', '));
+    expect(find.textContaining('節點已連上隊伍網路'), findsOneWidget);
+    await longWait(t);
+  });
+
+  testWidgets('PR3-1 檢查網路 sends a confirm request for the phone''s network', (t) async {
+    await open(t, records: {'node/$deviceId', 'net/$netId'});
+    await press(t, find.byType(ListTile));
+    await press(t, find.widgetWithText(OutlinedButton, '檢查網路'));
+    expect(rust.sends, ['confirm']);
+    expect(find.textContaining('網路已套用'), findsOneWidget);
     await longWait(t);
   });
 
