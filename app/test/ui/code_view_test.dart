@@ -146,6 +146,20 @@ void main() {
   });
 
   group('R4: clipboard', () {
+    testWidgets('T10: an update bundle (qr: false) never asks for a QR; copy and the warning still there', (t) async {
+      tall(t);
+      secure(t, true);
+      final f = FakeCode()..qr = bitsOf(1);
+      await t.pumpWidget(host(CodeView(hex: 'ab', platform: f.p, qr: false)));
+      await t.pumpAndSettle();
+      expect(f.asked, isEmpty);
+      expect(find.byKey(const Key('code-qr')), findsNothing);
+      expect(find.byKey(const Key('code-clipwarn')), findsOneWidget);
+      await t.tap(find.text(Btn.copyText));
+      await t.pumpAndSettle();
+      expect(f.clip, 'ab');
+    });
+
     testWidgets('copy -> 清除剪貼簿 appears and clears; no reminder after clearing', (t) async {
       tall(t);
       secure(t, true);

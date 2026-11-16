@@ -304,7 +304,7 @@ class _RekeyPageState extends State<RekeyPage> {
               subtitle: p.note.isEmpty ? const Text('已交出') : Text('${p.note}\n已交出'),
             ),
             if (_bundles[p.owner] case final hex?)
-              Padding(padding: const EdgeInsets.all(12), child: CodeView(hex: hex))
+              Padding(padding: const EdgeInsets.all(12), child: CodeView(hex: hex, qr: false)) // T10: text only
             else
               BatRow(icon: Icons.content_copy, title: '複製更新包', enabled: !_running, onTap: () => _bundle(p.owner)),
           ]),

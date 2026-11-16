@@ -107,8 +107,11 @@ class QrPainter extends CustomPainter {
 
 /// R1–R4: one code to hand over. [hex] is the lower-case hex the old console copied; the QR shows it upper-cased.
 class CodeView extends StatefulWidget {
-  const CodeView({super.key, required this.hex, this.platform, this.tooLong = '這個碼太長，無法用 QR 顯示，請用「複製文字」傳給對方'});
+  const CodeView({super.key, required this.hex, this.platform, this.qr = true, this.tooLong = '這個碼太長，無法用 QR 顯示，請用「複製文字」傳給對方'});
   final String hex;
+
+  /// false: text only, no QR (an update bundle, UI/UX T10)
+  final bool qr;
   final CodePlatform? platform;
   final String tooLong;
 
@@ -126,6 +129,7 @@ class _CodeViewState extends State<CodeView> {
   @override
   void initState() {
     super.initState();
+    if (!widget.qr) return;
     _p.qrMatrix(widget.hex.toUpperCase()).then((q) {
       if (!mounted) return;
       setState(() {
@@ -182,6 +186,9 @@ class _CodeViewState extends State<CodeView> {
     final t = BatTheme.of(context);
     final note = TextStyle(fontSize: Fs.note, height: 1.55, color: t.sub);
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      if (!widget.qr)
+        Text('剪貼簿裡的東西，手機上別的 app 也讀得到；傳完請按「清除剪貼簿」', key: const Key('code-clipwarn'), style: note)
+      else
       SecureScreen(
         fallback: Column(children: [
           Text('這支手機無法防止截圖，所以不顯示 QR', key: const Key('code-noqr'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
