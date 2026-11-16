@@ -9,9 +9,7 @@ import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/ui/settings_pages.dart';
 import 'package:batman_app/ui/ui_state.dart';
 import 'package:batman_app/ui/widgets.dart' show BatRow;
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../flows/op_session_test.dart' show Fx;
