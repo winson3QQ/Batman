@@ -4630,6 +4630,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SettingsView dco_decode_box_autoadd_settings_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_settings_view(raw);
+  }
+
+  @protected
   BuildInfo dco_decode_build_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -4907,6 +4913,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SettingsView? dco_decode_opt_box_autoadd_settings_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_settings_view(raw);
+  }
+
+  @protected
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_list_prim_u_8_strict(raw);
@@ -4934,8 +4946,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   OwnerStep dco_decode_owner_step(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 22)
-      throw Exception('unexpected arr length: expect 22 but see ${arr.length}');
+    if (arr.length != 23)
+      throw Exception('unexpected arr length: expect 23 but see ${arr.length}');
     return OwnerStep(
       kind: dco_decode_owner_kind(arr[0]),
       frames: dco_decode_list_list_prim_u_8_strict(arr[1]),
@@ -4959,6 +4971,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       note: dco_decode_String(arr[19]),
       loginEnd: dco_decode_u_8(arr[20]),
       loginCode: dco_decode_u_64(arr[21]),
+      settings: dco_decode_opt_box_autoadd_settings_view(arr[22]),
     );
   }
 
@@ -5169,6 +5182,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       generation: dco_decode_u_64(arr[0]),
       sealed: dco_decode_list_prim_u_8_strict(arr[1]),
       aad: dco_decode_list_prim_u_8_strict(arr[2]),
+    );
+  }
+
+  @protected
+  SettingsView dco_decode_settings_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return SettingsView(
+      read: dco_decode_bool(arr[0]),
+      name: dco_decode_String(arr[1]),
+      country: dco_decode_String(arr[2]),
+      channel: dco_decode_i_64(arr[3]),
+      bwMhz: dco_decode_i_64(arr[4]),
+      apSsid: dco_decode_String(arr[5]),
     );
   }
 
@@ -5665,6 +5694,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SettingsView sse_decode_box_autoadd_settings_view(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_settings_view(deserializer));
+  }
+
+  @protected
   BuildInfo sse_decode_build_info(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_devTrust = sse_decode_bool(deserializer);
@@ -6052,6 +6089,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  SettingsView? sse_decode_opt_box_autoadd_settings_view(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_settings_view(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -6102,6 +6152,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_note = sse_decode_String(deserializer);
     var var_loginEnd = sse_decode_u_8(deserializer);
     var var_loginCode = sse_decode_u_64(deserializer);
+    var var_settings = sse_decode_opt_box_autoadd_settings_view(deserializer);
     return OwnerStep(
       kind: var_kind,
       frames: var_frames,
@@ -6125,6 +6176,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       note: var_note,
       loginEnd: var_loginEnd,
       loginCode: var_loginCode,
+      settings: var_settings,
     );
   }
 
@@ -6322,6 +6374,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       generation: var_generation,
       sealed: var_sealed,
       aad: var_aad,
+    );
+  }
+
+  @protected
+  SettingsView sse_decode_settings_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_read = sse_decode_bool(deserializer);
+    var var_name = sse_decode_String(deserializer);
+    var var_country = sse_decode_String(deserializer);
+    var var_channel = sse_decode_i_64(deserializer);
+    var var_bwMhz = sse_decode_i_64(deserializer);
+    var var_apSsid = sse_decode_String(deserializer);
+    return SettingsView(
+      read: var_read,
+      name: var_name,
+      country: var_country,
+      channel: var_channel,
+      bwMhz: var_bwMhz,
+      apSsid: var_apSsid,
     );
   }
 
@@ -6872,6 +6943,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_settings_view(
+    SettingsView self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_settings_view(self, serializer);
+  }
+
+  @protected
   void sse_encode_build_info(BuildInfo self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bool(self.devTrust, serializer);
@@ -7199,6 +7279,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_settings_view(
+    SettingsView? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_settings_view(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_list_prim_u_8_strict(
     Uint8List? self,
     SseSerializer serializer,
@@ -7249,6 +7342,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.note, serializer);
     sse_encode_u_8(self.loginEnd, serializer);
     sse_encode_u_64(self.loginCode, serializer);
+    sse_encode_opt_box_autoadd_settings_view(self.settings, serializer);
   }
 
   @protected
@@ -7407,6 +7501,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_64(self.generation, serializer);
     sse_encode_list_prim_u_8_strict(self.sealed, serializer);
     sse_encode_list_prim_u_8_strict(self.aad, serializer);
+  }
+
+  @protected
+  void sse_encode_settings_view(SettingsView self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bool(self.read, serializer);
+    sse_encode_String(self.name, serializer);
+    sse_encode_String(self.country, serializer);
+    sse_encode_i_64(self.channel, serializer);
+    sse_encode_i_64(self.bwMhz, serializer);
+    sse_encode_String(self.apSsid, serializer);
   }
 
   @protected

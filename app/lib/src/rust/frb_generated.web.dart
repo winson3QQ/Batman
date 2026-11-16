@@ -206,6 +206,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SealedRecord dco_decode_box_autoadd_sealed_record(dynamic raw);
 
   @protected
+  SettingsView dco_decode_box_autoadd_settings_view(dynamic raw);
+
+  @protected
   BuildInfo dco_decode_build_info(dynamic raw);
 
   @protected
@@ -302,6 +305,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   SealedRecord? dco_decode_opt_box_autoadd_sealed_record(dynamic raw);
 
   @protected
+  SettingsView? dco_decode_opt_box_autoadd_settings_view(dynamic raw);
+
+  @protected
   Uint8List? dco_decode_opt_list_prim_u_8_strict(dynamic raw);
 
   @protected
@@ -372,6 +378,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SealedRecord dco_decode_sealed_record(dynamic raw);
+
+  @protected
+  SettingsView dco_decode_settings_view(dynamic raw);
 
   @protected
   StatusInfo dco_decode_status_info(dynamic raw);
@@ -583,6 +592,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SettingsView sse_decode_box_autoadd_settings_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BuildInfo sse_decode_build_info(SseDeserializer deserializer);
 
   @protected
@@ -691,6 +705,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  SettingsView? sse_decode_opt_box_autoadd_settings_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Uint8List? sse_decode_opt_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
@@ -761,6 +780,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SealedRecord sse_decode_sealed_record(SseDeserializer deserializer);
+
+  @protected
+  SettingsView sse_decode_settings_view(SseDeserializer deserializer);
 
   @protected
   StatusInfo sse_decode_status_info(SseDeserializer deserializer);
@@ -1004,6 +1026,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_settings_view(
+    SettingsView self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_build_info(BuildInfo self, SseSerializer serializer);
 
   @protected
@@ -1136,6 +1164,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_settings_view(
+    SettingsView? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_list_prim_u_8_strict(
     Uint8List? self,
     SseSerializer serializer,
@@ -1217,6 +1251,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_sealed_record(SealedRecord self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_settings_view(SettingsView self, SseSerializer serializer);
 
   @protected
   void sse_encode_status_info(StatusInfo self, SseSerializer serializer);

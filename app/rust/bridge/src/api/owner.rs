@@ -247,6 +247,9 @@ pub struct OwnerStep {
     pub login_end: u8,
     /// login_end 4: the node's error code (EForbidden = owner key not accepted; others are not a verdict)
     pub login_code: u64,
+    /// #329 PR 4 §2.1: the settings of a `settings/get` or `settings/set` answer that succeeded (None otherwise: an
+    /// error answer, any other verb). The phone AP passphrase is never part of it (the node never sends it).
+    pub settings: Option<SettingsView>,
 }
 
 impl OwnerStep {
@@ -274,6 +277,7 @@ impl OwnerStep {
             note: String::new(),
             login_end: 0,
             login_code: 0,
+            settings: None,
         }
     }
     pub(crate) fn text(kind: OwnerKind, d: String) -> OwnerStep {
@@ -398,6 +402,8 @@ pub struct StatusView {
 }
 
 const LEAVE: &str = "network/leave";
+/// #329 PR 4 §2.1: the owner-op whose write is marked `sent` besides the leave
+const SETTINGS_SET: &str = "settings/set";
 
 /// leave v4.1 §3: the info read after a leave that did not answer 0 (an unwritable request answers right away)
 fn leave_info(conn: &mut Conn, asked: &mut &'static str, sent: bool, code: Option<u64>) -> OwnerStep {
@@ -672,6 +678,34 @@ fn settings_text(b: &Value) -> String {
     if out.is_empty() { "（讀不到任何設定）".into() } else { out.join("，") }
 }
 
+/// #329 PR 4 §2.1: the settings a page shows as current values. Every string passed through `statuspage::shown`
+/// (display_name + 64 characters: a node string, plan §5); a missing value is "" / -1. `read` = false: the answer was an
+/// empty map (the node's settings cache was unreadable, settingsset.go settingsAfterSet). No passphrase (the node never
+/// sends one, 254-p3-impl §3.3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettingsView {
+    pub read: bool,
+    pub name: String,
+    pub country: String,
+    pub channel: i64,
+    pub bw_mhz: i64,
+    pub ap_ssid: String,
+}
+
+fn settings_view(b: &Value) -> SettingsView {
+    let text = |v: Option<&Value>| v.and_then(Value::as_text).map(statuspage::shown).unwrap_or_default();
+    let num = |v: Option<&Value>| v.and_then(Value::as_uint).and_then(|n| i64::try_from(n).ok()).unwrap_or(-1);
+    let halow = b.get(10);
+    SettingsView {
+        read: matches!(b, Value::Map(m) if !m.is_empty()),
+        name: text(b.get(1)),
+        country: text(b.get(2)),
+        channel: num(halow.and_then(|h| h.get(1))),
+        bw_mhz: num(halow.and_then(|h| h.get(2))),
+        ap_ssid: text(b.get(20).and_then(|a| a.get(1))),
+    }
+}
+
 impl OwnerSession {
     /// Login to the node of this (opened) node record; the first step is the msg1 frames.
     #[flutter_rust_bridge::frb(sync)]
@@ -749,7 +783,8 @@ impl OwnerSession {
             return Some(match req {
                 Ok((_, f)) => {
                     *asked = verb;
-                    OwnerStep { frames: f, sent: verb == LEAVE, ..OwnerStep::new(OwnerKind::Write) }
+                    // #329 PR 4 §2.1 (a): a settings/set write may change the node too: a lost link after it is "outcome unknown"
+                    OwnerStep { frames: f, sent: verb == LEAVE || verb == SETTINGS_SET, ..OwnerStep::new(OwnerKind::Write) }
                 }
                 Err(e) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：送不出去（{e}）", verb_text(verb))),
             });
@@ -772,7 +807,7 @@ impl OwnerSession {
     /// The answer is the applied settings.
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_set_country(&mut self, country: String) -> Result<OwnerStep, String> {
-        self.owner_op("settings/set", Value::Map(vec![(Value::Uint(2), Value::Text(country))]))
+        self.owner_op(SETTINGS_SET, Value::Map(vec![(Value::Uint(2), Value::Text(country))]))
     }
 
     /// `settings/set` {20: {1: ssid, 2: passphrase}} (an owner-op; §3.3): the phone AP. The passphrase stays in here
@@ -780,7 +815,7 @@ impl OwnerSession {
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_set_ap(&mut self, ssid: String, passphrase: String) -> Result<OwnerStep, String> {
         let ap = Value::Map(vec![(Value::Uint(1), Value::Text(ssid)), (Value::Uint(2), Value::Text(passphrase))]);
-        self.owner_op("settings/set", Value::Map(vec![(Value::Uint(20), ap)]))
+        self.owner_op(SETTINGS_SET, Value::Map(vec![(Value::Uint(20), ap)]))
     }
 
     /// 「離開網路」(254-app-leave v4.1 §3): the owner-op `network/leave` {}; a reply other than 0 (and a refused op/nonce or a
@@ -963,7 +998,8 @@ impl OwnerSession {
                         v => format!("{}：完成", verb_text(v)),
                     };
                     *op = None;
-                    Some(OwnerStep::text(OwnerKind::Answer, t))
+                    let settings = matches!(*asked, "settings/get" | SETTINGS_SET).then(|| settings_view(&b));
+                    Some(OwnerStep { settings, ..OwnerStep::text(OwnerKind::Answer, t) })
                 }
                 Ok(Some(Outcome::Err { code, detail })) => {
                     // an owner-op refused at op/nonce is reported as the operation the user asked for
@@ -3575,5 +3611,124 @@ mod team_addr_tests {
         }
         assert_eq!(next.unwrap().kind, OwnerKind::Sign, "then the request is built (sig_enc first)");
         assert_eq!(s.joinreq.as_ref().unwrap().offered_addr(), Some(NEW));
+    }
+}
+
+/// #329 PR 4 §2.1: settings/set marks its signed write `sent` (a lost link after it = outcome unknown); a settings/get
+/// or settings/set answer that succeeded carries `SettingsView`, an error answer or another verb does not.
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use p256::ecdsa::signature::Signer;
+
+    /// one request: every node request answered from `answers` by verb; returns the `sent` flag of each write and the
+    /// final answer step
+    fn run(s: &mut OwnerSession, n: &mut super::tests::FakeNode, mut st: OwnerStep, answers: &[(&str, Result<Value, u64>)]) -> (Vec<bool>, Vec<String>, OwnerStep) {
+        let (mut sent, mut verbs) = (vec![], vec![]);
+        loop {
+            st = match st.kind {
+                OwnerKind::Write => {
+                    sent.push(st.sent);
+                    let (id, verb) = n.request(&st.frames);
+                    let a = answers.iter().find(|(v, _)| *v == verb).unwrap_or_else(|| panic!("unexpected {verb}")).1.clone();
+                    verbs.push(verb);
+                    let mut next = None;
+                    for f in n.answer(id, a) {
+                        next = s.on_frame(f).or(next);
+                    }
+                    next.expect("a step after the node's answer")
+                }
+                OwnerKind::Sign => {
+                    let k = p256::ecdsa::SigningKey::from_slice(&[0x11; 32]).unwrap();
+                    let sg: p256::ecdsa::Signature = k.sign(&st.sign_input);
+                    s.signed(sg.to_der().as_bytes().to_vec()).unwrap()
+                }
+                OwnerKind::Answer => return (sent, verbs, st),
+                k => panic!("a settings request asks nothing else: {k:?}"),
+            };
+        }
+    }
+
+    fn nonce() -> Result<Value, u64> {
+        Ok(Value::Map(vec![(Value::Uint(1), Value::Bytes(vec![0x6d; 32]))]))
+    }
+
+    fn body() -> Value {
+        Value::Map(vec![
+            (Value::Uint(1), Value::Text("BCM2711-6c89".into())),
+            (Value::Uint(2), Value::Text("US".into())),
+            (Value::Uint(10), Value::Map(vec![(Value::Uint(1), Value::Uint(42)), (Value::Uint(2), Value::Uint(2))])),
+            (Value::Uint(20), Value::Map(vec![(Value::Uint(1), Value::Text("node-ap".into()))])),
+        ])
+    }
+
+    fn view(name: &str, country: &str, channel: i64, bw: i64, ssid: &str) -> SettingsView {
+        SettingsView { read: true, name: name.into(), country: country.into(), channel, bw_mhz: bw, ap_ssid: ssid.into() }
+    }
+
+    #[test]
+    fn set_ap_marks_its_signed_write_sent_and_answers_the_settings() {
+        let (mut s, mut n) = super::tests::logged_in();
+        let st = s.request_set_ap("node-ap".into(), "correct-horse-1".into()).unwrap();
+        let (sent, verbs, a) = run(&mut s, &mut n, st, &[("op/nonce", nonce()), ("settings/set", Ok(body()))]);
+        assert_eq!(verbs, ["op/nonce", "settings/set"]);
+        assert_eq!(sent, [false, true], "op/nonce changes nothing; the signed settings/set may");
+        assert_eq!(a.settings, Some(view("BCM2711-6c89", "US", 42, 2, "node-ap")));
+        assert!(!a.detail.contains("correct-horse-1"), "the passphrase is never in a step's text");
+    }
+
+    #[test]
+    fn set_country_marks_its_signed_write_sent() {
+        let (mut s, mut n) = super::tests::logged_in();
+        let st = s.request_set_country("TW".into()).unwrap();
+        let (sent, _, a) = run(&mut s, &mut n, st, &[("op/nonce", nonce()), ("settings/set", Ok(body()))]);
+        assert_eq!(sent, [false, true]);
+        assert!(a.settings.is_some());
+    }
+
+    #[test]
+    fn ssh_keys_and_leave_keep_their_sent_flags() {
+        let (mut s, mut n) = super::tests::logged_in();
+        let st = s.request_ssh_keys(vec!["ssh-ed25519 AAAA x".into()]).unwrap();
+        let (sent, _, a) = run(&mut s, &mut n, st, &[("op/nonce", nonce()), ("ssh_keys/set", Ok(Value::Map(vec![])))]);
+        assert_eq!(sent, [false, false], "only leave and settings/set are marked");
+        assert_eq!(a.settings, None);
+    }
+
+    #[test]
+    fn get_answers_the_settings_and_an_empty_map_is_not_read() {
+        let (mut s, mut n) = super::tests::logged_in();
+        let st = s.request_settings().unwrap();
+        let (sent, _, a) = run(&mut s, &mut n, st, &[("settings/get", Ok(body()))]);
+        assert_eq!(sent, [false]);
+        assert_eq!(a.settings, Some(view("BCM2711-6c89", "US", 42, 2, "node-ap")));
+        let st = s.request_set_country("US".into()).unwrap();
+        let (_, _, a) = run(&mut s, &mut n, st, &[("op/nonce", nonce()), ("settings/set", Ok(Value::Map(vec![])))]);
+        let v = a.settings.expect("a set that succeeded with an unreadable cache still succeeded");
+        assert_eq!((v.read, v.name.as_str(), v.channel, v.ap_ssid.as_str()), (false, "", -1, ""));
+    }
+
+    #[test]
+    fn an_error_answer_or_another_verb_has_no_settings() {
+        let (mut s, mut n) = super::tests::logged_in();
+        let st = s.request_set_country("TW".into()).unwrap();
+        let (_, _, a) = run(&mut s, &mut n, st, &[("op/nonce", nonce()), ("settings/set", Err(11))]);
+        assert!(a.detail.starts_with("[REQ_FAIL]"), "{}", a.detail);
+        assert_eq!(a.settings, None, "an error answer is never a success");
+        let st = s.request_settings().unwrap();
+        let (_, _, a) = run(&mut s, &mut n, st, &[("settings/get", Err(7))]);
+        assert_eq!(a.settings, None);
+        let st = s.request_status().unwrap();
+        let (_, _, a) = run(&mut s, &mut n, st, &[("status", Ok(body()))]);
+        assert_eq!(a.settings, None, "another verb's answer");
+    }
+
+    #[test]
+    fn a_node_string_is_shown_as_node_text() {
+        let long = format!("ap\u{202e}{}", "x".repeat(80));
+        let b = Value::Map(vec![(Value::Uint(20), Value::Map(vec![(Value::Uint(1), Value::Text(long.clone()))]))]);
+        let v = settings_view(&b);
+        assert_eq!(v.ap_ssid, statuspage::shown(&long));
+        assert!(!v.ap_ssid.contains('\u{202e}') && v.ap_ssid.chars().count() <= 64, "{:?}", v.ap_ssid);
     }
 }

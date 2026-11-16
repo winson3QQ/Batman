@@ -27,12 +27,12 @@
 
 // Section: imports
 
-use crate::api::member::*;
-use crate::api::replay::*;
-use crate::api::swupdate::*;
 use crate::api::rekey::*;
 use crate::api::owner::*;
-use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::member::*;
+use crate::api::claim::*;
+use crate::api::replay::*;
+use crate::api::swupdate::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -2005,6 +2005,15 @@ return crate::api::rekey::NodeInfo{dac_hash: var_dacHash, info: var_info};}
             }}
                 }
                 
+                impl SseDecode for Option<crate::api::owner::SettingsView> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {if (<bool>::sse_decode(deserializer)) {
+                return Some(<crate::api::owner::SettingsView>::sse_decode(deserializer));
+            } else {
+                return None;
+            }}
+                }
+                
                 impl SseDecode for Option<Vec<u8>> {
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {if (<bool>::sse_decode(deserializer)) {
@@ -2065,7 +2074,8 @@ let mut var_sw = <bool>::sse_decode(deserializer);
 let mut var_note = <String>::sse_decode(deserializer);
 let mut var_loginEnd = <u8>::sse_decode(deserializer);
 let mut var_loginCode = <u64>::sse_decode(deserializer);
-return crate::api::owner::OwnerStep{kind: var_kind, frames: var_frames, sign_input: var_signInput, detail: var_detail, record: var_record, rel: var_rel, generation: var_generation, aad: var_aad, expected_gen: var_expectedGen, poll_link: var_pollLink, hex: var_hex, sas: var_sas, renewed: var_renewed, sent: var_sent, left: var_left, wait_ms: var_waitMs, send_update: var_sendUpdate, info: var_info, sw: var_sw, note: var_note, login_end: var_loginEnd, login_code: var_loginCode};}
+let mut var_settings = <Option<crate::api::owner::SettingsView>>::sse_decode(deserializer);
+return crate::api::owner::OwnerStep{kind: var_kind, frames: var_frames, sign_input: var_signInput, detail: var_detail, record: var_record, rel: var_rel, generation: var_generation, aad: var_aad, expected_gen: var_expectedGen, poll_link: var_pollLink, hex: var_hex, sas: var_sas, renewed: var_renewed, sent: var_sent, left: var_left, wait_ms: var_waitMs, send_update: var_sendUpdate, info: var_info, sw: var_sw, note: var_note, login_end: var_loginEnd, login_code: var_loginCode, settings: var_settings};}
                 }
                 
                 impl SseDecode for crate::api::rekey::PersonNode {
@@ -2205,6 +2215,17 @@ return crate::api::claim::SealParams{generation: var_generation, aad: var_aad};}
 let mut var_sealed = <Vec<u8>>::sse_decode(deserializer);
 let mut var_aad = <Vec<u8>>::sse_decode(deserializer);
 return crate::api::owner::SealedRecord{generation: var_generation, sealed: var_sealed, aad: var_aad};}
+                }
+                
+                impl SseDecode for crate::api::owner::SettingsView {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut var_read = <bool>::sse_decode(deserializer);
+let mut var_name = <String>::sse_decode(deserializer);
+let mut var_country = <String>::sse_decode(deserializer);
+let mut var_channel = <i64>::sse_decode(deserializer);
+let mut var_bwMhz = <i64>::sse_decode(deserializer);
+let mut var_apSsid = <String>::sse_decode(deserializer);
+return crate::api::owner::SettingsView{read: var_read, name: var_name, country: var_country, channel: var_channel, bw_mhz: var_bwMhz, ap_ssid: var_apSsid};}
                 }
                 
                 impl SseDecode for crate::api::simple::StatusInfo {
@@ -2896,7 +2917,8 @@ self.info.into_into_dart().into_dart(),
 self.sw.into_into_dart().into_dart(),
 self.note.into_into_dart().into_dart(),
 self.login_end.into_into_dart().into_dart(),
-self.login_code.into_into_dart().into_dart()
+self.login_code.into_into_dart().into_dart(),
+self.settings.into_into_dart().into_dart()
                 ].into_dart()
                 }
             }
@@ -3081,6 +3103,25 @@ self.aad.into_into_dart().into_dart()
             impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::owner::SealedRecord {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::owner::SealedRecord> for crate::api::owner::SealedRecord {
             fn into_into_dart(self) -> crate::api::owner::SealedRecord {
+                self
+            }
+        }
+// Codec=Dco (DartCObject based), see doc to use other codecs
+            impl flutter_rust_bridge::IntoDart for crate::api::owner::SettingsView {
+                fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+                    [
+                    self.read.into_into_dart().into_dart(),
+self.name.into_into_dart().into_dart(),
+self.country.into_into_dart().into_dart(),
+self.channel.into_into_dart().into_dart(),
+self.bw_mhz.into_into_dart().into_dart(),
+self.ap_ssid.into_into_dart().into_dart()
+                ].into_dart()
+                }
+            }
+            impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::owner::SettingsView {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::owner::SettingsView> for crate::api::owner::SettingsView {
+            fn into_into_dart(self) -> crate::api::owner::SettingsView {
                 self
             }
         }
@@ -3629,6 +3670,14 @@ crate::api::member::ImportState::Replace => { 3 }
                 }}
                 }
                 
+                impl SseEncode for Option<crate::api::owner::SettingsView> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<bool>::sse_encode(self.is_some(), serializer);
+                if let Some(value) = self {
+                    <crate::api::owner::SettingsView>::sse_encode(value, serializer);
+                }}
+                }
+                
                 impl SseEncode for Option<Vec<u8>> {
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<bool>::sse_encode(self.is_some(), serializer);
@@ -3683,7 +3732,8 @@ crate::api::owner::OwnerKind::ConfirmRemoved => { 11 }
 <bool>::sse_encode(self.sw, serializer);
 <String>::sse_encode(self.note, serializer);
 <u8>::sse_encode(self.login_end, serializer);
-<u64>::sse_encode(self.login_code, serializer);}
+<u64>::sse_encode(self.login_code, serializer);
+<Option<crate::api::owner::SettingsView>>::sse_encode(self.settings, serializer);}
                 }
                 
                 impl SseEncode for crate::api::rekey::PersonNode {
@@ -3802,6 +3852,16 @@ crate::api::replay::ReplayNext::Recovered => { 5 }
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<u64>::sse_encode(self.generation, serializer);
 <Vec<u8>>::sse_encode(self.sealed, serializer);
 <Vec<u8>>::sse_encode(self.aad, serializer);}
+                }
+                
+                impl SseEncode for crate::api::owner::SettingsView {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<bool>::sse_encode(self.read, serializer);
+<String>::sse_encode(self.name, serializer);
+<String>::sse_encode(self.country, serializer);
+<i64>::sse_encode(self.channel, serializer);
+<i64>::sse_encode(self.bw_mhz, serializer);
+<String>::sse_encode(self.ap_ssid, serializer);}
                 }
                 
                 impl SseEncode for crate::api::simple::StatusInfo {
@@ -3976,12 +4036,12 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 
 // Section: imports
 
-use crate::api::member::*;
-use crate::api::replay::*;
-use crate::api::swupdate::*;
 use crate::api::rekey::*;
 use crate::api::owner::*;
-use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::member::*;
+use crate::api::claim::*;
+use crate::api::replay::*;
+use crate::api::swupdate::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
@@ -4076,12 +4136,12 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::member::*;
-use crate::api::replay::*;
-use crate::api::swupdate::*;
 use crate::api::rekey::*;
 use crate::api::owner::*;
-use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::member::*;
+use crate::api::claim::*;
+use crate::api::replay::*;
+use crate::api::swupdate::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;
