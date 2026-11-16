@@ -49,9 +49,11 @@ class _NickPageState extends State<NickPage> {
       });
       return;
     }
-    final r = await Navigator.of(context).pushReplacement<String, String>(MaterialPageRoute(
+    // code review B M1: push, not pushReplacement (a replaced route ends at once with null and 再加一台 would be lost);
+    // 3.5 / 3.6's answer goes back to the home page through this page
+    final r = await Navigator.of(context).push<String>(MaterialPageRoute(
         builder: (_) => AddedPage(app: widget.app, ui: widget.ui, id: widget.id, devTrust: widget.devTrust)));
-    if (r != null && mounted) Navigator.of(context).pop(r);
+    if (mounted) Navigator.of(context).pop(r);
   }
 
   @override

@@ -8,6 +8,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart' show ChangeNotifier;
+import 'package:flutter/services.dart' show PlatformException;
 
 import '../../ui/home_logic.dart' show whyNext;
 import '../nodelink/core.dart' show Why;
@@ -113,8 +114,15 @@ class NetRun extends ChangeNotifier {
   bool running = false;
   int get index => rows.indexWhere((r) => r.state == RowState.running);
 
-  /// The page is gone (§2.5): the request in progress ends, nothing after it starts.
-  void pageGone() => _gone = true;
+  /// The page is gone (§2.5): the request in progress ends, nothing after it starts; a link check in progress stops
+  /// (its console is closed, v18 AF m9).
+  void pageGone() {
+    _gone = true;
+    if (_inLinkCheck) unawaited(_current?.close());
+  }
+
+  OwnerConsole? _current; // the node in progress (closed before 繼續 / 停 is asked)
+  bool _inLinkCheck = false;
 
   bool get _stopNow => _gone || !deps.leaseValid();
 
@@ -179,12 +187,21 @@ class NetRun extends ChangeNotifier {
   /// One node; false = the run stops here.
   Future<bool> _one(RunRow r, {required bool clearNotY, bool retrying = false}) async {
     _set(r, RowState.running, '正在連到節點…');
-    final c = await _login(r, clearNotY);
-    if (c == null) return _failed(r, retrying);
     try {
-      return r.makes ? await _make(r, c, retrying) : await _join(r, c, retrying);
-    } finally {
-      await c.close();
+      final c = await _login(r, clearNotY);
+      if (c == null) return await _failed(r, retrying);
+      _current = c;
+      try {
+        return r.makes ? await _make(r, c, retrying) : await _join(r, c, retrying);
+      } finally {
+        _current = null;
+        await c.close();
+      }
+    } catch (e) {
+      // code review A m-1 / B m2: a request that threw before it went out (a record that does not read, the phone's
+      // keys): the row fails with its reason, never stays 「進行中」
+      r.line = '[REQ_FAIL] 操作沒有成功：${e is PlatformException ? e.code : e.runtimeType}';
+      return _failed(r, retrying, key: e is PlatformException);
     }
   }
 
@@ -216,6 +233,7 @@ class NetRun extends ChangeNotifier {
     }
     if (retrying) return false;
     if (r == rows.last) return true;
+    await _current?.close(); // code review B m1: the failed node's link is not held while the user decides
     final go = await askGoOn(r);
     if (!go) {
       // the dialog closed as 「停」 because the radio got blocked meanwhile: say why (§2.9)
@@ -290,7 +308,8 @@ class NetRun extends ChangeNotifier {
       }
     } else if (j.pollLink) {
       _set(r, RowState.running, '正在確認節點連上了，最多 2 分鐘');
-      final l = await c.linkCheck();
+      _inLinkCheck = true;
+      final l = await c.linkCheck().whenComplete(() => _inLinkCheck = false);
       if (!l.starts('[CONNECTED]')) r.note = '連線狀態未知';
     }
     _set(r, RowState.ok);
@@ -302,7 +321,7 @@ class NetRun extends ChangeNotifier {
 enum CheckEnd { upgraded, answered, notCreator, nothingToCheck, noAnswer, loginFailed, blocked, unreadable }
 
 class CheckRun extends ChangeNotifier {
-  CheckRun(this.deps, {required this.id, required this.snapshot, this.first, this.picked = false});
+  CheckRun(this.deps, {required this.id, required this.snapshot, this.first});
   final FlowDeps deps;
 
   /// The node checked (§2.8: 「檢查的是節點 XXXX」).
@@ -314,16 +333,19 @@ class CheckRun extends ChangeNotifier {
   /// From the result page: the record just made, checked first.
   final String? first;
 
-  /// The user picked the node (no name matched): never offer 「建立網路」 (v9 R m).
-  final bool picked;
-
   CheckEnd? end;
   final List<String> lines = [];
   bool _anyApplied = false;
   bool running = false;
 
-  /// §2.8: every record answered, none upgraded, no applied net on the phone, the node was not picked by hand.
-  bool get offerMake => end == CheckEnd.answered && !_anyApplied && !picked;
+  /// §2.8: every record answered, none upgraded, no applied net on the phone. (A node picked by hand needs no rule
+  /// of its own: only the verified creator, by nodeDacHash, is ever asked; code review B m5.)
+  bool get offerMake => end == CheckEnd.answered && !_anyApplied;
+
+  bool _gone = false;
+
+  /// The page is gone (§3.2 T-R1(c)): no login or confirm starts after the one in progress.
+  void pageGone() => _gone = true;
 
   Future<void> run({bool clearNotY = false}) async {
     running = true;
@@ -332,6 +354,9 @@ class CheckRun extends ChangeNotifier {
     notifyListeners();
     try {
       end = await _run(clearNotY);
+    } catch (e) {
+      lines.add('[REQ_FAIL] 操作沒有成功：${e is PlatformException ? e.code : e.runtimeType}');
+      end = CheckEnd.noAnswer;
     } finally {
       running = false;
       notifyListeners();
@@ -344,8 +369,13 @@ class CheckRun extends ChangeNotifier {
     _anyApplied = s.anyApplied;
     final pending = s.nets.where((n) => !n.applied && n.view.members.any((m) => m.creator)).toList();
     if (pending.isEmpty) return CheckEnd.nothingToCheck;
+    if (_gone) return CheckEnd.blocked;
     final res = await deps.login(id, clearNotY: clearNotY);
     final h = res.handoff;
+    if (_gone) {
+      await h?.close();
+      return CheckEnd.blocked;
+    }
     if (res.end != LoginForEnd.ok || h == null) {
       lines.add(loginLine(res.end));
       return res.end == LoginForEnd.precondition || res.end == LoginForEnd.noLease ? CheckEnd.blocked : CheckEnd.loginFailed;
@@ -361,6 +391,7 @@ class CheckRun extends ChangeNotifier {
       final f = first;
       if (f != null) mine.sort((a, b) => a.rel == f ? -1 : (b.rel == f ? 1 : 0));
       for (final n in mine) {
+        if (_gone) return CheckEnd.blocked;
         final r = await c.confirmNetwork(n.rel);
         lines.add(r.text);
         notifyListeners();

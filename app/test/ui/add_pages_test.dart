@@ -124,6 +124,28 @@ void main() {
     await finish(t, a);
   });
 
+
+  testWidgets('code review B M1: 3.6 再加一台 reaches the caller through 3.2 (the home page starts another claim)', (t) async {
+    final a = app();
+    a.link.core.setRecords(const [Rec(id, 1), Rec('other', 1)]);
+    a.nets.setForTest(const NetSnapshot());
+    final ui = UiState(MemStore()..ids = [id]);
+    String? got = 'unset';
+    await t.pumpWidget(host(Builder(
+        builder: (c) => TextButton(
+            onPressed: () async => got = await Navigator.of(c).push<String>(MaterialPageRoute(builder: (_) => NickPage(app: a, ui: ui, id: id))),
+            child: const Text('open')))));
+    await t.tap(find.text('open'));
+    await t.pumpAndSettle();
+    await t.tap(find.widgetWithText(FilledButton, Btn.save));
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+    await t.pumpAndSettle();
+    expect(got, 'unset', reason: 'the home page still waits while 3.6 is on screen');
+    await t.tap(find.text(Btn.addAnother));
+    await t.pumpAndSettle();
+    expect(got, addAgain);
+    await finish(t, a);
+  });
   testWidgets('F41: the home page shows a closed claim\'s line once; 知道了 clears it', (t) async {
     final a = app();
     a.lastClaimNote = '認領成功：節點 …7D2C';

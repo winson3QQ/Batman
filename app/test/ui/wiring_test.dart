@@ -133,6 +133,20 @@ void main() {
       await finish(t, a);
     });
 
+
+    testWidgets('code review A M-1 / B M2: 建立網路 on the check page opened from the node page -> 4.1 make mode', (t) async {
+      final a = await node(t, NetSnapshot(netFiles: 1, nets: [entry('p1', applied: false, members: [mem(me, joining: true, creator: true)])]),
+          nodeState: 2);
+      await t.tap(find.text(Btn.checkNetwork));
+      await t.pumpAndSettle();
+      t.state<NavigatorState>(find.byType(Navigator)).pop(goMake); // the check page's 建立網路
+      await t.pumpAndSettle();
+      final f = t.widget<NetFormPage>(find.byType(NetFormPage));
+      expect(f.makes, isTrue);
+      expect(f.ticked, {id});
+      expect((f.back, f.backNode), (Page.node, id));
+      await finish(t, a);
+    });
     testWidgets('a pending network another node made: no 檢查網路 here', (t) async {
       final a = await node(t, NetSnapshot(netFiles: 1, nets: [entry('p1', applied: false, members: [mem('node-zzzz', joining: true, creator: true)])]),
           nodeState: 2);

@@ -50,7 +50,8 @@ Future<void> keepScreen(bool on) async {
 }
 
 /// The flows' view of the app, bound to [lease] (§2.5); the dialogs are the page's.
-FlowDeps flowDeps(AppLink a, Lease lease, {required AskUser askCountry, required AskUser askRemoved}) => FlowDeps(
+FlowDeps flowDeps(AppLink a, Lease lease, {required AskUser askCountry, required AskUser askRemoved, void Function()? onLost}) =>
+    FlowDeps(
       login: (id, {bool clearNotY = false}) => a.link.loginFor(lease, id, clearNotY: clearNotY),
       console: (LoginHandoff h) => OwnerConsole(h, lease, a.writer, a.console,
           after: a.link.after,
@@ -58,7 +59,8 @@ FlowDeps flowDeps(AppLink a, Lease lease, {required AskUser askCountry, required
           askCountry: askCountry,
           askRemoved: askRemoved,
           keyError: (e) => keyErrorToRadio(e, a.link),
-          log: (l) => debugPrint('BMAPP $l')),
+          log: (l) => debugPrint('BMAPP $l'),
+          onLost: onLost),
       // §2.6: the one record read again under the lease; a record that does not read or open is not applied (§2.9)
       applied: (rel) async {
         try {
@@ -133,10 +135,10 @@ class NetFormPage extends StatefulWidget {
   final Future<NetSnapshot> Function()? compute;
 
   /// Tests: the run NetRunPage starts (the app builds it from the lease).
-  final NetRun Function(Lease lease, Future<bool> Function(RunRow) askGoOn, AskUser askCountry, AskUser askRemoved)? runFlow;
+  final NetRun Function(Lease lease, Future<bool> Function(RunRow) askGoOn, AskUser askCountry, AskUser askRemoved, void Function() lost)? runFlow;
 
   /// Tests: the check pages it opens.
-  final CheckRun Function(Lease lease, String id, bool picked)? checkFlow;
+  final CheckRun Function(Lease lease, String id)? checkFlow;
 
   @override
   State<NetFormPage> createState() => _NetFormPageState();
@@ -157,6 +159,7 @@ class _NetFormPageState extends State<NetFormPage> {
   Lease? _pending; // acquired, not handed over yet (v14 AB-M1)
   StreamSubscription<void>? _sub;
   NetSnapshot? _seen; // the snapshot the form was made from (§2.4: compared at 開始)
+  bool _forgotten = false; // 放棄這次加入 done
 
   @override
   void initState() {
@@ -168,6 +171,9 @@ class _NetFormPageState extends State<NetFormPage> {
   }
 
   void _changed() {
+    // v18 AH m4 / code review B m4: a new NetIndex result is the form's snapshot (not while 開始 compares under its lease)
+    final s = a.nets.now;
+    if (!s.computing && _pending == null && !_busy) _seen = s;
     if (mounted) setState(() {});
   }
 
@@ -191,9 +197,16 @@ class _NetFormPageState extends State<NetFormPage> {
   void _tickOnce() {
     if (_tickedOnce || a.link.core.states.isEmpty) return;
     _tickedOnce = true;
+    // code review B m6: a node that is a member of a network on this phone is not ticked even when its last read
+    // (before the lease) still says 「not in a network」
+    final members = {
+      for (final n in a.nets.now.nets)
+        for (final m in n.view.members)
+          if (m.deviceId.isNotEmpty) m.deviceId
+    };
     for (final id in _ids) {
       final v = nodeInfo(a, id, widget.ui).view;
-      if (v != null && v.nodeState.toInt() == 1) _ticked.add(id);
+      if (v != null && v.nodeState.toInt() == 1 && !members.contains(id)) _ticked.add(id);
     }
     _ticked.addAll(widget.ticked.where(a.link.core.states.containsKey));
     final t = widget.todo;
@@ -244,6 +257,7 @@ class _NetFormPageState extends State<NetFormPage> {
       if (!_makes && rel == null) {
         _pending = null;
         await l.release();
+        if (mounted) setState(() => _note = '要加入的網路已經不在這支手機上，請重新選。'); // code review A m-5
         return;
       }
       _pending = null; // handed over: NetRunPage is its only pageGone caller from here
@@ -257,7 +271,7 @@ class _NetFormPageState extends State<NetFormPage> {
               joinRel: rel,
               name: _name.text,
               channel: _channel,
-              flow: widget.runFlow == null ? null : (g, c, r) => widget.runFlow!(l, g, c, r),
+              flow: widget.runFlow == null ? null : (g, c, r, d) => widget.runFlow!(l, g, c, r, d),
               checkFlow: widget.checkFlow)));
       if (!mounted) return;
       if (r == goMake) {
@@ -272,8 +286,8 @@ class _NetFormPageState extends State<NetFormPage> {
 
   Future<void> _check(NetEntry n) async {
     final r = await Navigator.of(context).push<String>(MaterialPageRoute(
-        builder: (_) => CheckNetPage(
-            app: a, ui: widget.ui, nets: [n], preselect: _ticked.length == 1 ? _ticked.first : null, flow: widget.checkFlow)));
+        // code review B M3: the creator found by its name (`node-<last4>`), not a ticked node
+        builder: (_) => CheckNetPage(app: a, ui: widget.ui, nets: [n], flow: widget.checkFlow)));
     if (!mounted) return;
     if (r == goMake) setState(() => _makes = true);
   }
@@ -297,6 +311,7 @@ class _NetFormPageState extends State<NetFormPage> {
       if (p == null) throw recordUnopenedLine;
       line = await forgetJoining(l, a.writer,
           rel: t.net.rel, plain: p, gen: gen, dacHash: t.member.dacHash, seal: a.console.seal, keyError: (e) => keyErrorToRadio(e, a.link));
+      _forgotten = true; // code review B m9: done, the button goes
     } catch (e) {
       line = e is String ? e : '[REQ_FAIL] 忘記沒有成功';
     } finally {
@@ -405,7 +420,7 @@ class _NetFormPageState extends State<NetFormPage> {
                 ),
             ]),
         ],
-        if (todo != null && !_makes) BatButton(Btn.forgetJoin, kind: BtnKind.text, onPressed: () => _forget(todo)),
+        if (todo != null && !_makes && !_forgotten) BatButton(Btn.forgetJoin, kind: BtnKind.text, onPressed: () => _forget(todo)),
         if (_note != null) Text(_note!, style: TextStyle(fontSize: Fs.body, color: t.ink)),
       ],
       foot: pending
@@ -444,10 +459,11 @@ class NetRunPage extends StatefulWidget {
   final int channel;
 
   /// Tests: the flow (fake logins and console); the app builds it from the lease.
-  final NetRun Function(Future<bool> Function(RunRow) askGoOn, AskUser askCountry, AskUser askRemoved)? flow;
+  /// [lost]: closes a question the console asked when its link goes (§2.9).
+  final NetRun Function(Future<bool> Function(RunRow) askGoOn, AskUser askCountry, AskUser askRemoved, void Function() lost)? flow;
 
   /// Tests: the check a result row opens.
-  final CheckRun Function(Lease lease, String id, bool picked)? checkFlow;
+  final CheckRun Function(Lease lease, String id)? checkFlow;
 
   @override
   State<NetRunPage> createState() => _NetRunPageState();
@@ -463,13 +479,13 @@ class _NetRunPageState extends State<NetRunPage> {
   @override
   void initState() {
     super.initState();
-    run = (widget.flow ?? _appFlow)(_askGoOn, _askCountry, _askRemoved);
+    run = (widget.flow ?? _appFlow)(_askGoOn, _askCountry, _askRemoved, _dismiss);
     run.addListener(_changed);
     _work(run.run);
   }
 
-  NetRun _appFlow(Future<bool> Function(RunRow) go, AskUser country, AskUser removed) => NetRun(
-        flowDeps(a, widget.lease, askCountry: country, askRemoved: removed),
+  NetRun _appFlow(Future<bool> Function(RunRow) go, AskUser country, AskUser removed, void Function() lost) => NetRun(
+        flowDeps(a, widget.lease, askCountry: country, askRemoved: removed, onLost: lost),
         ids: widget.ids,
         makes: widget.makes,
         joinRel: widget.joinRel,
@@ -504,6 +520,16 @@ class _NetRunPageState extends State<NetRunPage> {
     super.dispose();
   }
 
+  BuildContext? _open; // the question on screen
+
+  /// §2.9 (code review B M4): the console's link went (or it was closed): its open question goes as 「不要」 before
+  /// anything else is asked — never two questions on top of each other.
+  void _dismiss() {
+    final c = _open;
+    _open = null;
+    if (c != null && c.mounted) Navigator.of(c).pop(false);
+  }
+
   Future<bool> _ask(Widget Function(BuildContext c) dialog) async {
     if (_gone || !mounted) return false;
     // §2.9: the radio blocked or the lease gone while the question is open -> closed as 「停」 / 「不要」
@@ -517,11 +543,12 @@ class _NetRunPageState extends State<NetRunPage> {
               context: context,
               barrierDismissible: false,
               builder: (c) {
-                dc = c;
+                dc = _open = c;
                 return dialog(c);
               }) ==
           true;
     } finally {
+      if (identical(_open, dc)) _open = null;
       await sub.cancel();
     }
   }
@@ -566,13 +593,15 @@ class _NetRunPageState extends State<NetRunPage> {
     // v14 AB m6: the row from its own record, read again
     final rel = r.persistedRel;
     if (rel != null && widget.lease.valid) {
-      final h = widget.lease.hold();
+      final h = _hold = widget.lease.hold(); // code review B m7: the other rows wait (working)
+      setState(() {});
       try {
         if (await flowDeps(a, widget.lease, askCountry: (_) async => false, askRemoved: (_) async => false).applied(rel)) {
           r.state = RowState.ok;
           r.line = '網路已建立';
         }
       } finally {
+        if (identical(_hold, h)) _hold = null;
         h();
       }
     }
@@ -648,7 +677,7 @@ class CheckNetPage extends StatefulWidget {
   final List<NetEntry>? nets;
 
   /// Tests: the flow on a lease.
-  final CheckRun Function(Lease lease, String id, bool picked)? flow;
+  final CheckRun Function(Lease lease, String id)? flow;
 
   @override
   State<CheckNetPage> createState() => _CheckNetPageState();
@@ -657,9 +686,7 @@ class CheckNetPage extends StatefulWidget {
 class _CheckNetPageState extends State<CheckNetPage> {
   AppLink get a => widget.app;
   String? _id;
-  bool _picked = false;
   Lease? _own; // acquired by this page (pageGone on dispose)
-  Lease? _pending; // acquired, run not started yet
   CheckRun? _run;
   bool _working = false;
   String? _note;
@@ -689,9 +716,7 @@ class _CheckNetPageState extends State<CheckNetPage> {
 
   @override
   void dispose() {
-    final p = _pending;
-    _pending = null;
-    if (p != null) unawaited(p.release());
+    _run?.pageGone(); // §3.2 T-R1(c): nothing starts after the request in progress
     _own?.pageGone();
     super.dispose();
   }
@@ -719,7 +744,7 @@ class _CheckNetPageState extends State<CheckNetPage> {
         _own = l = got;
       }
       if (!l.valid) return;
-      final run = _run = (widget.flow ?? _appFlow)(l, id, _picked);
+      final run = _run = (widget.flow ?? _appFlow)(l, id);
       final h = l.hold();
       try {
         await run.run(clearNotY: clearNotY);
@@ -731,11 +756,10 @@ class _CheckNetPageState extends State<CheckNetPage> {
     }
   }
 
-  CheckRun _appFlow(Lease l, String id, bool picked) => CheckRun(
+  CheckRun _appFlow(Lease l, String id) => CheckRun(
         flowDeps(a, l, askCountry: (_) async => false, askRemoved: (_) async => false),
         id: id,
         first: widget.first,
-        picked: picked,
         snapshot: a.nets.compute, // §2.8: listed under the lease, not NetIndex
       );
 
@@ -757,10 +781,7 @@ class _CheckNetPageState extends State<CheckNetPage> {
                 BatRow(
                     icon: Icons.router_outlined,
                     title: nodeName(a, n, widget.ui),
-                    onTap: () => setState(() {
-                          _id = n;
-                          _picked = true; // v9 R m: no 建立網路 for a node picked by hand
-                        })),
+                    onTap: () => setState(() => _id = n)),
             ]),
           ] else ...[
             StatusHero(

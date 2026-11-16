@@ -5,6 +5,9 @@ import 'dart:async';
 
 import 'package:batman_app/src/flows/net_index.dart';
 import 'package:batman_app/src/flows/net_run.dart';
+import 'package:batman_app/src/flows/owner_console.dart';
+import 'package:batman_app/src/nodelink/core.dart';
+import 'package:batman_app/src/rust/api/owner.dart' show MemberView, NetView;
 import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/lease.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
@@ -16,7 +19,7 @@ import 'package:flutter/material.dart' hide Page;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../flows/net_run_test.dart' show World, ans, pend;
-import 'pages_test.dart' show FakeRust, app, host, id;
+import 'pages_test.dart' show FakeRust, app, host, id, sv;
 import 'ui_state_test.dart' show MemStore;
 
 /// The World's deps, on the page's real lease; [gate] holds every login until it completes.
@@ -48,7 +51,7 @@ void main() {
 
   /// 4.1 in make mode for node [id] over a home route; [w] answers; [gate] holds the logins.
   Future<AppLink> openForm(WidgetTester t, World w,
-      {Completer<void>? gate, Future<NetSnapshot> Function()? compute, CheckRun Function(Lease, String, bool)? check}) async {
+      {Completer<void>? gate, Future<NetSnapshot> Function()? compute, CheckRun Function(Lease, String)? check}) async {
     final a = app();
     a.nets.setForTest(const NetSnapshot());
     await t.pumpWidget(host(Builder(
@@ -61,7 +64,7 @@ void main() {
                           makes: true,
                           ticked: const {id},
                           compute: compute ?? () async => const NetSnapshot(),
-                          runFlow: (l, go, _, _) => NetRun(deps(w, l, gate: gate), ids: const [id], makes: true, askGoOn: go),
+                          runFlow: (l, go, _, _, _) => NetRun(deps(w, l, gate: gate), ids: const [id], makes: true, askGoOn: go),
                           checkFlow: check,
                         ))),
                 child: const Text('open'))))));
@@ -208,7 +211,7 @@ void main() {
       ..script('make', [ans('[NET_STATE] 結果不明', rel: 'net/n1')])
       ..script('confirm', [ans('[NET_STATE] 沒有套用'), ans('[NET_STATE] 沒有套用，可以再建立一次')]);
     final a = await openForm(t, w,
-        check: (l, i, picked) => CheckRun(deps(w, l), id: i, picked: picked, snapshot: () async => NetSnapshot(netFiles: 1, nets: [pend('n1', 'd4')])));
+        check: (l, i) => CheckRun(deps(w, l), id: i, snapshot: () async => NetSnapshot(netFiles: 1, nets: [pend('n1', 'd4')])));
     await start(t);
     await settle(t);
     final l = a.reg.current!;
@@ -249,7 +252,7 @@ void main() {
                           app: a,
                           ui: UiState(MemStore()..ids = [id]),
                           preselect: id,
-                          flow: (l, i, p) => CheckRun(deps(w, l, gate: gate), id: i, picked: p, snapshot: () async => NetSnapshot(netFiles: 1, nets: [pend('n1', 'd4')])),
+                          flow: (l, i) => CheckRun(deps(w, l, gate: gate), id: i, snapshot: () async => NetSnapshot(netFiles: 1, nets: [pend('n1', 'd4')])),
                         ))),
                 child: const Text('open'))))));
     await t.tap(find.text('open'));
@@ -281,7 +284,7 @@ void main() {
       ids: const [id, 'other'],
       makes: false,
       joinRel: 'net/a',
-      flow: (go, _, _) => NetRun(deps(w, l, app: a), ids: const [id, 'other'], makes: false, joinRel: 'net/a', askGoOn: go),
+      flow: (go, _, _, _) => NetRun(deps(w, l, app: a), ids: const [id, 'other'], makes: false, joinRel: 'net/a', askGoOn: go),
     )));
     await settle(t);
     expect(find.text(Btn.nextNode), findsOneWidget, reason: 'asked');
@@ -292,4 +295,109 @@ void main() {
     expect(w.logins, [id], reason: 'the next node never started');
     await finish(t, a);
   });
+
+  testWidgets('code review B M3: 檢查網路 from 4.1 checks the creator found by name, not the ticked node', (t) async {
+    final a = app();
+    a.link.core.setRecords(const [Rec(id, 1), Rec('other', 1)]);
+    final me = 'node-${id.substring(id.length - 4)}';
+    final p = NetEntry('p1', NetView(netId: 'p1', meshId: 'bm', netName: 'n', applied: false, country: 'US', members: [
+      MemberView(name: me, last4: '', deviceId: '', joining: true, prevCountry: '', dacHash: 'd4', creator: true, approved: false),
+    ]));
+    a.nets.setForTest(NetSnapshot(netFiles: 1, nets: [p]));
+    await t.pumpWidget(host(NetFormPage(app: a, ui: UiState(MemStore()..ids = [id]), ticked: const {'other'})));
+    await t.pump();
+    await t.tap(find.widgetWithText(FilledButton, Btn.checkNetwork));
+    await t.pumpAndSettle();
+    expect(find.textContaining('檢查的是節點 ${id.substring(id.length - 4).toUpperCase()}'), findsOneWidget);
+    await finish(t, a);
+  });
+
+  testWidgets('code review B M4: the link lost while the country question is open -> it closes; one 繼續 / 停 only', (t) async {
+    final w = World()..script('join', [ans('[JOINED] 已加入')]);
+    final a = app();
+    final l = (await t.runAsync(() => a.link.acquire('加入網路', LeaseKind.session)))!;
+    await t.pumpWidget(host(NetRunPage(
+      app: a,
+      ui: UiState(MemStore()..ids = [id]),
+      lease: l,
+      ids: const [id, 'other'],
+      makes: false,
+      joinRel: 'net/a',
+      flow: (go, country, _, lost) {
+        final d = w.deps;
+        return NetRun(
+            FlowDeps(
+                login: d.login,
+                console: (h) => _AskConsole(country, lost),
+                applied: d.applied,
+                blocked: () => a.link.core.blocked,
+                leaseValid: () => l.valid),
+            ids: const [id, 'other'],
+            makes: false,
+            joinRel: 'net/a',
+            askGoOn: go);
+      },
+    )));
+    await settle(t);
+    expect(find.text(Btn.nextNode), findsOneWidget);
+    expect(find.text('要改這台節點的國家嗎？'), findsNothing, reason: 'closed by the lost link, not left under it');
+    expect(find.byType(AlertDialog), findsOneWidget);
+    await t.tap(find.text(Btn.stopHere));
+    await settle(t);
+    await finish(t, a);
+  });
+
+  testWidgets('code review B m4: a new NetIndex result is the form\'s snapshot (開始 is not refused the first time)', (t) async {
+    final w = World()..script('make', [ans('[NET_MADE] 網路已建立', rel: 'net/n1')]);
+    final gate = Completer<void>();
+    final a = await openForm(t, w, gate: gate, compute: () async => const NetSnapshot(netFiles: 1));
+    a.nets.setForTest(const NetSnapshot(netFiles: 1)); // a record appeared meanwhile; the form follows it
+    await t.pump();
+    await start(t);
+    expect(find.textContaining('網路紀錄剛剛變了'), findsNothing);
+    expect(a.reg.current, isNotNull);
+    gate.complete();
+    await settle(t);
+    await finish(t, a);
+  });
+
+  testWidgets('code review B m6: a node already a member of a network is not ticked, even read as 「not in a network」', (t) async {
+    final a = app();
+    a.link.core.states[id]!
+      ..kind = Kind.read
+      ..view = 'red'
+      ..readAt = a.link.now()
+      ..extra = sv('red', nodeState: 1)
+      ..last = Concl.read;
+    final n = NetEntry('n1', NetView(netId: 'n1', meshId: 'bm', netName: 'n', applied: true, country: 'US', members: [
+      MemberView(name: 'x', last4: '', deviceId: id, joining: false, prevCountry: '', dacHash: '', creator: false, approved: false),
+    ]));
+    a.nets.setForTest(NetSnapshot(netFiles: 1, nets: [n]));
+    await t.pumpWidget(host(NetFormPage(app: a, ui: UiState(MemStore()..ids = [id]))));
+    await t.pump();
+    expect(t.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value, isFalse);
+    await finish(t, a);
+  });
+}
+
+/// A console whose join asks the country, then loses its link while the question is open (code review B M4).
+class _AskConsole implements OwnerConsole {
+  _AskConsole(this.country, this.lost);
+  final AskUser country;
+  final void Function() lost;
+  bool closed = false;
+  @override
+  bool get alive => !closed;
+  @override
+  Future<ConsoleReply> joinNetwork(String rel) async {
+    final q = country('[COUNTRY] 要改成 US 嗎');
+    Timer(const Duration(milliseconds: 300), lost); // the link goes while it is open
+    await q;
+    return const ConsoleReply(ReplyKind.unclear, '[JOIN_STATE] 結果不明', sessionAlive: false);
+  }
+
+  @override
+  Future<void> close() async => closed = true;
+  @override
+  dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
 }

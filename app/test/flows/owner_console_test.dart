@@ -29,6 +29,11 @@ class Session extends FakeSession {
   bool disposed = false;
   final calls = <String>[];
   Object? refuseJoin; // thrown by requestJoinNetwork (a Rust refusal is a String)
+  bool signFirst = false; // the confirm starts with an owner signature (code review A M19)
+
+  @override
+  OwnerStep requestConfirmNetwork({required List<int> recordPlain, required BigInt recordGen}) =>
+      signFirst ? step(OwnerKind.sign) : super.requestConfirmNetwork(recordPlain: recordPlain, recordGen: recordGen);
 
   @override
   OwnerStep requestJoinNetwork(
@@ -164,7 +169,8 @@ class Rig {
   late final LoginHandoff h;
   late final RecordWriter writer;
   final cas = <String>[];
-  Object? casFail, sealFail, signFail;
+  Object? casFail, sealFail, signFail, signOwnerFail;
+  int lost = 0;
   Completer<void>? slowCas, slowSeal;
   String? makeRefusal;
   final keyErrors = <Object>[];
@@ -182,7 +188,11 @@ class Rig {
         if (f != null) throw f;
         return Uint8List(3);
       },
-      signOwner: (i) async => Uint8List(70),
+      signOwner: (i) async {
+        final f = signOwnerFail;
+        if (f != null) throw f;
+        return Uint8List(70);
+      },
       signAdmin: (i) async {
         final f = signFail;
         if (f != null) throw f;
@@ -197,6 +207,7 @@ class Rig {
     askCountry: (q) async => countryAnswer == '改',
     askRemoved: (q) async => removedAnswer == '確定，加回',
     keyError: keyErrors.add,
+    onLost: () => lost++,
   );
 
   /// Runs [f] while the clock goes on (the console's waits and the link check are on it).
@@ -435,6 +446,29 @@ void main() {
     expect(rig.session.calls.where((c) => c == 'dispose'), hasLength(1));
   });
 
+
+  test('code review A M19: the owner key refused while signing -> keyError, reported', () async {
+    final rig = Rig(rust)
+      ..session.signFirst = true
+      ..signOwnerFail = PlatformException(code: 'keyLevel', message: 'OWNER_SIGN');
+    final r = await rig.run(() => rig.c.confirmNetwork('net/x'));
+    expect(r.keyError, isTrue);
+    expect(rig.keyErrors, hasLength(1));
+    await rig.c.close();
+  });
+
+  test('code review B M4: the link lost -> onLost (the page closes the open question); close -> onLost once', () async {
+    final rig = Rig(rust)..radio.silent = true;
+    final f = rig.run(() => rig.c.confirmNetwork('net/x'));
+    await rig.clock.run(100);
+    rig.radio.drop();
+    await f;
+    expect(rig.lost, 1);
+    await rig.c.close();
+    expect(rig.lost, 2, reason: 'close tells it too');
+    await rig.c.close();
+    expect(rig.lost, 2, reason: 'idempotent');
+  });
   test('nodeDacHash comes from the session', () async {
     final rig = Rig(rust);
     expect(rig.c.nodeDacHash(), 'ab' * 32);

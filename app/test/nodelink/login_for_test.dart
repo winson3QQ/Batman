@@ -17,13 +17,18 @@ class LoginProber implements Prober {
   LoginProber(this.by);
   final Map<String, String> by;
   final List<String> probes = [];
+  void Function()? beforeOk; // runs just before an ok hand-off (e.g. the lease taken back)
+  final handed = <LoginHandoff>[];
 
   @override
   Future<Outcome> probe(GateLink link, String id, {required Future<void> due, required Future<void> cancelled}) async {
     probes.add(link.address);
     switch (by[link.address]) {
       case 'ok':
-        return Outcome(Res.body, '', LoginHandoff(id: id, link: link, inbox: FrameInbox()));
+        beforeOk?.call();
+        final h = LoginHandoff(id: id, link: link, inbox: FrameInbox());
+        handed.add(h);
+        return Outcome(Res.body, '', h);
       case 'cert':
         return const Outcome(Res.certRejected);
       case 'hang':
@@ -239,6 +244,15 @@ void main() {
     expect(rig.gate.links, 0);
   });
 
+
+  test('code review A M03: a login handed over after its lease ended is closed, never returned', () async {
+    final rig = Rig({'a1': 'ok'});
+    final l = await rig.lease();
+    rig.prober.beforeOk = l.pageGone; // idle: released now
+    final r = await rig.login(l, addrs: ['a1']);
+    expect(r!.end, LoginForEnd.noLease);
+    expect(rig.prober.handed.single.closed, isTrue, reason: 'the session handed over too late is closed by loginFor');
+  });
   test("P7: acquire waits for the last release's record read (at most 5 s) before taking the radio", () async {
     final slow = Completer<List<Rec>>();
     var reads = 0;

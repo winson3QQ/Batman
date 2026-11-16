@@ -10,6 +10,7 @@ import 'package:batman_app/src/nodelink/core.dart' show Why;
 import 'package:batman_app/src/nodelink/handoff.dart';
 import 'package:batman_app/src/nodelink/node_link.dart';
 import 'package:batman_app/src/rust/api/owner.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_test/flutter_test.dart';
 
 ConsoleReply ans(String text, {String? rel, bool send = false, bool poll = false, bool alive = true, bool key = false}) =>
@@ -43,6 +44,8 @@ class FakeConsole implements OwnerConsole {
 
   @override
   Future<ConsoleReply> joinNetwork(String rel) async {
+    final t = w.joinThrows;
+    if (t != null) throw t; // before anything went out (a record that does not read, the keys)
     final r = _next('join');
     w.onJoin?.call();
     return r;
@@ -58,11 +61,21 @@ class FakeConsole implements OwnerConsole {
   @override
   Future<ConsoleReply> sendUpdateFor(String rel, {bool member = false}) async => _next('send');
   @override
-  Future<ConsoleReply> linkCheck() async => _next('link');
+  Future<ConsoleReply> linkCheck() async {
+    if (w.hangLink) {
+      w.calls.add('link $id');
+      await _closedC.future; // a link check that runs until the console is closed
+      return const ConsoleReply(ReplyKind.unclear, linkUnknownLine);
+    }
+    return _next('link');
+  }
+
+  final _closedC = Completer<void>();
   @override
   Future<void> close() async {
     if (!closed) w.calls.add('close $id');
     closed = true;
+    if (!_closedC.isCompleted) _closedC.complete();
   }
 
   @override
@@ -80,6 +93,8 @@ class World {
   final logins = <String>[];
   bool appliedAfterMake = true;
   Completer<void>? holdMake;
+  bool hangLink = false;
+  Object? joinThrows;
   bool aliveAfter = true;
   Why? blocked;
   bool leaseValid = true;
@@ -330,6 +345,51 @@ void main() {
       expect((run.rows[0].state, run.rows[0].note), (RowState.failed, '已加入，新密碼沒有換成'));
     });
 
+
+    test('code review B m1: the failed node is closed before 繼續 / 停 is asked', () async {
+      final w = World()..script('join', [ans('[REQ_FAIL] x'), ans('[JOINED] 已加入')]);
+      List<String>? atAsk;
+      final run = NetRun(w.deps, ids: ['02', '03'], makes: false, joinRel: 'net/a', askGoOn: (r) async {
+        atAsk = [...w.calls];
+        return true;
+      });
+      await run.run();
+      expect(atAsk, contains('close 02'));
+    });
+
+    test('code review A m-1 / B m2: a request that throws before it goes out fails its row with a reason, never 「進行中」',
+        () async {
+      final w = World()
+        ..goOn = false
+        ..joinThrows = StateError('store');
+      final run = w.run(['02', '03'], makes: false, joinRel: 'net/a');
+      await run.run();
+      expect(run.rows[0].state, RowState.failed);
+      expect(run.rows[0].line, startsWith('[REQ_FAIL] 操作沒有成功'));
+      expect(run.rows[0].canRetry, isTrue);
+      expect(w.asks, ['02']);
+    });
+
+    test('a key error thrown before the request (publicKeys) stops the run like any key error', () async {
+      final w = World()..joinThrows = PlatformException(code: 'keystore');
+      final run = w.run(['02', '03'], makes: false, joinRel: 'net/a');
+      await run.run();
+      expect(run.stopped, StopWhy.keys);
+      expect(w.asks, isEmpty);
+    });
+
+    test('code review A m-2: the page gone during the link check stops it (its console closed)', () async {
+      final w = World()
+        ..hangLink = true
+        ..script('join', [ans('[JOINED] 已加入', poll: true)]);
+      final run = w.run(['02'], makes: false, joinRel: 'net/a');
+      final done = run.run();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(w.calls, contains('link 02'));
+      run.pageGone();
+      await done.timeout(const Duration(seconds: 2));
+      expect(w.calls, contains('close 02'));
+    });
     test('再試這一台 on a make row with a written record does nothing (only 檢查網路)', () async {
       final w = World()
         ..appliedAfterMake = false
@@ -396,13 +456,13 @@ void main() {
       expect((c.end, c.offerMake), (CheckEnd.answered, false));
     });
 
-    test('a node picked by hand -> no 建立網路 even when answered (v9 R m)', () async {
+    test('code review B m5: a node picked by hand that is the verified creator still gets 建立網路 (nodeDacHash decides)', () async {
       final w = World()
         ..dac['04'] = 'd4'
         ..script('confirm', [ans('[NET_STATE] 沒有套用')]);
-      final c = CheckRun(w.deps, id: '04', picked: true, snapshot: () => snap([pend('p1', 'd4')]));
+      final c = CheckRun(w.deps, id: '04', snapshot: () => snap([pend('p1', 'd4')]));
       await c.run();
-      expect((c.end, c.offerMake), (CheckEnd.answered, false));
+      expect((c.end, c.offerMake), (CheckEnd.answered, true));
     });
 
     test('a reply that does not start with [NET_STATE] is no answer: stop, no 建立網路 (v11 U-m1)', () async {
@@ -423,6 +483,27 @@ void main() {
       expect(w.logins, ['04', '04 clear']);
     });
 
+
+    test('code review A m-3 / B m3: the check page gone during its login: the session closed, nothing confirmed', () async {
+      final w = World()
+        ..dac['04'] = 'd4'
+        ..script('confirm', [ans('[NET_STATE] 網路已建立')]);
+      late CheckRun c;
+      w.onLogin = () => c.pageGone();
+      c = CheckRun(w.deps, id: '04', snapshot: () => snap([pend('p1', 'd4')]));
+      await c.run();
+      expect(c.end, CheckEnd.blocked);
+      expect(w.confirmed, isEmpty);
+    });
+
+    test('a check whose records throw (a record store error): ends without an answer, the reason said', () async {
+      final w = World();
+      final c = CheckRun(w.deps, id: '04', snapshot: () async => throw StateError('store'));
+      await c.run();
+      expect(c.end, CheckEnd.noAnswer);
+      expect(c.lines.single, startsWith('[REQ_FAIL] 操作沒有成功'));
+      expect(c.offerMake, isFalse);
+    });
     test('records unreadable / none pending', () async {
       final w = World();
       final a = CheckRun(w.deps, id: '04', snapshot: () async => const NetSnapshot(listFailed: true));

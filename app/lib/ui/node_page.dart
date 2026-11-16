@@ -9,7 +9,8 @@ import '../src/nodelink/core.dart' as nl show Page;
 import '../src/nodelink/lease.dart';
 import 'home_logic.dart';
 import 'home_page.dart' show nodeInfo;
-import 'net_pages.dart' show CheckNetPage, NetFormPage;
+import '../src/flows/net_index.dart' show NetEntry;
+import 'net_pages.dart' show CheckNetPage, NetFormPage, goMake;
 import 'theme.dart';
 import 'ui_state.dart';
 import 'widgets.dart';
@@ -97,6 +98,16 @@ class _NodePageState extends State<NodePage> {
     Navigator.of(context).pop();
   }
 
+  /// §2.8 (code review A M-1 / B M2): 建立網路 on the check page -> 4.1 in make mode for this node; the check page's
+  /// own lease goes at its dispose (the 開始 of 4.1 waits for it, D9).
+  Future<void> _check(AppLink a, List<NetEntry> pending) async {
+    final r = await Navigator.of(context).push<String>(
+        MaterialPageRoute(builder: (_) => CheckNetPage(app: a, ui: widget.ui, preselect: widget.id, nets: pending)));
+    if (r != goMake || !mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => NetFormPage(app: a, ui: widget.ui, makes: true, ticked: {widget.id}, back: nl.Page.node, backNode: widget.id)));
+  }
+
   /// #329 PR 3 §2.4 (design §5.5 :755): 加入網路 when this node is not in a network and the phone has one; 檢查網路
   /// when a pending network was made by a node of this name; never 建立網路 (D8: the home page and 3.5 / 3.6 are where
   /// a network is made). Null = nothing to show.
@@ -123,8 +134,7 @@ class _NodePageState extends State<NodePage> {
               icon: Icons.fact_check_outlined,
               title: Btn.checkNetwork,
               sub: '這台建立的網路還沒確認建立完成',
-              onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => CheckNetPage(app: a, ui: widget.ui, preselect: widget.id, nets: pending)))),
+              onTap: () => _check(a, pending)),
       ]),
     ];
   }

@@ -120,8 +120,9 @@ class OwnerConsole {
     required this.askRemoved,
     this.keyError,
     this.log,
+    this.onLost,
   }) : _session = h.session {
-    h.link.state.listen((up) {
+    _stateSub = h.link.state.listen((up) {
       if (!up) _lost();
     }, onError: (Object _) {});
     h.inbox.handle(_onFrame, (Object e) => log?.call('owner console: subscription ${e.runtimeType}'));
@@ -140,6 +141,11 @@ class OwnerConsole {
 
   /// Lines without an answer's content (rel cut to 8 characters, no record bytes).
   final void Function(String line)? log;
+
+  /// The link went away or the console was closed: a question it asked (country, removed before) is closed by the
+  /// page as 「不要」 before anything else is asked (plan §2.9, code review B M4).
+  final void Function()? onLost;
+  StreamSubscription<bool>? _stateSub;
 
   OwnerSession? _session;
   bool _closed = false;
@@ -309,6 +315,7 @@ class OwnerConsole {
   void _lost() {
     if (_closed) return;
     log?.call('owner console: link lost');
+    onLost?.call();
     _endUnclear();
     _session = null;
   }
@@ -475,6 +482,8 @@ class OwnerConsole {
     if (_closed) return;
     _closed = true;
     _stopWait?.call();
+    onLost?.call();
+    unawaited(_stateSub?.cancel());
     h.inbox.handle(null, null);
     final a = _answer;
     if (a != null && !a.isCompleted) {
