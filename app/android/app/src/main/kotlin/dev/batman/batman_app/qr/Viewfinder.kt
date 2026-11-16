@@ -7,6 +7,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.TextView
 import androidx.camera.core.Preview
 import androidx.camera.core.SurfaceRequest
 
@@ -24,6 +25,16 @@ class Viewfinder(context: Context) : SurfaceHolder.Callback, Preview.SurfaceProv
     val root = FrameLayout(context).apply {
         setBackgroundColor(Color.BLACK)
         addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER))
+        // #329 PR 5 (R-8): close up the modules blur (ChecksumException); half the frame decodes within 5 s
+        addView(TextView(context).apply {
+            text = HINT
+            setTextColor(Color.WHITE)
+            setBackgroundColor(0x99000000.toInt())
+            textSize = 16f
+            gravity = Gravity.CENTER
+            val pad = (16 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+        }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
     }
     private val main = context.mainExecutor
     private var request: SurfaceRequest? = null
@@ -80,5 +91,9 @@ class Viewfinder(context: Context) : SurfaceHolder.Callback, Preview.SurfaceProv
         val lp = view.layoutParams as FrameLayout.LayoutParams
         if (lp.width == vw && lp.height == vh) return
         view.layoutParams = FrameLayout.LayoutParams(vw, vh, Gravity.CENTER)
+    }
+
+    companion object {
+        const val HINT = "掃不到時，拿遠一點，讓 QR 在框裡約一半大"
     }
 }

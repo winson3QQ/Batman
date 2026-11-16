@@ -3,6 +3,7 @@ package dev.batman.batman_app.qr
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Size
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -10,6 +11,8 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -55,7 +58,8 @@ class QrScanActivity : ComponentActivity() {
         f.addListener({
             try {
                 val preview = Preview.Builder().build().also { it.setSurfaceProvider(mainExecutor, finder) }
-                val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
+                val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                    .setResolutionSelector(ANALYSIS).build()
                 analysis.setAnalyzer(worker!!) { analyze(analysis, it) }
                 val p = f.get()
                 p.unbindAll()
@@ -96,5 +100,9 @@ class QrScanActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_GEN = "dev.batman.batman_app.qr.GEN"
+
+        // #329 PR 5 (R-8): a request / approval QR is v26 / v27 (121 / 125 modules); at the default 640x480 a module is ~3 px
+        private val ANALYSIS: ResolutionSelector = ResolutionSelector.Builder().setResolutionStrategy(
+            ResolutionStrategy(Size(1280, 960), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)).build()
     }
 }
