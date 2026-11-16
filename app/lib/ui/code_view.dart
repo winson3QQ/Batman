@@ -222,8 +222,11 @@ class _CodeViewState extends State<CodeView> {
 /// R5: taking a code in. Both ways hand the raw text to [onText]; Rust parses it (from_hex takes upper case and
 /// spaces). Pasting is dev-only (PasteButton's rule) and always clears the clipboard afterwards, refused or not (R4).
 class CodeInput extends StatefulWidget {
-  const CodeInput({super.key, required this.devTrust, required this.onText, required this.onError, this.platform});
+  const CodeInput({super.key, required this.devTrust, required this.onText, required this.onError, this.platform, this.scan = true});
   final bool devTrust;
+
+  /// false: paste only (8.5: an update bundle has no QR, T10)
+  final bool scan;
   final void Function(String text) onText;
   final void Function(String why) onError;
   final CodePlatform? platform;
@@ -266,8 +269,8 @@ class _CodeInputState extends State<CodeInput> {
 
   @override
   Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        BatButton(Btn.scanQr, key: const Key('code-scan'), onPressed: _busy ? null : _scan),
-        const SizedBox(height: 8),
+        if (widget.scan) BatButton(Btn.scanQr, key: const Key('code-scan'), onPressed: _busy ? null : _scan),
+        if (widget.scan) const SizedBox(height: 8),
         if (widget.devTrust) BatButton(Btn.pasteText, key: const Key('code-paste'), kind: BtnKind.secondary, onPressed: _busy ? null : _paste),
       ]);
 }
