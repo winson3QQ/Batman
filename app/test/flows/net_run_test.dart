@@ -59,7 +59,11 @@ class FakeConsole implements OwnerConsole {
   }
 
   @override
-  Future<ConsoleReply> sendUpdateFor(String rel, {bool member = false}) async => _next('send');
+  Future<ConsoleReply> sendUpdateFor(String rel, {bool member = false}) async {
+    final t = w.sendThrows;
+    if (t != null) throw t;
+    return _next('send');
+  }
   @override
   Future<ConsoleReply> linkCheck() async {
     if (w.hangLink) {
@@ -94,7 +98,7 @@ class World {
   bool appliedAfterMake = true;
   Completer<void>? holdMake;
   bool hangLink = false;
-  Object? joinThrows;
+  Object? joinThrows, sendThrows;
   bool aliveAfter = true;
   Why? blocked;
   bool leaseValid = true;
@@ -378,6 +382,17 @@ void main() {
       expect(w.asks, isEmpty);
     });
 
+
+    test('code review C N-4: joined, then the send request throws before it goes out -> 「已加入，新密碼沒有送出」', () async {
+      final w = World()
+        ..sendThrows = StateError('store')
+        ..script('join', [ans('[JOINED] 已加入（版本落後）', send: true)]);
+      final run = w.run(['02'], makes: false, joinRel: 'net/a');
+      await run.run();
+      expect(run.rows[0].state, RowState.failed);
+      expect(run.rows[0].note, '已加入，新密碼沒有送出');
+      expect(run.rows[0].joined, isTrue);
+    });
     test('code review A m-2: the page gone during the link check stops it (its console closed)', () async {
       final w = World()
         ..hangLink = true

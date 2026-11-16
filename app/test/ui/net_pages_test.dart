@@ -378,6 +378,114 @@ void main() {
     expect(t.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value, isFalse);
     await finish(t, a);
   });
+
+  testWidgets('code review D M-1: the node marked 「由這台建立網路」 (list order) is the one that makes', (t) async {
+    final w = World()..holdMake = Completer<void>();
+    final a = app();
+    const other = '0000000000000000001234'; // 節點 1234 sorts before 節點 7D2C
+    a.link.core.setRecords(const [Rec(id, 1), Rec(other, 1)]);
+    a.nets.setForTest(const NetSnapshot());
+    await t.pumpWidget(host(Builder(
+        builder: (c) => TextButton(
+            onPressed: () => Navigator.of(c).push(MaterialPageRoute(
+                builder: (_) => NetFormPage(
+                    app: a,
+                    ui: UiState(MemStore()..ids = [id, other]),
+                    makes: true,
+                    ticked: const {id, other}, // ticked in this order: id first
+                    compute: () async => const NetSnapshot(),
+                    runFlow: (l, go, _, _, _) => NetRun(deps(w, l), ids: const [other, id], makes: true, askGoOn: go)))),
+            child: const Text('open')))));
+    await t.tap(find.text('open'));
+    await t.pumpAndSettle();
+    expect(find.textContaining('由這台建立網路'), findsOneWidget);
+    final marked = t.widget<CheckboxListTile>(find.ancestor(of: find.textContaining('由這台建立網路'), matching: find.byType(CheckboxListTile)));
+    expect((marked.title as Text).data, '節點 1234');
+    await start(t);
+    expect(t.widget<NetRunPage>(find.byType(NetRunPage)).ids.first, other, reason: 'the marked one makes');
+    w.holdMake!.complete();
+    await settle(t);
+    await finish(t, a);
+  });
+
+  testWidgets('code review C N-3: the network the user picked is gone -> no 開始 (never another network instead)', (t) async {
+    final a = app();
+    NetEntry e(String n) => NetEntry(n, NetView(netId: n, meshId: 'bm', netName: n, applied: true, country: 'US', members: const []));
+    a.nets.setForTest(NetSnapshot(netFiles: 2, nets: [e('A'), e('B')]));
+    await t.pumpWidget(host(NetFormPage(app: a, ui: UiState(MemStore()..ids = [id]), ticked: const {id})));
+    await t.pump();
+    await t.tap(find.textContaining('B（已建立）'));
+    await t.pump();
+    a.nets.setForTest(NetSnapshot(netFiles: 2, nets: [e('A')])); // B no longer opens
+    await t.pump();
+    expect(t.widget<FilledButton>(find.widgetWithText(FilledButton, Btn.start)).onPressed, isNull);
+    await finish(t, a);
+  });
+
+  testWidgets('code review C N-1 / D m-2: a blocked radio and a lost link in the same moment close the question once', (t) async {
+    final a = app();
+    final l = (await t.runAsync(() => a.link.acquire('加入網路', LeaseKind.session)))!;
+    final w = World()..script('join', [ans('[JOINED] 已加入')]);
+    void Function()? lostNow;
+    await t.pumpWidget(host(NetRunPage(
+      app: a,
+      ui: UiState(MemStore()..ids = [id]),
+      lease: l,
+      ids: const [id],
+      makes: false,
+      joinRel: 'net/a',
+      flow: (go, country, _, lost) {
+        lostNow = lost;
+        final d = w.deps;
+        return NetRun(
+            FlowDeps(
+                login: d.login,
+                console: (h) => _AskConsole(country, () {}),
+                applied: d.applied,
+                blocked: () => a.link.core.blocked,
+                leaseValid: () => l.valid),
+            ids: const [id],
+            makes: false,
+            joinRel: 'net/a',
+            askGoOn: go);
+      },
+    )));
+    await settle(t);
+    expect(find.text('要改這台節點的國家嗎？'), findsOneWidget);
+    a.link.radio(bluetooth: false); // the blocked notice and the lost link, in one moment
+    lostNow!();
+    await settle(t);
+    expect(find.byType(NetRunPage), findsOneWidget, reason: 'the second close never pops the run page');
+    await finish(t, a);
+  });
+
+  testWidgets('code review C N-5 / D m-3: a check page closed during its login: no confirm, its lease released', (t) async {
+    final w = World()
+      ..dac[id] = 'd4'
+      ..script('confirm', [ans('[NET_STATE] 網路已建立')]);
+    final gate = Completer<void>();
+    final a = app();
+    await t.pumpWidget(host(Builder(
+        builder: (c) => TextButton(
+            onPressed: () => Navigator.of(c).push(MaterialPageRoute(
+                builder: (_) => CheckNetPage(
+                    app: a,
+                    ui: UiState(MemStore()..ids = [id]),
+                    preselect: id,
+                    flow: (l, i) => CheckRun(deps(w, l, gate: gate), id: i, snapshot: () async => NetSnapshot(netFiles: 1, nets: [pend('n1', 'd4')]))))),
+            child: const Text('open')))));
+    await t.tap(find.text('open'));
+    await t.pumpAndSettle();
+    await t.tap(find.widgetWithText(FilledButton, Btn.start));
+    await settle(t);
+    expect(a.reg.current, isNotNull);
+    await t.pumpWidget(const SizedBox()); // the system closes the page while its login runs
+    gate.complete();
+    await settle(t);
+    expect(w.confirmed, isEmpty);
+    expect(a.reg.current, isNull);
+    await finish(t, a);
+  });
 }
 
 /// A console whose join asks the country, then loses its link while the question is open (code review B M4).

@@ -201,6 +201,8 @@ class NetRun extends ChangeNotifier {
       // code review A m-1 / B m2: a request that threw before it went out (a record that does not read, the phone's
       // keys): the row fails with its reason, never stays 「進行中」
       r.line = '[REQ_FAIL] 操作沒有成功：${e is PlatformException ? e.code : e.runtimeType}';
+      // code review C N-4: joined, and the new secrets' request threw before it went out (§2.9)
+      if (r.joined && r.note.isEmpty) r.note = '已加入，新密碼沒有送出';
       return _failed(r, retrying, key: e is PlatformException);
     }
   }

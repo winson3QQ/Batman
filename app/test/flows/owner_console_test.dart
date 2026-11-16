@@ -469,6 +469,21 @@ void main() {
     await rig.c.close();
     expect(rig.lost, 2, reason: 'idempotent');
   });
+
+  test('code review C N-2: a second close waits for the first (the link is gone before either returns)', () async {
+    final rig = Rig(rust);
+    rig.slowCas = Completer<void>();
+    unawaited(rig.c.makeNetwork(name: 'n', channel: 40));
+    await rig.clock.run(100);
+    var first = false, second = false;
+    unawaited(rig.c.close().then((_) => first = true));
+    unawaited(rig.c.close().then((_) => second = true));
+    await rig.clock.run(100);
+    expect((first, second), (false, false), reason: 'the record write still runs');
+    rig.slowCas!.complete();
+    await rig.clock.run(200);
+    expect((first, second), (true, true));
+  });
   test('nodeDacHash comes from the session', () async {
     final rig = Rig(rust);
     expect(rig.c.nodeDacHash(), 'ab' * 32);

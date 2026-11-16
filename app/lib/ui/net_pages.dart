@@ -216,7 +216,9 @@ class _NetFormPageState extends State<NetFormPage> {
   NetEntry? _picked(NetSnapshot s) {
     if (s.nets.isEmpty) return null;
     final p = _pick;
-    return s.nets.where((n) => n.rel == p).firstOrNull ?? (s.nets.length == 1 ? s.nets.first : null);
+    // code review C N-3: a network the user picked that is gone is not replaced by another one (no 開始 until picked)
+    if (p != null) return s.nets.where((n) => n.rel == p).firstOrNull;
+    return s.nets.length == 1 ? s.nets.first : null;
   }
 
   String _key(NetSnapshot s) => '${[for (final n in s.nets) '${n.rel}:${n.applied}'].join(',')}|${s.netFiles}';
@@ -240,7 +242,8 @@ class _NetFormPageState extends State<NetFormPage> {
       _pending = l;
       // §2.4: the records again under the lease; another network or another state since the form was made -> no start
       final now = await (widget.compute ?? a.nets.compute)();
-      final ticked = _ticked.where(a.link.core.states.containsKey).toList();
+      // code review D M-1: the list's order (nicknames, as shown), so the node marked 「由這台建立網路」 is the one that makes
+      final ticked = _ids.where(_ticked.contains).toList();
       if (!mounted || _pending == null) return; // dispose released it
       if (now.listFailed || _key(now) != _key(_seen ?? s) || ticked.length != _ticked.length) {
         _pending = null;
@@ -526,8 +529,15 @@ class _NetRunPageState extends State<NetRunPage> {
   /// anything else is asked — never two questions on top of each other.
   void _dismiss() {
     final c = _open;
+    if (c != null) _closeQ(c, false);
+  }
+
+  /// The one way a question closes (a button, a blocked radio, a lost link): only while it is still the open one, so
+  /// two of them in the same moment never pop a second route — the run page itself (code review C N-1 / D m-2).
+  void _closeQ(BuildContext c, bool answer) {
+    if (!identical(_open, c)) return;
     _open = null;
-    if (c != null && c.mounted) Navigator.of(c).pop(false);
+    if (c.mounted) Navigator.of(c).pop(answer);
   }
 
   Future<bool> _ask(Widget Function(BuildContext c) dialog) async {
@@ -536,14 +546,14 @@ class _NetRunPageState extends State<NetRunPage> {
     BuildContext? dc;
     final sub = a.link.changed.listen((_) {
       final c = dc;
-      if (c != null && c.mounted && (a.link.core.blocked != null || !widget.lease.valid)) Navigator.of(c).pop(false);
+      if (c != null && (a.link.core.blocked != null || !widget.lease.valid)) _closeQ(c, false);
     });
     try {
       return await showDialog<bool>(
               context: context,
               barrierDismissible: false,
               builder: (c) {
-                dc = _open = c;
+                dc ??= _open = c; // once: a rebuild during its exit never makes it open again
                 return dialog(c);
               }) ==
           true;
@@ -563,9 +573,9 @@ class _NetRunPageState extends State<NetRunPage> {
         content: SingleChildScrollView(child: Text(body, style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink))),
         actions: [
           Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            BatButton(yes, onPressed: () => Navigator.pop(c, true)),
+            BatButton(yes, onPressed: () => _closeQ(c, true)),
             const SizedBox(height: 6),
-            BatButton(no, kind: BtnKind.text, onPressed: () => Navigator.pop(c, false)),
+            BatButton(no, kind: BtnKind.text, onPressed: () => _closeQ(c, false)),
           ]),
         ],
       ),
@@ -599,6 +609,8 @@ class _NetRunPageState extends State<NetRunPage> {
         if (await flowDeps(a, widget.lease, askCountry: (_) async => false, askRemoved: (_) async => false).applied(rel)) {
           r.state = RowState.ok;
           r.line = '網路已建立';
+          // code review D m-1: the network is made now: the run no longer reads as 「沒有建立完成」
+          if (run.stopped == StopWhy.makeFailed) run.stopped = StopWhy.none;
         }
       } finally {
         if (identical(_hold, h)) _hold = null;

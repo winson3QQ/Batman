@@ -477,9 +477,12 @@ class OwnerConsole {
   void Function()? _stopWait;
 
   /// Idempotent (plan §2.2): stop taking frames, wait for the step in progress (seal / CAS / netPersisted; at most
-  /// 10 s), then the subscription, the link (until it is gone) and the session.
-  Future<void> close() async {
-    if (_closed) return;
+  /// 10 s), then the subscription, the link (until it is gone) and the session. Every caller waits for the same close
+  /// (code review C N-2: a second caller does not return before the link is gone).
+  Future<void> close() => _closing ??= _close();
+  Future<void>? _closing;
+
+  Future<void> _close() async {
     _closed = true;
     _stopWait?.call();
     onLost?.call();
