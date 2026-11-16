@@ -14,11 +14,17 @@ import 'src/nodelink/raw_use.dart';
 import 'src/rust/api/owner.dart' show listNodes, listPending;
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
+import 'ui/home_page.dart';
+import 'ui/intro_pages.dart';
+import 'ui/theme.dart';
+import 'ui/widgets.dart';
+import 'ui/ui_state.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]); // T13: portrait only
   await RustLib.init();
   runApp(BatmanApp(makeLink: (dir) => AppLink.create(platform: _platform, filesDir: dir)));
 }
@@ -33,7 +39,9 @@ class BatmanApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Batman',
-      theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
+      theme: batThemeData(Brightness.light),
+      darkTheme: batThemeData(Brightness.dark),
+      themeMode: ThemeMode.system,
       home: StartupCheck(makeLink: makeLink),
     );
   }
@@ -51,6 +59,7 @@ class StartupCheck extends StatefulWidget {
 
 class _StartupCheckState extends State<StartupCheck> {
   AppLink? _app; // #329 PR 1: built once the startup check passed
+  bool _devTrust = false;
   // what everyone sees (the result, warnings, first-run outcome) / the technical detail, folded away
   String? _report;
   String _tech = '';
@@ -91,6 +100,7 @@ class _StartupCheckState extends State<StartupCheck> {
     try {
       final info = buildInfo();
       final flavorDevTrust = await _platform.invokeMethod<bool>('devTrust');
+      _devTrust = flavorDevTrust == true;
       // design v8.5.1 §4.1: the Rust library and the flavor must agree, else the app is disabled
       agree = flavorDevTrust == info.devTrust;
       lines.add(agree ? '啟動檢查：正常' : '啟動檢查：App 內部版本不一致，已停用（請重新安裝 App）');
@@ -119,7 +129,7 @@ class _StartupCheckState extends State<StartupCheck> {
         } else {
           // one line per reason (claim and recovery share theirs when the owner key is the cause)
           lines.addAll({for (final u in KeyUse.values) keys.refusal(u)}.whereType<String>());
-          if (keys.softOwnerEnc) lines.add('注意：這支手機的復原／成員金鑰只有軟體保護，只適合開發使用');
+          if (keys.softOwnerEnc) lines.add('注意：這支手機的復原／隊員金鑰只有軟體保護，只適合開發使用');
         }
       }
     } catch (e) {
@@ -155,6 +165,26 @@ class _StartupCheckState extends State<StartupCheck> {
       _report = lines.join('\n');
       _tech = tech.join('\n');
     });
+    // #329 PR 2: a passed startup check goes straight to the new home page (§5.1)
+    final a = _app;
+    if (_ok && a != null && mounted) {
+      // §4.6 / §5.2: the display memory, then the welcome pages only when never seen and the phone has no node
+      final ui = UiState(RecordUiStore(a.records, _platform), log: (l) => debugPrint('BMAPP $l'));
+      await ui.load();
+      if (!mounted) return;
+      final notes = lines.skip(1).toList(); // lines[0] is 「啟動檢查：正常」
+      Widget home() => HomePage(app: a, ui: ui, devTrust: _devTrust, keys: keys, notes: notes);
+      final nav = Navigator.of(context);
+      if (!ui.welcomed && a.link.core.states.isEmpty) {
+        nav.pushReplacement(MaterialPageRoute(
+            builder: (_) => IntroPages(onDone: () {
+                  ui.setWelcomed(); // a write that fails is remembered for this run only (§5.2)
+                  nav.pushReplacement(MaterialPageRoute(builder: (_) => home()));
+                })));
+      } else {
+        nav.pushReplacement(MaterialPageRoute(builder: (_) => home()));
+      }
+    }
   }
 
   /// Design v8.5.1 §4.1: the install marker; the four keys are generated only when there is no marker AND no record.
@@ -187,6 +217,72 @@ class _StartupCheckState extends State<StartupCheck> {
 
   @override
   Widget build(BuildContext context) {
+    final t = BatTheme.of(context);
+    // §5.2 board 1.1: the splash while the phone is checked, and on until the home page replaces it (the older start
+    // page never flashes in between; PR 2 review A-m4)
+    if (_report == null || (_ok && _app != null)) {
+      return Scaffold(
+        backgroundColor: t.bg,
+        body: SafeArea(
+          child: Column(children: [
+            Expanded(
+              child: Center(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Semantics(
+                      label: '台灣曙豐防災自訓團臂章',
+                      child: Image.asset('assets/brand/badge.webp', width: 160, fit: BoxFit.contain)),
+                  const SizedBox(height: 18),
+                  Text('Batman', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: t.ink)),
+                  const SizedBox(height: 6),
+                  Text('台灣曙豐防災自訓團', style: TextStyle(fontSize: Fs.note, color: t.sub)),
+                ]),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 28),
+              child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: t.sub)),
+                const SizedBox(width: 8),
+                Text('正在檢查這支手機…', style: TextStyle(fontSize: Fs.note, color: t.sub)),
+              ]),
+            ),
+          ]),
+        ),
+      );
+    }
+    if (!_ok) {
+      // §5.2 board 2.4: the key check did not pass; the reason, what the phone holds (names only), a retry when it
+      // may help, the technical detail folded away. No gate is relaxed (KeyGate is the existing check).
+      final lines = _report!.split('\n');
+      return BatPage(
+        title: '',
+        body: [
+          StatusHero(look: Look.bad, text: lines.first, next: lines.length > 1 ? lines.skip(1).join('\n') : null),
+          if (_index.isNotEmpty) ...[
+            BatLabel(_retry ? '手機裡有這些節點的紀錄（沒有打開，也沒有刪除）：' : '這些節點需要重燒卡回收：'),
+            BatCard(children: [for (final n in _index) BatRow(icon: Icons.router_outlined, title: n)]),
+          ],
+          BatCard(children: [
+            ExpansionTile(
+                title: Text('技術資訊（給維修人員看）', style: TextStyle(fontSize: Fs.body, color: t.ink)),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: SelectableText(_tech, style: TextStyle(fontFamily: 'monospace', fontSize: Fs.meta, color: t.ink)),
+                  ),
+                ]),
+          ]),
+        ],
+        foot: _retry
+            ? [
+                BatButton(Btn.tryAgain, onPressed: () {
+                  setState(() => _report = null);
+                  _run();
+                }),
+              ]
+            : null,
+      );
+    }
     return Scaffold(
       appBar: AppBar(title: const Text('Batman 節點管理')),
       body: Padding(

@@ -106,4 +106,22 @@ mod tests {
             let _ = std::fs::remove_dir_all(d);
         }
     }
+
+    /// #329 §4.6 T-U4: `ui/state-v1` is display memory, not a key record: a phone holding only it has no records (so
+    /// the keys are made again and the old ui record is just unreadable), it is not listed as a node, and the sweep
+    /// leaves it alone.
+    #[test]
+    fn t_u4_ui_is_not_a_record() {
+        let d = std::env::temp_dir().join(format!("bm-ui-only-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let dir = d.to_string_lossy().to_string();
+        batman_proto::store::Store::new(&d).write("ui/state-v1", 1, b"s").unwrap();
+        assert!(!store_has_records(dir.clone()));
+        assert!(crate::api::owner::list_nodes(dir.clone()).is_empty());
+        assert_eq!(store_sweep(dir.clone()).unwrap(), 0);
+        assert!(batman_proto::store::Store::new(&d).read("ui/state-v1").unwrap().is_some());
+        batman_proto::store::Store::new(&d).write("node/x", 1, b"s").unwrap();
+        assert!(store_has_records(dir));
+        let _ = std::fs::remove_dir_all(d);
+    }
 }

@@ -114,7 +114,7 @@ void main() {
   // design v8.5.1 §4.1 (owner_enc row): the key levels do not allow a claim -> said so, nothing asked of the store or BLE
   testWidgets('the keys do not allow a claim: no claim, nothing read', (t) async {
     await claim(t, ClaimTarget.nothing, keysOk: false);
-    expect(find.textContaining('復原／成員金鑰不是硬體保護，不能認領節點'), findsOneWidget);
+    expect(find.textContaining('復原／隊員金鑰不是硬體保護，不能認領節點'), findsOneWidget);
     expect(rust.calls, isEmpty);
     expect(platform, isNot(contains('filesDir')));
     expect(platform, isNot(contains('blePermissions')));
@@ -124,7 +124,7 @@ void main() {
   // an answer that allows only the claim is still refused). Negative control: the `?? refusal(recover)` removed -> FAIL
   testWidgets('claim allowed but recovery not: no claim, nothing read', (t) async {
     await claim(t, ClaimTarget.nothing, recoverOk: false);
-    expect(find.textContaining('復原／成員金鑰不是硬體保護，不能接續沒完成的認領'), findsOneWidget);
+    expect(find.textContaining('復原／隊員金鑰不是硬體保護，不能接續沒完成的認領'), findsOneWidget);
     expect(rust.calls, isEmpty);
     expect(platform, isNot(contains('filesDir')));
     expect(platform, isNot(contains('blePermissions')));
@@ -138,7 +138,7 @@ void main() {
       await claim(t, ClaimTarget.nothing, soft: true);
       expect(find.text(devSoftEncTitle), findsOneWidget);
       expect(find.text(devSoftEncText), findsOneWidget);
-      expect(devSoftEncText, contains('這支手機的復原／成員金鑰是軟體保護，只能用於開發，不可用於實際部署'));
+      expect(devSoftEncText, contains('這支手機的復原／隊員金鑰是軟體保護，只能用於開發，不可用於實際部署'));
       expect(devSoftEncText, contains('這支手機認領的每個節點都要重燒卡回收'));
       // 254-app-replay T4: the page asks devTrust once when it opens (the entry's build check; no record is read)
       expect(platform.where((m) => m != 'devTrust'), ['scanQr', 'keyLevels'], reason: 'nothing before the answer');

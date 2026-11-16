@@ -15,10 +15,13 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:batman_app/key_abilities.dart';
 import 'package:batman_app/main.dart';
+import 'package:batman_app/src/rust/api/claim.dart' show SealParams;
+import 'package:batman_app/src/rust/api/owner.dart' show SealedRecord;
+import 'package:batman_app/ui/cbor_mini.dart';
 import 'package:batman_app/claim.dart';
 import 'package:batman_app/nodes.dart';
 import 'package:batman_app/scan.dart';
-import 'package:batman_app/src/nodelink/node_list.dart';
+import 'package:batman_app/ui/home_page.dart';
 import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/core.dart' show Why;
 import 'package:batman_app/src/rust/api/simple.dart';
@@ -50,8 +53,9 @@ Map<String, Object?> answer(
     };
 
 class FakeRust implements RustLibApi {
+  bool dev = true; // the build: dev (devTrust) or field; the platform's devTrust answers the same
   @override
-  BuildInfo crateApiSimpleBuildInfo() => const BuildInfo(devTrust: true, crateVersion: 'test');
+  BuildInfo crateApiSimpleBuildInfo() => BuildInfo(devTrust: dev, crateVersion: 'test');
 
   @override
   String crateApiSimpleSelftest() => 'ok';
@@ -71,8 +75,27 @@ class FakeRust implements RustLibApi {
   @override
   Future<bool> crateApiSimpleStoreHasRecords({required String dir}) async => false;
 
+  List<String> nodes = ['0000000000000c4f2a'];
+  bool uiWelcomed = false; // ui/state-v1 holds 「看過歡迎頁」
+
   @override
-  Future<List<String>> crateApiOwnerListNodes({required String dir}) async => ['0000000000000c4f2a'];
+  Future<SealedRecord?> crateApiOwnerStoreReadSealed({required String dir, required String rel}) async =>
+      rel == 'ui/state-v1' && uiWelcomed
+          ? SealedRecord(generation: BigInt.one, sealed: Uint8List.fromList([9]), aad: Uint8List(0))
+          : null;
+  @override
+  Future<List<String>> crateApiOwnerListNodes({required String dir}) async => nodes;
+
+  final uiWrites = <String>[]; // ui/state-v1 writes (CAS)
+  @override
+  Future<SealParams> crateApiClaimStoreSealParams({required String dir, required String rel}) async =>
+      SealParams(generation: BigInt.from(uiWelcomed ? 2 : 1), aad: Uint8List(0));
+  @override
+  Future<BigInt> crateApiOwnerStoreWriteCas(
+      {required String dir, required String rel, required BigInt expectedGen, required List<int> sealed}) async {
+    uiWrites.add(rel);
+    return expectedGen + BigInt.one;
+  }
 
   @override
   Future<List<String>> crateApiOwnerListPending({required String dir}) async => ['00000000000000beef'];
@@ -104,12 +127,16 @@ void main() {
       calls.add(c.method);
       switch (c.method) {
         case 'devTrust':
-          return true;
+          return rust.dev;
+        case 'seal':
+          return Uint8List.fromList([7]);
         case 'filesDir':
           return '/data/user/0/app/files';
         case 'keyLevels':
           if (keys is PlatformException) throw keys;
           return keys;
+        case 'open': // the ui record (the only sealed record these start-page tests read)
+          return cborEncode(<Object, Object>{1: 1, 2: true});
         case 'firstRun':
           throw PlatformException(code: 'firstRun', message: 'no StrongBox, no TEE');
       }
@@ -168,8 +195,8 @@ void main() {
       final a = KeyAbilities.from(answer(claim: false, recover: false));
       expect(a.appUsable && a.login && a.makeNetwork, true);
       expect(a.claim || a.recover, false);
-      expect(a.refusal(KeyUse.claim), contains('復原／成員金鑰不是硬體保護，不能認領節點'));
-      expect(a.refusal(KeyUse.recover), contains('復原／成員金鑰不是硬體保護'));
+      expect(a.refusal(KeyUse.claim), contains('復原／隊員金鑰不是硬體保護，不能認領節點'));
+      expect(a.refusal(KeyUse.recover), contains('復原／隊員金鑰不是硬體保護'));
     });
 
     test('dev build with a SOFTWARE owner_enc (S20): everything on, the notice flag set', () {
@@ -198,8 +225,8 @@ void main() {
       a = KeyAbilities.from(answer(gone: {'OWNER_ENC'}));
       expect(a.login && a.makeNetwork, true);
       expect(a.claim || a.recover, false);
-      expect(a.refusal(KeyUse.recover), allOf(contains('復原／成員金鑰不見了，不能接續沒完成的認領'), contains('需要重燒卡')));
-      expect(a.refusal(KeyUse.claim), contains('復原／成員金鑰不見了，不能認領節點'));
+      expect(a.refusal(KeyUse.recover), allOf(contains('復原／隊員金鑰不見了，不能接續沒完成的認領'), contains('需要重燒卡')));
+      expect(a.refusal(KeyUse.claim), contains('復原／隊員金鑰不見了，不能認領節點'));
 
       a = KeyAbilities.from(answer(gone: {'RECORD_AES'}));
       expect(a.appUsable, false);
@@ -233,7 +260,7 @@ void main() {
       expect(by('OWNER_SIGN', null), KeyAbilities.ownerGone);
       expect(by('ADMIN_SIGN', -1), contains('網路管理金鑰不是硬體保護'));
       expect(by('ADMIN_SIGN', null), KeyAbilities.adminGone);
-      expect(by('OWNER_ENC', 0), contains('復原／成員金鑰不是硬體保護'));
+      expect(by('OWNER_ENC', 0), contains('復原／隊員金鑰不是硬體保護'));
       expect(by('OWNER_ENC', null), KeyAbilities.encGone);
       expect(by('SOMETHING_NEW', 1), isNotNull, reason: 'an unknown role is still a refusal');
       expect(KeyAbilities.refusedBy(PlatformException(code: 'keystore', message: 'OWNER_SIGN')), isNull);
@@ -305,10 +332,11 @@ void main() {
     // #329 PR 1 review r3 E-M1 (E6 / E8): the start page opens an older page under a raw lease and hands it to the
     // page (its busy work holds it); the lease goes when the page is gone. Negative controls: _open without the lease
     // (page(a, null)) or without openRawPage -> FAIL.
-    for (final (button, lease, Type type) in [
-      ('我的節點', '我的節點', NodesPage),
-      ('認領節點', '新增節點', ClaimPage),
-      ('附近的節點（開發用：藍牙測試）', '附近的節點', ScanPage),
+    // PR 2: 新增節點 is on the home page; the older console and the BLE test page are in 設定 -> 開發者選項
+    for (final (button, lease, Type type, viaSettings) in [
+      ('新增節點', '新增節點', ClaimPage, false),
+      ('舊版控制台', '舊版控制台', NodesPage, true),
+      ('附近的節點（藍牙測試）', '附近的節點', ScanPage, true),
     ]) {
       testWidgets('r3 E-M1 / r4 G-M1: $button opens its page under a raw lease handed to the page; back releases it',
           (t) async {
@@ -322,9 +350,13 @@ void main() {
           a.link.dispose();
           AppLink.forgetForTest();
         });
-        expect(find.byType(NodeStatusList), findsOneWidget, reason: 'the status list is on the start page');
+        expect(find.byType(HomePage), findsOneWidget, reason: 'the start page hands over to the home page');
         expect(a.reg.current, isNull);
-        await t.tap(find.text(button));
+        if (viaSettings) {
+          await t.tap(find.byTooltip('設定'));
+          await t.pumpAndSettle();
+        }
+        await t.tap(find.text(button).last);
         await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
         await t.pumpAndSettle();
         expect(find.byType(type), findsOneWidget);
@@ -380,6 +412,78 @@ void main() {
       AppLink.forgetForTest();
     });
 
+    // #329 §5.2 T-U3: the welcome pages only when never seen AND the phone holds no node record (an upgrading user
+    // never sees them). Negative control: drop the record check -> the upgrading user sees the welcome -> FAIL.
+    for (final (records, seen, welcome) in [(true, false, false), (false, false, true), (false, true, false)]) {
+      testWidgets('T-U3: records $records, seen $seen -> welcome $welcome', (t) async {
+        mock(t, answer());
+        rust
+          ..nodes = records ? ['0000000000000c4f2a'] : []
+          ..uiWelcomed = seen;
+        addTearDown(() => rust.uiWelcomed = false);
+        AppLink.forgetForTest();
+        await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: _ScanBle())));
+        await t.pumpAndSettle();
+        expect(find.text('歡迎'), welcome ? findsOneWidget : findsNothing);
+        expect(find.text('可以做的事'), welcome ? findsNothing : findsOneWidget);
+        await t.runAsync(AppLink.instance!.link.dispose);
+        rust.nodes = ['0000000000000c4f2a'];
+        AppLink.forgetForTest();
+      });
+    }
+
+
+    // PR 2 review r3 E-MINOR-1 (E, V16) / F-MINOR-2 (Md, Mq): 跳過說明 and 開始 both end the welcome, open the home
+    // page and write 「看過歡迎頁」 to ui/state-v1. Negative controls: no setWelcomed / no page change -> FAIL.
+    for (final skip in [true, false]) {
+      testWidgets('r3: the welcome ended by ${skip ? '跳過說明' : '開始'} -> the home page, the flag written', (t) async {
+        mock(t, answer());
+        rust
+          ..nodes = []
+          ..uiWelcomed = false
+          ..uiWrites.clear();
+        addTearDown(() => rust.nodes = ['0000000000000c4f2a']);
+        AppLink.forgetForTest();
+        await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: _ScanBle())));
+        await t.pumpAndSettle();
+        if (skip) {
+          await t.tap(find.text('跳過說明'));
+        } else {
+          for (var i = 0; i < 2; i++) {
+            await t.tap(find.text('下一步'));
+            await t.pumpAndSettle();
+          }
+          await t.tap(find.text('開始'));
+        }
+        await t.pumpAndSettle();
+        expect(find.text('可以做的事'), findsOneWidget);
+        expect(rust.uiWrites, ['ui/state-v1']);
+        await t.runAsync(AppLink.instance!.link.dispose);
+        AppLink.forgetForTest();
+      });
+    }
+
+    // r3 E-MINOR-1 (O / O2, Y): the build's devTrust reaches the settings page (開發者選項) and the F48 todo (an
+    // unfinished claim) through main -> HomePage. Negative controls: devTrust not passed on -> FAIL.
+    for (final dev in [true, false]) {
+      testWidgets('r3: a ${dev ? 'dev' : 'field'} build -> 開發者選項 and 上次新增節點沒有做完 ${dev ? 'shown' : 'not shown'}',
+          (t) async {
+        rust.dev = dev;
+        addTearDown(() => rust.dev = true);
+        mock(t, answer());
+        rust.uiWelcomed = true;
+        addTearDown(() => rust.uiWelcomed = false);
+        AppLink.forgetForTest();
+        await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: _ScanBle())));
+        await t.pumpAndSettle();
+        expect(find.text('上次新增節點沒有做完'), dev ? findsOneWidget : findsNothing);
+        await t.tap(find.byTooltip('設定'));
+        await t.pumpAndSettle();
+        expect(find.text('開發者選項'), dev ? findsOneWidget : findsNothing);
+        await t.runAsync(AppLink.instance!.link.dispose);
+        AppLink.forgetForTest();
+      });
+    }
     testWidgets('every key fits: the three entries are there and on', (t) async {
       await start(t, answer());
       expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
@@ -512,7 +616,7 @@ void main() {
 
     testWidgets('claim not allowed: 「認領節點」 is off with its reason; 「我的節點」 stays', (t) async {
       await start(t, answer(claim: false, recover: false));
-      expect(find.textContaining('復原／成員金鑰不是硬體保護，不能認領節點'), findsOneWidget);
+      expect(find.textContaining('復原／隊員金鑰不是硬體保護，不能認領節點'), findsOneWidget);
       expect(t.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '認領節點')).onPressed, isNull);
       expect(t.widget<FilledButton>(find.widgetWithText(FilledButton, '我的節點')).onPressed, isNotNull);
     });

@@ -27,8 +27,8 @@ pub(crate) fn invite_err(e: &Error) -> String {
     match e {
         Error::Format(w) => format!("這不是正確的碼（{w}）"),
         Error::Invalid(w) => format!("內容驗證沒有通過（{w}）"),
-        Error::NotApplied => "這個網路還沒確認建立完成，請先在建立網路的節點按「確認網路」".into(),
-        Error::NotAdmin => "這個網路不是這支手機建立的（手機不是它的管理者）".into(),
+        Error::NotApplied => "這個網路還沒確認建立完成，請先在建立網路的節點按「檢查網路」".into(),
+        Error::NotAdmin => "這個網路不是這支手機建立的（手機不是它的隊長）".into(),
         Error::Full => format!("這個網路已經有 {} 台節點（App 目前的上限）", netrec::MAX_MEMBERS),
         Error::Name => format!("名稱太長（最多 {} 個位元組）或含有不能顯示的字元", invite::NAME_MAX),
         Error::NodeCert(c) => format!("申請裡的節點身分沒有通過檢查（{c:?}）"),
@@ -43,7 +43,7 @@ pub(crate) fn invite_err(e: &Error) -> String {
         // remove-member §3.4: an approval pasted after a newer update (its secrets are not the stored ones any more)
         Error::NoRequest => "找不到這個網路的申請（若你已匯入較新的更新包：這份同意已經過時）".into(),
         Error::TooOld => "這支手機的網路資料太舊".into(),
-        Error::SameVersionDifferent => "同編號的不同網路（若這份同意在換密碼前產生：請網主重新邀請這台）".into(),
+        Error::SameVersionDifferent => "同編號的不同網路（若這份同意在換密碼前產生：請隊長重新邀請這台）".into(),
         Error::PreviousNode => "先完成或忘記前一台".into(),
         Error::Stale => "申請已換新，請重新貼上同意碼".into(),
         Error::SasMismatch => "確認碼不符，沒有匯入".into(),
@@ -251,7 +251,7 @@ pub fn member_import_prepare(hex: String, pend_gen: u64, pend_plain: Option<Vec<
             sas: String::new(),
             eph_pub: vec![],
             pend_gen,
-            detail: format!("這支手機有這個網路的舊紀錄（v{stored}），要換成新的嗎？（若你手上還有網主給的更新包，先貼更新包）"),
+            detail: format!("這支手機有這個網路的舊紀錄（v{stored}），要換成新的嗎？（若你手上還有隊長給的更新包，先貼更新包）"),
         },
         Prepared::Ready { sas, eph_pub, pend_gen } => ImportPrep { state: ImportState::Ready, sas, eph_pub: eph_pub.to_vec(), pend_gen, detail: String::new() },
         Prepared::AlreadyImported => ImportPrep { state: ImportState::AlreadyImported, sas: String::new(), eph_pub: vec![], pend_gen, detail: "[IMPORT] 已匯入過了".into() },
@@ -285,7 +285,7 @@ pub fn member_import_approval(
     let (plain, net_id, expected) = r.map_err(|e| invite_err(&e))?;
     let name = MNet::decode(&plain).ok().and_then(|m| m.netcfg().ok()).map(|c| invite::display_name(&c.name)).unwrap_or_default();
     let mut st = persist_at(OwnerKind::PersistMnet, mrec::mnet_path(&net_id), plain, expected);
-    st.detail = format!("[IMPORT] 已匯入網路「{name}」，可以登入自己的節點按「加入隊伍網路」");
+    st.detail = format!("[IMPORT] 已匯入網路「{name}」，可以登入自己的節點按「加入網路」");
     Ok(st)
 }
 

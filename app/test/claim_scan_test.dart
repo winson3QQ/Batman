@@ -63,7 +63,7 @@ void main() {
     await t.pumpAndSettle();
   }
 
-  const read = '已讀取節點（編號末四碼 …4f2a）的 QR 碼，可以按「認領」';
+  const read = '已讀取節點（編號後四碼 …4f2a）的 QR 碼，可以按「認領」';
 
   for (final dev in [true, false]) {
     final flavor = dev ? 'dev' : 'field';

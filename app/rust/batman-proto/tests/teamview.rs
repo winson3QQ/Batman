@@ -118,7 +118,7 @@ fn t_a5_list_updates() {
     assert_eq!(v3.cards, vec![format!("❔ 不明節點 · 最後看到 6 分鐘前\n{}", tv::NEW_MEMBER_HINT)]);
     assert_eq!(v3.tech, vec!["不明節點 …c6d3：400 秒前".to_string()]);
     // v2.3 R5-3: the hint says what is true (the list is re-signed only at make-network and at a removal)
-    assert_eq!(v3.cards[0], "❔ 不明節點 · 最後看到 6 分鐘前\n不在你手機的名單裡（可能是新加入、網主還沒發新名單的隊員）");
+    assert_eq!(v3.cards[0], "❔ 不明節點 · 最後看到 6 分鐘前\n不在你手機的名單裡（可能是新加入、隊長還沒發新名單的隊員）");
 }
 
 // T-A3 (team side): key 9 absent / malformed -> the one sentence; not joined -> its sentence; failed read -> hidden
@@ -277,7 +277,7 @@ fn t_a11_admin_names_from_key11() {
         "🟢 『客廳』 在線 · 經隊員轉送".to_string(),
         "🟢 『第二台』（名單下一版才正式列入） 在線 · 經隊員轉送".to_string(),
         "⚪ 『遠端』（名單下一版才正式列入） 離線 · 最後看到 6 分鐘前".to_string(),
-        "❔ 不明節點 · 在線 · 經隊員轉送\n不在你手機的名單裡（可能是新加入、網主還沒發新名單的隊員）".to_string(),
+        "❔ 不明節點 · 在線 · 經隊員轉送\n不在你手機的名單裡（可能是新加入、隊長還沒發新名單的隊員）".to_string(),
     ]);
     assert_eq!(v.only, "");
 }
@@ -333,7 +333,7 @@ fn t_a11_member_and_no_list_hints() {
     let m = members(vec![entry(2, "客廳", Some(A))]);
     let v = tv::team_view_with(true, Some(&st), &tv::Names::List(tv::listed(&m)), Some(&[9; 32]), Some("我的新節點"));
     assert_eq!(v.title, "全隊（僅供參考；由『我的新節點』看到）");
-    assert_eq!(v.cards[1], "❔ 不明節點 · 在線 · 經隊員轉送\n不在你手機的名單裡（可能是新加入、網主還沒發新名單的隊員）");
+    assert_eq!(v.cards[1], "❔ 不明節點 · 在線 · 經隊員轉送\n不在你手機的名單裡（可能是新加入、隊長還沒發新名單的隊員）");
     let none = tv::team_view_with(true, Some(&st), &tv::Names::NoList, Some(&[9; 32]), None);
     assert_eq!(none.title, "全隊（僅供參考；由『這台節點』看到）");
     assert_eq!(none.cards, vec!["❔ 不明節點 · 在線 · 經隊員轉送\n這支手機沒有這個網路的名單".to_string()]);

@@ -265,13 +265,13 @@ impl Leave {
 pub fn leave_confirm(last4: &str, k10_known: bool, admin_applied: bool, member_entry: bool) -> (String, String) {
     let rejoin = match (k10_known, admin_applied, member_entry) {
         (false, _, _) => "讀不到這台目前的網路，無法確認這支手機能不能再加入。",
-        (true, true, _) => "之後可以按「加入網路／繼續加入」再加入。",
-        (true, false, true) => "之後可以按「加入隊伍網路」再加入。",
-        (true, false, false) => "這支手機沒有這個隊伍網路可用的紀錄：離開後要再加入，需要向管理者要新的邀請。",
+        (true, true, _) => "之後可以按「加入網路」再加入。",
+        (true, false, true) => "之後可以按「加入網路」再加入。",
+        (true, false, false) => "這支手機沒有這個隊伍網路可用的紀錄：離開後要再加入，需要向隊長要新的邀請。",
     };
     (
         format!("要讓節點 …{last4} 離開隊伍網路嗎？"),
-        format!("離開後這台的 HaLow 無線電會關閉，直到再加入網路。其他節點仍留在網路裡；如果有節點靠這台轉送，它們可能會斷線。離開不會把這台從管理者的成員名單移除，也不會撤銷任何東西；要把節點交給別人是轉賣（另案 #255）。手機裡的網路紀錄不會改變。{rejoin}"),
+        format!("離開後這台的 HaLow 無線電會關閉，直到再加入網路。其他節點仍留在網路裡；如果有節點靠這台轉送，它們可能會斷線。離開不會把這台從隊長的隊員名單移除，也不會撤銷任何東西；要把節點交給別人是轉賣（另案 #255）。手機裡的網路紀錄不會改變。{rejoin}"),
     )
 }
 

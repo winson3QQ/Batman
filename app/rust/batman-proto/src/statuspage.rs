@@ -145,14 +145,14 @@ const S9C: &str = "還沒連上其他隊員 — 請確認隊員的節點已開�
 // k1 = 1 (claimed, not in the team network; legacy too): the action names the button this phone has (S20 fix 1)
 const C34_HEAD: &str = "已連上附近的節點，但這台還沒加入隊伍網路 — ";
 const C_JOIN_HEAD: &str = "這台還沒加入隊伍網路 — ";
-const NO_RECORD: &str = "這支手機還沒有隊伍網路：可按「建立網路」，或向管理者要邀請";
+const NO_RECORD: &str = "這支手機還沒有隊伍網路：可按「建立網路」，或向隊長要邀請";
 
 /// Which "join" button this phone shows (My nodes): the k1 = 1 sentences name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinButton {
-    /// this phone holds a net/ record (it made a network): 「加入網路／繼續加入」
+    /// this phone holds a net/ record (it made a network): 「加入網路」
     Admin,
-    /// only mnet/ records (an imported team network): 「加入隊伍網路」
+    /// only mnet/ records (an imported team network): 「加入網路」
     Member,
     /// neither
     NoRecord,
@@ -173,10 +173,10 @@ impl JoinButton {
 
     fn tail(self, c34: bool) -> String {
         match self {
-            JoinButton::Admin if c34 => "要跟隊伍通訊請按「加入網路／繼續加入」".into(),
-            JoinButton::Admin => "請按「加入網路／繼續加入」".into(),
-            JoinButton::Member if c34 => "要跟隊伍通訊請按「加入隊伍網路」".into(),
-            JoinButton::Member => "請按「加入隊伍網路」".into(),
+            JoinButton::Admin if c34 => "要跟隊伍通訊請按「加入網路」".into(),
+            JoinButton::Admin => "請按「加入網路」".into(),
+            JoinButton::Member if c34 => "要跟隊伍通訊請按「加入網路」".into(),
+            JoinButton::Member => "請按「加入網路」".into(),
             JoinButton::NoRecord => NO_RECORD.into(),
             JoinButton::Leaving => String::new(),
         }
@@ -373,7 +373,7 @@ pub fn membership_line(k1: Option<u64>, net_id_known: bool, name: Option<&str>) 
     match k1 {
         Some(2) => match (net_id_known, name) {
             (false, _) => "網路：（讀不到名稱）".into(),
-            (true, Some(n)) => format!("網路：{}（已是成員）", shown(n)),
+            (true, Some(n)) => format!("網路：{}（已是隊員）", shown(n)),
             (true, None) => "網路：別支手機建立的網路".into(),
         },
         Some(1) => "已認領，還沒加入網路".into(),

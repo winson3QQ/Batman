@@ -41,9 +41,12 @@ class Rec {
 enum Res { body, errorCode, undecryptable, certRejected, refusedForbidden, refusedOther, noResponse, broken }
 
 class Outcome {
-  const Outcome(this.res, [this.view = '']);
+  const Outcome(this.res, [this.view = '', this.extra]);
   final Res res;
   final String view;
+
+  /// What the screens show of a read (the status page's fields); the scheduler never looks at it.
+  final Object? extra;
 }
 
 class Attempt {
@@ -74,6 +77,12 @@ class NodeState {
   int same = 0; // consecutive 不變 (full rounds only)
   int notYetRun = 0; // consecutive 還沒輪到 (§4.3.5 「連續兩輪以上」)
   Concl? last;
+
+  /// The last read's screen data (Outcome.extra), kept with `view`.
+  Object? extra;
+
+  /// The last error-code answer's screen data; becomes [extra] when the state turns 2'.
+  Object? errExtra;
 }
 
 class _T {
@@ -428,10 +437,12 @@ class NodeLinkCore {
         isY[a.addr] = a.id;
         notY[a.addr]?.remove(a.id);
         t.body = true;
+        s.extra = o.extra;
         _read(s, now, o.view);
       case Res.errorCode:
         isY[a.addr] = a.id;
         t.err = true;
+        s.errExtra = o.extra; // the error answer's own screen data (Rust row 2'), shown once it becomes 2'
         r.retry.add(key);
       case Res.undecryptable:
         final w = writtenAt[a.id];
@@ -545,6 +556,7 @@ class NodeLinkCore {
           if (s.same >= 2 && s.why != Why.identity) {
             s.kind = Kind.read;
             s.view = "2'";
+            s.extra = s.errExtra; // PR 2 review A-M2: never the last body's data under a 2'
             s.readAt = now;
             s.stale = false;
           }
