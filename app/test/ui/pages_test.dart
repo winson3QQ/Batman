@@ -173,7 +173,8 @@ void main() {
     (<String>[], <String>[], ['p'], '看我的申請', null),
     (<String>[], <String>[], <String>[], '建立網路', '加入隊長的網路'),
   ]) {
-    testWidgets('r2 C-M1: row 6 with nets $nets mnets $mnets pends $pends -> $button', (t) async {
+    for (final dev in [true, false]) {
+    testWidgets('r2 C-M1: row 6 with nets $nets mnets $mnets pends $pends -> $button (dev=$dev)', (t) async {
       final a = app(filesDir: recordsDir(nets: nets, mnets: mnets, pends: pends));
       await t.runAsync(a.nets.recompute); // as main does once the startup check passed
       a.link.core.states[id]!
@@ -182,14 +183,16 @@ void main() {
         ..readAt = a.link.now()
         ..extra = sv('red', nodeState: 1)
         ..last = Concl.read;
-      await t.pumpWidget(host(HomePage(app: a, ui: UiState(MemStore()), devTrust: false, keys: keys())));
+      await t.pumpWidget(host(HomePage(app: a, ui: UiState(MemStore()), devTrust: dev, keys: keys())));
       await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
       await t.pump();
       expect(find.widgetWithText(FilledButton, button), findsOneWidget);
-      expect(find.text('加入隊長的網路'), second == null ? findsNothing : findsOneWidget);
+      // #329 PR 5: 加入隊長的網路 opens 7.8, dev builds only (F14 / T-S5)
+      expect(find.text('加入隊長的網路'), second == null || !dev ? findsNothing : findsOneWidget);
       await t.pumpWidget(const SizedBox());
       AppLink.forgetForTest();
     });
+    }
   }
 
   testWidgets('r2 C-m2: row 1 opens the Bluetooth settings; 設定 counts as Page.other; only fresh reads are remembered',

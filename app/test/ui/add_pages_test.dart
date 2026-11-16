@@ -10,6 +10,7 @@ import 'package:batman_app/src/nodelink/node_link.dart';
 import 'package:batman_app/src/nodelink/raw_use.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/ui/add_pages.dart';
+import 'package:batman_app/ui/join_pages.dart' show JoinTeamPage;
 import 'package:batman_app/ui/home_page.dart';
 import 'package:batman_app/ui/net_pages.dart' show NetFormPage;
 import 'package:batman_app/ui/ui_state.dart';
@@ -50,20 +51,30 @@ void main() {
   });
 
   group('3.5 / 3.6 (design §5.3)', () {
-    Future<AppLink> added(WidgetTester t, NetSnapshot s, {int nodes = 1}) async {
+    Future<AppLink> added(WidgetTester t, NetSnapshot s, {int nodes = 1, bool dev = false}) async {
       final a = app();
       a.link.core.setRecords([for (var i = 0; i < nodes; i++) Rec(i == 0 ? id : 'other$i', 1)]);
       a.nets.setForTest(s);
-      await t.pumpWidget(host(AddedPage(app: a, ui: UiState(MemStore()..ids = [id]), id: id)));
+      await t.pumpWidget(host(AddedPage(app: a, ui: UiState(MemStore()..ids = [id]), id: id, devTrust: dev)));
       await t.pump();
       return a;
     }
 
-    testWidgets('no network record, the only node (3.5): 建立網路 + 我是隊員，加入隊長的網路', (t) async {
-      final a = await added(t, const NetSnapshot());
+    // #329 PR 5 K-m6: 我是隊員 opens 7.8 and is in the dev build only (F14 / T-S5)
+    testWidgets('no network record, the only node (3.5): 建立網路 + 我是隊員，加入隊長的網路 (dev) -> 7.8', (t) async {
+      final a = await added(t, const NetSnapshot(), dev: true);
       expect(find.widgetWithText(FilledButton, Btn.makeNetwork), findsOneWidget);
       expect(find.text(Btn.memberJoin), findsOneWidget);
       expect(find.text(Btn.addAnother), findsNothing);
+      await t.tap(find.text(Btn.memberJoin));
+      await t.pumpAndSettle();
+      expect(find.byType(JoinTeamPage), findsOneWidget);
+      await finish(t, a);
+    });
+
+    testWidgets('T-S5: the field build has no 我是隊員 on 3.5', (t) async {
+      final a = await added(t, const NetSnapshot());
+      expect(find.text(Btn.memberJoin), findsNothing);
       await finish(t, a);
     });
 
