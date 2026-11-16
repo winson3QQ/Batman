@@ -155,12 +155,12 @@ class FakeConsole implements OwnerConsole {
   }
 
   @override
-  String nodeDacHash() => '';
+  String nodeDacHash() => w.dacs[id] ?? '';
 
   @override
   Future<ConsoleReply> sendUpdateFor(String rel, {bool member = false}) async {
     w.log.add('send $id $rel member=$member');
-    return ConsoleReply(ReplyKind.answer, '[UPDATED] 節點 …${id.substring(id.length - 2)} 已換成新密碼');
+    return ConsoleReply(ReplyKind.answer, '[UPDATED] 節點 …${rustLast4(id)} 已換成新密碼');
   }
 
   @override
@@ -182,6 +182,7 @@ class World {
   final Map<String, String> nets;
   final log = <String>[];
   final records = <String, Uint8List>{'mpend/nn': Uint8List(3), 'mnet/nn': Uint8List(4)};
+  final dacs = <String, String>{}; // each node's dac hash (sendNewKey's expectDac)
   final ecdh = <Uint8List>[];
   late final LeaseRegistry reg;
   late final Clock clock;
@@ -218,7 +219,7 @@ class World {
           keyError: (e) {},
         ),
         op: op,
-        publicKeys: () async => {'ownerEnc': Uint8List(1)},
+        publicKeys: () async => {'ownerEnc': Uint8List(1), 'owner': Uint8List(1), 'admin': Uint8List(1)},
         nodeIds: () async => ids,
         send: (c) => SendDeps(
             op: op, readRecord: (rel) async => (BigInt.one, records[rel] as Object?), confirm: () async => true),
@@ -226,11 +227,46 @@ class World {
 }
 
 const _platform = MethodChannel('dev.batman/platform');
+String _clip = '';
+
+/// the methods asked of the app's platform channel since [open]
+final platformCalls = <String>[];
+
+/// [page] over the real AppLink, the team pages' parts from [w], the paste path on.
+Future<AppLink> open(WidgetTester t, World w, Widget Function(AppLink a) page) async {
+  t.view.physicalSize = const Size(1080, 6000);
+  t.view.devicePixelRatio = 1;
+  addTearDown(t.view.reset);
+  addTearDown(() => teamDepsOverride = null);
+  final m = t.binding.defaultBinaryMessenger;
+  m.setMockMethodCallHandler(secureChannel, (c) async => true);
+  platformCalls.clear();
+  m.setMockMethodCallHandler(_platform, (c) async {
+    platformCalls.add(c.method);
+    return null; // clearClip: done; qrMatrix: none
+  });
+  m.setMockMethodCallHandler(SystemChannels.platform, (c) async {
+    if (c.method == 'Clipboard.getData') return {'text': _clip};
+    return null;
+  });
+  final a = app();
+  a.devTrust = true; // the paste path (R5)
+  teamDepsOverride = w.deps;
+  await t.pumpWidget(host(page(a)));
+  await settle(t);
+  return a;
+}
+
+/// 貼上 with [text] on the clipboard.
+Future<void> paste(WidgetTester t, String text) async {
+  _clip = text;
+  await t.tap(find.byKey(const Key('code-paste')));
+  await settle(t);
+}
 
 void main() {
   final rust = TeamRust();
   setUpAll(() => RustLib.initMock(api: rust));
-  tearDown(() => teamDepsOverride = null);
   setUp(() {
     rust
       ..seen.clear()
@@ -238,33 +274,6 @@ void main() {
       ..importState = ImportState.ready
       ..updateState = UpdateState.advance;
   });
-
-  String clip = '';
-
-  Future<AppLink> open(WidgetTester t, World w, Widget Function(AppLink a) page) async {
-    t.view.physicalSize = const Size(1080, 6000);
-    t.view.devicePixelRatio = 1;
-    addTearDown(t.view.reset);
-    final m = t.binding.defaultBinaryMessenger;
-    m.setMockMethodCallHandler(secureChannel, (c) async => true);
-    m.setMockMethodCallHandler(_platform, (c) async => null); // clearClip: done
-    m.setMockMethodCallHandler(SystemChannels.platform, (c) async {
-      if (c.method == 'Clipboard.getData') return {'text': clip};
-      return null;
-    });
-    final a = app();
-    a.devTrust = true; // the paste path (R5)
-    teamDepsOverride = w.deps;
-    await t.pumpWidget(host(page(a)));
-    await settle(t);
-    return a;
-  }
-
-  Future<void> paste(WidgetTester t, String text) async {
-    clip = text;
-    await t.tap(find.byKey(const Key('code-paste')));
-    await settle(t);
-  }
 
   Finder sendOf(String id) => find.descendant(of: find.byKey(Key('update-node-$id')), matching: find.text('送出'));
 

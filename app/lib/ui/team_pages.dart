@@ -28,9 +28,13 @@ String offlineLine(OfflineReply r) => switch (r) {
       OfflineDone() => '',
     };
 
-/// R13 / D-M2: a group shown with its fingerprint; same names compared by the whole owner (F-m5).
-List<String> sameNameOthers(PersonView p, List<PersonView> all) =>
-    [for (final o in all) if (o.owner != p.owner && o.name == p.name) o.fpr];
+/// 8.1 / F-m5: the other groups with [p]'s name, compared by the whole owner (Rust's sameName compares fingerprints
+/// only); one line each, the same fingerprint too -> the plan's extra sentence.
+List<String> sameNameLines(PersonView p, List<PersonView> all) => [
+      for (final o in all)
+        if (o.owner != p.owner && o.name == p.name)
+          '另有同名的一組：${o.fpr}（要一起移除得各按一次）${o.fpr == p.fpr ? '。指紋也相同，請用加入時間分辨' : ''}'
+    ];
 
 // ---- 8.1 隊員名單 ---------------------------------------------------------------------------------------------------
 
@@ -105,7 +109,7 @@ class _MembersPageState extends State<MembersPage> {
               sub: [
                 '指紋 ${p.fpr}',
                 if (p.nodes.isNotEmpty) p.nodes.map((n) => '…${n.last4}${n.state == 'joining' ? '（加入中）' : ''}').join('、'),
-                for (final f in sameNameOthers(p, people)) '另有同名的一組：$f',
+                ...sameNameLines(p, people),
               ].join('\n'),
               onTap: () => _go(PersonPage(app: a, netId: widget.netId, person: p, all: people)),
             ),
@@ -131,12 +135,12 @@ class PersonPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = BatTheme.of(context);
     final note = TextStyle(fontSize: Fs.note, height: 1.55, color: t.sub);
-    final same = sameNameOthers(person, all);
+    final same = sameNameLines(person, all);
     void go(String p, String n) => Navigator.of(context)
-        .push(MaterialPageRoute(builder: (_) => RemoveConfirmPage(app: app, netId: netId, person: person, node: n, owner: p)));
+        .push(MaterialPageRoute(builder: (_) => RemoveConfirmPage(app: app, netId: netId, person: person, node: n, owner: p, same: same)));
     return BatPage(title: person.isSelf ? '我（隊長）' : person.name, body: [
       Text('指紋 ${person.fpr}', style: note),
-      if (same.isNotEmpty) Text('另有同名的一組：${same.join('、')}（要一起移除得各按一次）', key: const Key('same-name'), style: note),
+      for (final s in same) Text(s, key: const Key('same-name'), style: note),
       // old _members (nodes.dart:1334-1338): others are removed as a person; your own nodes are excluded one by one
       if (person.isSelf)
         BatCard(children: [

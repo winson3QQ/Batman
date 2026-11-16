@@ -31,10 +31,19 @@ NetOpCalls removeCalls(RemoveOp op) =>
 
 class RemoveConfirmPage extends StatefulWidget {
   const RemoveConfirmPage(
-      {super.key, required this.app, required this.netId, required this.person, required this.owner, required this.node});
+      {super.key,
+      required this.app,
+      required this.netId,
+      required this.person,
+      required this.owner,
+      required this.node,
+      this.same = const []});
   final AppLink app;
   final String netId;
   final PersonView person;
+
+  /// 8.3 step 4: the same-name lines of 8.2 shown again
+  final List<String> same;
 
   /// the target: [owner] for a person (empty for an own node), [node] the dac hash of an own node (empty for a person)
   final String owner, node;
@@ -167,6 +176,7 @@ class _RemoveConfirmPageState extends State<RemoveConfirmPage> {
       canPop: !_running,
       child: BatPage(title: widget.node.isEmpty ? '移除${widget.person.name}' : '排除這台', body: [
         Text('指紋 ${widget.person.fpr}', style: TextStyle(fontSize: Fs.note, color: t.sub)),
+        for (final s in widget.same) Text(s, key: const Key('remove-same'), style: TextStyle(fontSize: Fs.note, color: t.sub)),
         if (_progress.isNotEmpty) Text(_progress, key: const Key('remove-progress')),
         if (plan != null) Text(screenText(plan.text), key: const Key('remove-plan')),
         if (plan != null && plan.ok)
