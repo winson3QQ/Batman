@@ -23,7 +23,8 @@ import '../src/rust/api/rekey.dart' show UpdateState, infoNetId, memberUpdateImp
 import 'code_view.dart';
 import 'home_logic.dart' show last4;
 import 'home_page.dart' show nodeInfo;
-import 'net_pages.dart' show askYesNo;
+import 'join_choice.dart' show NetMode;
+import 'net_pages.dart' show NetFormPage, askYesNo;
 import 'rekey_result.dart';
 import 'settings_pages.dart' show opLine;
 import 'team_deps.dart';
@@ -123,7 +124,7 @@ class _JoinTeamPageState extends State<JoinTeamPage> {
       a.invite.drop();
       await Navigator.of(context).pushReplacement(
         MaterialPageRoute(
-          builder: (_) => MyRequestPage(app: a, netId: held.$2.netIdHex, hex: v.hex, sas: v.sas, renewed: v.renewed),
+          builder: (_) => MyRequestPage(app: a, ui: widget.ui, netId: held.$2.netIdHex, hex: v.hex, sas: v.sas, renewed: v.renewed),
         ),
       );
       return;
@@ -215,8 +216,10 @@ class _JoinTeamPageState extends State<JoinTeamPage> {
 // ---- 7.9 我的申請 -----------------------------------------------------------------------------------------------------
 
 class MyRequestPage extends StatefulWidget {
-  const MyRequestPage({super.key, required this.app, required this.netId, this.hex, this.sas, this.renewed = false});
+  const MyRequestPage(
+      {super.key, required this.app, required this.ui, required this.netId, this.hex, this.sas, this.renewed = false});
   final AppLink app;
+  final UiState ui;
   final String netId;
   final String? hex, sas;
   final bool renewed;
@@ -301,7 +304,7 @@ class _MyRequestPageState extends State<MyRequestPage> {
                 ? null
                 : () =>
                       Navigator.of(context)
-                          .pushReplacement(MaterialPageRoute(builder: (_) => ImportApprovalPage(app: a))),
+                          .pushReplacement(MaterialPageRoute(builder: (_) => ImportApprovalPage(app: a, ui: widget.ui))),
           ),
           BatButton('放棄申請', kind: BtnKind.danger, onPressed: _running ? null : _drop),
         ],
@@ -313,10 +316,11 @@ class _MyRequestPageState extends State<MyRequestPage> {
 // ---- 7.10 匯入隊長的同意 ---------------------------------------------------------------------------------------------
 
 class ImportApprovalPage extends StatefulWidget {
-  const ImportApprovalPage({super.key, required this.app, this.onJoin});
+  const ImportApprovalPage({super.key, required this.app, required this.ui, this.onJoin});
   final AppLink app;
+  final UiState ui;
 
-  /// R16: 「讓這台加入隊長的網路」 after the import (the join wait page, member mode); null = the entry wires it
+  /// R16: 「讓這台加入隊長的網路」 after the import; null = 4.1 in member mode on the network just imported (AC-m3)
   final void Function(BuildContext context, String netId)? onJoin;
 
   @override
@@ -324,6 +328,9 @@ class ImportApprovalPage extends StatefulWidget {
 }
 
 class _ImportApprovalPageState extends State<ImportApprovalPage> {
+  void _join(BuildContext c, String id) => Navigator.of(c).pushReplacement(MaterialPageRoute(
+      builder: (_) => NetFormPage(app: widget.app, ui: widget.ui, mode: NetMode.member, memberNet: id)));
+
   String _line = '', _hex = '', _netId = '';
   ImportPrep? _prep;
   bool _replace = false, _running = false, _imported = false;
@@ -438,7 +445,7 @@ class _ImportApprovalPageState extends State<ImportApprovalPage> {
             BatButton(
               '讓這台加入隊長的網路',
               key: const Key('import-join'),
-              onPressed: () => widget.onJoin?.call(context, _netId),
+              onPressed: () => (widget.onJoin ?? _join)(context, _netId),
             ),
         ],
       ),

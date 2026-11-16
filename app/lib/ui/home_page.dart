@@ -200,7 +200,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   /// 4.1 (§2.4 / §2.5): make or join, [node] ticked; [todo]: 「節點加入網路沒有做完」 (its network, 「放棄這次加入」).
   void _form({required bool makes, String? node, JoinTodo? todo}) => _back(Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => NetFormPage(
-          app: a, ui: widget.ui, makes: makes, ticked: {?node}, todo: todo, devTrust: widget.devTrust))));
+          app: a, ui: widget.ui, makes: makes, ticked: {?node}, todo: todo))));
 
   /// Opens a system settings page; when the phone has none, says where to go instead (review r2 D-m8).
   Future<void> _settings(String method, String otherwise) async {

@@ -17,6 +17,8 @@ import 'package:batman_app/src/rust/api/owner.dart';
 import 'package:batman_app/src/rust/api/rekey.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/ui/join_pages.dart';
+import 'package:batman_app/ui/join_choice.dart' show NetMode;
+import 'package:batman_app/ui/net_pages.dart' show NetFormPage;
 import 'package:batman_app/ui/rekey_result.dart';
 import 'package:batman_app/ui/team_deps.dart';
 import 'package:batman_app/ui/ui_state.dart';
@@ -333,7 +335,7 @@ void main() {
   group('7.9 my request', () {
     testWidgets('shown again from mpend; 放棄申請 removes mpend under the lease after the question', (t) async {
       final w = World(['0000aa01'], {});
-      await open(t, w, (a) => MyRequestPage(app: a, netId: 'nn'));
+      await open(t, w, (a) => MyRequestPage(app: a, ui: UiState(MemStore()), netId: 'nn'));
       expect(find.textContaining('5678'), findsOneWidget);
       expect(find.text('不要用傳邀請的同一個聊天室核對'), findsOneWidget);
       await t.tap(find.text('放棄申請'));
@@ -352,7 +354,7 @@ void main() {
 
     testWidgets('renewed: the notice', (t) async {
       final w = World([], {});
-      await open(t, w, (a) => MyRequestPage(app: a, netId: 'nn', hex: 'H', sas: '1111', renewed: true));
+      await open(t, w, (a) => MyRequestPage(app: a, ui: UiState(MemStore()), netId: 'nn', hex: 'H', sas: '1111', renewed: true));
       expect(find.text('申請已換新，要重新核對確認碼'), findsOneWidget);
     });
   });
@@ -361,7 +363,7 @@ void main() {
     testWidgets('SAS -> ECDH, mnet written, mpend removed, z zeroed; the join waits for the button (Y-m8)', (t) async {
       final w = World([], {});
       final joins = <String>[];
-      await open(t, w, (a) => ImportApprovalPage(app: a, onJoin: (_, id) => joins.add(id)));
+      await open(t, w, (a) => ImportApprovalPage(app: a, ui: UiState(MemStore()), onJoin: (_, id) => joins.add(id)));
       await paste(t, 'APPROVAL');
       expect(find.text('4821'), findsWidgets);
       expect(w.ecdh, isEmpty, reason: 'no ECDH before the user pressed');
@@ -377,10 +379,22 @@ void main() {
       expect(joins, ['nn']);
     });
 
+    testWidgets('AC-m3: the default 讓這台加入 -> 4.1 in member mode on the network just imported', (t) async {
+      final w = World([], {});
+      await open(t, w, (a) => ImportApprovalPage(app: a, ui: UiState(MemStore())));
+      await paste(t, 'APPROVAL');
+      await t.tap(find.byKey(const Key('sasConfirm')));
+      await settle(t);
+      await t.tap(find.byKey(const Key('import-join')));
+      await settle(t);
+      final f = t.widget<NetFormPage>(find.byType(NetFormPage));
+      expect([f.mode, f.memberNet, f.makes], [NetMode.member, 'nn', false]);
+    });
+
     testWidgets('replace: asked first; 取消 -> nothing written; 換成新的 -> prepared again with replace', (t) async {
       rust.importState = ImportState.replace;
       final w = World([], {});
-      await open(t, w, (a) => ImportApprovalPage(app: a));
+      await open(t, w, (a) => ImportApprovalPage(app: a, ui: UiState(MemStore())));
       await paste(t, 'APPROVAL');
       expect(find.text('要換掉舊的網路紀錄嗎'), findsOneWidget);
       await t.tap(find.text('取消'));
@@ -399,7 +413,7 @@ void main() {
     testWidgets('not ready: Rust\'s line as is, no SAS', (t) async {
       rust.importState = ImportState.alreadyImported;
       final w = World([], {});
-      await open(t, w, (a) => ImportApprovalPage(app: a));
+      await open(t, w, (a) => ImportApprovalPage(app: a, ui: UiState(MemStore())));
       await paste(t, 'APPROVAL');
       expect(find.textContaining('同意碼已經用過了'), findsOneWidget);
       expect(find.byKey(const Key('sasConfirm')), findsNothing);

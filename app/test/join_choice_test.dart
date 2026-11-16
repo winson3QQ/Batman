@@ -1,6 +1,6 @@
 // #329 §3.4 S3 / T-N2 (PR 2 review B-M1 / B-M2 / A-M4): the one 「加入網路」 button's choice — the old two buttons'
 // paths, none of them lost. Negative controls: any case mapped to another -> FAIL.
-import 'package:batman_app/nodes.dart' show JoinChoice, joinChoice;
+import 'package:batman_app/ui/join_choice.dart' show JoinChoice, joinChoice;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

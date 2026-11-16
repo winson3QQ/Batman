@@ -59,7 +59,7 @@ class _NickPageState extends State<NickPage> {
     // code review B M1: push, not pushReplacement (a replaced route ends at once with null and 再加一台 would be lost);
     // 3.5 / 3.6's answer goes back to the home page through this page
     final r = await Navigator.of(context).push<String>(MaterialPageRoute(
-        builder: (_) => AddedPage(app: widget.app, ui: widget.ui, id: widget.id, devTrust: widget.devTrust)));
+        builder: (_) => AddedPage(app: widget.app, ui: widget.ui, id: widget.id)));
     if (mounted) Navigator.of(context).pop(r);
   }
 
@@ -117,7 +117,7 @@ class _AddedPageState extends State<AddedPage> {
 
   Future<void> _form(bool makes) async {
     await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => NetFormPage(app: a, ui: widget.ui, makes: makes, ticked: {widget.id}, devTrust: widget.devTrust)));
+        builder: (_) => NetFormPage(app: a, ui: widget.ui, makes: makes, ticked: {widget.id})));
     if (mounted) Navigator.of(context).pop();
   }
 
