@@ -12,14 +12,18 @@ import '../src/flows/net_index.dart' show NetEntry;
 import 'more_pages.dart' show MorePage;
 import 'net_pages.dart' show CheckNetPage, NetFormPage, goMake;
 import 'settings_pages.dart' show WifiPage;
+import 'update_route.dart' show openSwUpdate;
 import 'ui_state.dart';
 import 'widgets.dart';
 
 class NodePage extends StatefulWidget {
-  const NodePage({super.key, required this.app, required this.id, required this.ui});
+  const NodePage({super.key, required this.app, required this.id, required this.ui, this.openUpdate = false});
   final AppLink app;
   final UiState ui;
   final String id;
+
+  /// #329 PR 4 §2.8: opened from the home todo 「軟體更新還沒做完」: the update page opens on top
+  final bool openUpdate;
 
   @override
   State<NodePage> createState() => _NodePageState();
@@ -33,6 +37,13 @@ class _NodePageState extends State<NodePage> {
     super.initState();
     _sub = widget.app.link.changed.listen((_) => mounted ? setState(() {}) : null);
     widget.app.nets.addListener(_netsChanged); // #329 PR 3 §2.4: the network group follows the records
+    widget.app.sw.addListener(_netsChanged); // #329 PR 4 §2.8: 「還沒做完」
+    if (widget.openUpdate) WidgetsBinding.instance.addPostFrameCallback((_) => mounted ? _update() : null);
+  }
+
+  Future<void> _update() async {
+    await openSwUpdate(context, widget.app, widget.ui, widget.id);
+    if (mounted) setState(() {});
   }
 
   void _netsChanged() {
@@ -42,6 +53,7 @@ class _NodePageState extends State<NodePage> {
   @override
   void dispose() {
     widget.app.nets.removeListener(_netsChanged);
+    widget.app.sw.removeListener(_netsChanged);
     _sub?.cancel();
     super.dispose();
   }
@@ -129,6 +141,15 @@ class _NodePageState extends State<NodePage> {
               title: '手機 Wi-Fi',
               sub: '給手機連的 Wi-Fi 名稱和密碼',
               onTap: () => _open(WifiPage(app: a, ui: widget.ui, id: widget.id))),
+        ]),
+        const BatLabel('軟體更新'),
+        BatCard(children: [
+          BatRow(
+              key: const Key('node-update'),
+              icon: Icons.system_update_alt,
+              title: '軟體更新',
+              sub: a.sw.unfinished(widget.id) ? '還沒做完：已準備好，還沒套用' : '選更新檔、傳送、套用',
+              onTap: _update),
         ]),
         BatCard(children: [
           BatRow(
