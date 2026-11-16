@@ -147,6 +147,15 @@ void main() {
       expect((f.consoles, f.rigs.first.radio.written.length), (0, 0));
     });
 
+    test('security review LOW-3: a StateError after a request went out -> failed (結果不明), never leaseLost (沒有送出)', () async {
+      final f = Fx(rust, logins: 1);
+      final r = await f.run(() => OpSession.once(f.d, 'Y1', 'x', (c, g) async {
+            await c.setAp('node-ap', 'correct-horse-1');
+            throw StateError('after the write');
+          }, gone: () => false));
+      expect(r.end, OpEnd.failed);
+    });
+
     test('code review A m11 / B m10: any other error -> failed, never an exception to the page', () async {
       final f = Fx(rust, logins: 1);
       final r = await f.run(() => OpSession.once(f.d, 'Y1', 'x', (c, g) => throw ArgumentError('bug'), gone: () => false));

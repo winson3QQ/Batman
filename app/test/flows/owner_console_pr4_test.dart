@@ -192,6 +192,7 @@ void main() {
       final a = await r.run(() => r.c.setAp('node-ap', 'correct-horse-1'));
       expect((a.kind, a.settings), (ReplyKind.answer, view));
       expect('$a ${a.text} ${ses(r).asked}', isNot(contains('correct-horse-1')));
+      expect(r.logs.join(' '), isNot(contains('correct-horse-1')), reason: 'security review LOW-2: the console log');
       await r.c.close();
     });
 
@@ -284,6 +285,7 @@ void main() {
       final sw = FakeSwLink();
       r.clock.t = 5; // the app clock
       final a = await r.run(() => r.c.askSw(sw, () => BigInt.from(7777), 15000));
+      expect(r.logs, isEmpty, reason: 'security review LOW-2 / update D8: nothing of an update answer is logged');
       expect((a.text, sw.answers), ('answered', 1));
       expect(sw.nows, [BigInt.from(7777)], reason: 'the update clock, not the app clock (review D M1)');
       expect(r.c.alive, isTrue);

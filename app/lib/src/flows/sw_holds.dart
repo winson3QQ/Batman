@@ -25,6 +25,14 @@ class SwHolds extends ChangeNotifier {
     if (_m.remove(id) != null) notifyListeners();
   }
 
+  /// Keeps only the updates of nodes still on the phone (security review LOW-1).
+  void retain(bool Function(String id) known) {
+    final gone = [for (final id in _m.keys) if (!known(id)) id];
+    if (gone.isEmpty) return;
+    gone.forEach(_m.remove);
+    notifyListeners();
+  }
+
   /// The page changed an update's last action (SwHold.last is the page's field: it does not notify by itself).
   void touched() => notifyListeners();
 

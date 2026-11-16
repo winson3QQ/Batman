@@ -249,6 +249,21 @@ void main() {
     AppLink.forgetForTest();
   });
 
+  testWidgets('security review LOW-1: the update of a node no longer on the phone goes (its secrets with it)', (t) async {
+    final a = app();
+    a.sw.take('ffffffffffffffffffff0000', () => (FakeSwLink(), SwHold(Flow()))); // forgotten in the old console
+    a.sw.take(id, () => (FakeSwLink(), SwHold(Flow())));
+    a.link.radio(); // NodeLink tells its listeners (its records are read again the same way)
+    await t.pump();
+    await t.pump();
+    expect(a.sw.of('ffffffffffffffffffff0000'), isNull);
+    expect(a.sw.of(id), isNotNull);
+    a.link.dispose();
+    await t.pumpWidget(const SizedBox());
+    await t.pump(const Duration(seconds: 10));
+    AppLink.forgetForTest();
+  });
+
   testWidgets('another operation holds the lease -> no update page', (t) async {
     t.binding.defaultBinaryMessenger.setMockMethodCallHandler(swChannel, (c) async => null);
     final f = Fx(rust)..busy = true;

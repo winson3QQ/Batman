@@ -175,6 +175,7 @@ class Rig {
   String? makeRefusal;
   final keyErrors = <Object>[];
   String? countryAnswer, removedAnswer;
+  final logs = <String>[]; // #329 PR 4 security review LOW-2: the console's log lines
 
   late final OwnerConsole c = OwnerConsole(
     h,
@@ -207,6 +208,7 @@ class Rig {
     askCountry: (q) async => countryAnswer == '改',
     askRemoved: (q) async => removedAnswer == '確定，加回',
     keyError: keyErrors.add,
+    log: logs.add,
     onLost: () => lost++,
   );
 

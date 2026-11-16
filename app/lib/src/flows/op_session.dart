@@ -95,6 +95,12 @@ class OpSession {
     unawaited(d.keepScreen(true));
     try {
       hold = lease.hold();
+    } on StateError {
+      await lease.release();
+      unawaited(d.keepScreen(false));
+      return const OpReply(OpEnd.leaseLost); // the lease was gone before anything started
+    }
+    try {
       final r = await d.login(lease, id);
       final h = r.handoff;
       if (r.end != LoginForEnd.ok || h == null) {
@@ -111,15 +117,14 @@ class OpSession {
       final console = c = d.console(lease, h);
       final reply = await requests(console, gone);
       return reply.kind == ReplyKind.leaseLost ? OpReply(OpEnd.leaseLost, reply: reply) : OpReply(OpEnd.done, reply: reply);
-    } on StateError {
-      // the lease is not valid any more (hold), or a second request at once (a page bug): never up to the page
-      return const OpReply(OpEnd.leaseLost);
     } catch (e) {
+      // security review LOW-3: after the hold, an error (a second request at once — a page bug — or anything else)
+      // may come after a write: never 「沒有送出」, the outcome is unknown
       debugPrint('BMAPP op $name failed: ${e.runtimeType}'); // the type only
       return const OpReply(OpEnd.failed);
     } finally {
       await c?.close(); // the console before the lease (§4.4, review A m11 / B m12)
-      hold?.call();
+      hold();
       await lease.release();
       unawaited(d.keepScreen(false));
     }
@@ -173,9 +178,8 @@ class OpenSession {
         c = _c = d.console(lease, h);
       }
       return await request(c);
-    } on StateError {
-      return failed(const OpReply(OpEnd.leaseLost));
     } catch (e) {
+      // security review LOW-3: after the hold any error is 「結果不明」, never 「沒有送出」
       debugPrint('BMAPP op failed: ${e.runtimeType}');
       return failed(const OpReply(OpEnd.failed));
     } finally {

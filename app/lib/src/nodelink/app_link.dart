@@ -165,7 +165,11 @@ class AppLink {
       },
       makeNetworkRefusal: () async => (await KeyAbilities.read(platform)).refusal(KeyUse.makeNetwork),
     );
-    return _one = AppLink._(radio, reg, gate, link, prober, writer, records, nets, console);
+    final a = _one = AppLink._(radio, reg, gate, link, prober, writer, records, nets, console);
+    // #329 PR 4 security review LOW-1: an update of a node no longer on the phone (forgotten in the old console too)
+    // goes with it, its upload bearer and AP credentials included
+    link.changed.listen((_) => a.sw.retain(link.core.states.containsKey));
+    return a;
   }
 }
 
