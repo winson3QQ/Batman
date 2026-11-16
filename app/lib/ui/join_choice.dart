@@ -1,7 +1,6 @@
 // #329 PR 5 R16 (AC-m1): which network a 「加入網路」 joins. Moved from nodes.dart (PR 6 deletes it) unchanged: only
 // a network this phone made -> the leader's join; only an imported team network -> the member's; both -> the user
 // picks (PR 2 review B-M2: neither path may vanish); neither -> nothing to join.
-import 'package:flutter/material.dart';
 
 enum JoinChoice { own, member, ask, none }
 
@@ -21,11 +20,3 @@ const kNotEntryNode = '這台不是你加入隊伍時用的節點；要讓它加
 
 /// R16 / V-m5: the team network has no entry left.
 const kNeedNewInvite = '這筆隊伍網路的加入資料已經沒有了，需要隊長的新邀請';
-
-/// The old 「要加入哪一個網路？」 (nodes.dart:1084-1089); null = closed without a choice.
-Future<NetMode?> askJoinMode(BuildContext context) => showDialog<NetMode>(
-    context: context,
-    builder: (c) => SimpleDialog(title: const Text('要加入哪一個網路？'), children: [
-          SimpleDialogOption(onPressed: () => Navigator.pop(c, NetMode.leader), child: const Text('這支手機建立的網路')),
-          SimpleDialogOption(onPressed: () => Navigator.pop(c, NetMode.member), child: const Text('隊長的網路（我是隊員）')),
-        ]));

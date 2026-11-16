@@ -1167,3 +1167,34 @@ AC：APPROVE-WITH-CHANGES，0 BLOCKER / 2 MAJOR / 8 MINOR。AD：APPROVE-WITH-CH
 - 每一條規則的負對照測試；
 - 實作後的兩位程式碼審查；
 - `/security-review`。
+
+## 附錄 B. 實作時和計畫不同的地方（2026-11-17）
+
+凍結後實作時的偏差，每一項都附理由。行為上的偏差另有測試。
+
+| 編號 | 計畫 | 實作 | 理由 |
+|---|---|---|---|
+| B1 | R12：待辦存整句 | 待辦清單只存標題，句子放在 `LeaseRegistry.unsavedText`（標題 → 句子） | 舊的節點待辦沿用原本的標題清單，不必改它的型別 |
+| B2 | 2.3：`info` | `OwnerConsole.info()` 的 `value` 是 info 的位元組 | 8.3、R17、8.5 都要拿位元組給 `infoNetId` / `removeCheck` |
+| B3 | R16 / AA-m2：`AppLink.devTrust` | `AppLink.devTrust` 是可設定的欄位，只在 `main` 設一次；`NetFormPage` 原本的 `devTrust` 參數拿掉 | 入口不必再傳，測試可以直接設 |
+| B4（D13） | 7.5 / 7.10：`SasConfirmView` 原樣搬過來 | 用 `SasCheck`：同樣的 Key、`sasRule`、只能按一次，另包 `SecureScreen`（R3） | `SasConfirmView` 是整個 `Scaffold`、顏色寫死，放不進 `BatPage`。7.9 照計畫用 `SasShowView` 包 `SecureScreen` |
+| B5（D14） | R13：同名網路加「建立日期與代號後四碼」 | 名稱 + mesh id，同名時加代號後四碼 | `NetView` 沒有建立日期（owner.rs `NetView`），只讀欄位以外不改 Rust |
+| B6 | 2.8：8.5 / 7.9 / 7.5 的按鈕樣式未寫 | 7.5「數字不一樣」改次要按鈕、7.9「放棄申請」改文字按鈕（仍先問） | T-C3：一頁只有一個主要按鈕 |
+| B7 | R16：兩者都有時「照舊 `joinChoice` 問」（對話框） | 4.1 頁內兩列選項（同樣兩句）；舊對話框沒有搬 | 入口都不給模式時由 4.1 自己問，入口不必各自開對話框；`joinChoice` 函式照樣搬出 nodes.dart |
+| B8 | R14：所有送出結果都經 `RekeyResult` | `SendKeyButton`：在讀到紀錄之前就停下（沒有網路、沒有紀錄、沒連上）時顯示原句，不經 `RekeyResult` | 這些情形沒有送出任何東西，`RekeyResult` 的固定文字不適用 |
+| B9 | 8.3：「再顯示一次名字、指紋與同名提示」 | 同名提示由 8.2 算好帶進 8.3 | 8.3 不再讀一次 `netPeople` |
+| B10 | 2.10：提示卡的 gate | 卡片本身也只在 devTrust 版本顯示（不只按鈕） | 提示只在 devTrust 版本收集（`HintSource.wanted`），卡片跟著 gate，T-S5 一起測 |
+| B11 | — | 新增 `TeamDeps`：team 頁面讀寫的唯一注入點 | 讓 widget 測試能換掉平台與 Rust 呼叫；不改行為 |
+
+另外發現、已照計畫修正的實作錯誤（不是偏差）：
+- 8.4 的更新包原本畫了 QR，違反 T10（更新包只有文字）→ `CodeView(qr: false)`。
+- `NetRun` 送出「正在套用」原本只寫 note → 改成照 R14：warn 樣式、`RekeyResult`、首頁不全綠（X-m7）。
+- 隊長固定文字少了 X-m5 那一句 → 補上。
+- 8.3 少了同名提示 → 補上（B9）。
+
+待提給程式碼審查者：
+- 同名句「請用加入時間分辨」：app 沒有任何地方顯示加入時間。
+
+還沒做（等 WSL）：
+- Rust `NetView.version` / `MnetView.version` 與 R19 的版本號顯示（8.1、8.4「目前是第 N 版」；8.5 與隊員 `RekeyResult` 的「這支手機是第 N 版」）。
+- `rekey.rs` 的 R14 字面釘住測試（已寫，未跑）。
