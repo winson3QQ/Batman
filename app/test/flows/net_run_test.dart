@@ -51,6 +51,12 @@ class FakeConsole implements OwnerConsole {
     return r;
   }
   @override
+  Future<ConsoleReply> memberJoin(String mnetRel) async {
+    w.joinRels.add(mnetRel);
+    return _next('mjoin');
+  }
+
+  @override
   Future<ConsoleReply> confirmNetwork(String rel) async {
     final r = _next('confirm');
     if (w.confirmApplies.contains(rel)) w.records[rel] = true;
@@ -60,6 +66,7 @@ class FakeConsole implements OwnerConsole {
 
   @override
   Future<ConsoleReply> sendUpdateFor(String rel, {bool member = false}) async {
+    w.sends.add('$rel member=$member');
     final t = w.sendThrows;
     if (t != null) throw t;
     return _next('send');
@@ -106,6 +113,7 @@ class World {
   final asks = <String>[];
   bool goOn = true;
   final reads = <String>[];
+  final joinRels = <String>[], sends = <String>[];
 
   void script(String what, List<ConsoleReply> rs) => (replies[what] ??= []).addAll(rs);
 
@@ -557,6 +565,44 @@ void main() {
       await b.run();
       expect((a.end, b.end), (CheckEnd.unreadable, CheckEnd.nothingToCheck));
       expect(w.logins, isEmpty);
+    });
+  });
+
+  group('#329 PR 5 R16: the member\'s join', () {
+    NetRun member(World w) => NetRun(w.deps,
+        ids: const ['02'], makes: false, member: true, joinRel: 'mnet/m1', askGoOn: (r) async => true);
+
+    test('memberJoin on the mnet record, then the new secrets sent as the member\'s; never joinNetwork', () async {
+      final w = World()
+        ..script('mjoin', [const ConsoleReply(ReplyKind.answer, '[JOINED] 已套用：節點 …02 已加入網路 bm-ab', sendUpdate: true)])
+        ..script('send', [const ConsoleReply(ReplyKind.answer, '[UPDATED] 節點 …02 已換成新密碼')]);
+      final run = member(w);
+      await run.run();
+      expect(w.joinRels, ['mnet/m1']);
+      expect(w.calls.where((c) => c.startsWith('join ')), isEmpty);
+      expect(w.sends, ['mnet/m1 member=true']);
+      expect(run.rows.single.state, RowState.ok);
+    });
+
+    test('a refusal asking for a new invite fails the row with Rust\'s line', () async {
+      final w = World()
+        ..script('mjoin', [const ConsoleReply(ReplyKind.answer, '[REQ_FAIL] 加入網路沒有成功：需要新的邀請（手機裡已沒有這台節點的加入資料）')]);
+      final run = member(w);
+      await run.run();
+      expect(run.rows.single.state, RowState.failed);
+      expect(needsNewInvite(run.rows.single.line), isTrue);
+      expect(w.sends, isEmpty);
+    });
+
+    test('a member never makes a network (Y-M2)', () {
+      expect(() => NetRun(World().deps, ids: const ['02'], makes: true, member: true, askGoOn: (r) async => true),
+          throwsArgumentError);
+    });
+
+    test('S-m2: contains, not ends with', () {
+      expect(needsNewInvite('[REQ_FAIL] 加入網路沒有成功：需要新的邀請（手機裡已沒有這台節點的加入資料）'), isTrue);
+      expect(needsNewInvite('[REQ_FAIL] 加入網路沒有成功：逾時；需要新的邀請'), isTrue);
+      expect(needsNewInvite('[REQ_FAIL] 加入網路沒有成功：這份網路資料是給另一台節點的'), isFalse);
     });
   });
 }

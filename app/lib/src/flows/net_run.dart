@@ -92,9 +92,11 @@ class NetRun extends ChangeNotifier {
     this.joinRel,
     this.name = 'Batman',
     this.channel = 40,
+    this.member = false,
     required this.askGoOn,
   }) : rows = [for (var i = 0; i < ids.length; i++) RunRow(ids[i], makes: makes && i == 0)] {
     if (!makes && joinRel == null) throw ArgumentError('join mode needs the network record');
+    if (member && makes) throw ArgumentError('a member does not make a network'); // R16: never 建網
   }
 
   final FlowDeps deps;
@@ -102,6 +104,10 @@ class NetRun extends ChangeNotifier {
   final bool makes;
   final String name;
   final int channel;
+
+  /// #329 PR 5 R16: a member's own node joins the team network of [joinRel] (an mnet record): memberJoin, and the new
+  /// secrets sent as the member's (the old _memberJoin, nodes.dart:1040-1062).
+  final bool member;
 
   /// join mode: the picked record; make mode: set from the first node's persistedRel.
   String? joinRel;
@@ -287,7 +293,7 @@ class NetRun extends ChangeNotifier {
   Future<bool> _join(RunRow r, OwnerConsole c, bool retrying) async {
     final rel = joinRel!;
     _set(r, RowState.running, '正在加入網路，這一步最多 6 分鐘');
-    final j = await c.joinNetwork(rel);
+    final j = member ? await c.memberJoin(rel) : await c.joinNetwork(rel);
     r.line = j.text;
     if (j.keyError) return _failed(r, retrying, key: true);
     if (!j.starts('[JOINED] ')) return _failed(r, retrying);
@@ -299,7 +305,7 @@ class NetRun extends ChangeNotifier {
     }
     if (j.sendUpdate) {
       _set(r, RowState.running, '正在把新密碼送給節點');
-      final u = await c.sendUpdateFor(rel);
+      final u = await c.sendUpdateFor(rel, member: member);
       // #329 PR 5 R14 / D12: only Rust's two success sentences count; 「正在套用」 is joined, the key not yet in place
       final e = rekeyEnd(u.text, u.kind, r.id);
       if (e == RekeyEnd.applying) {
@@ -324,6 +330,9 @@ class NetRun extends ChangeNotifier {
     return true;
   }
 }
+
+/// #329 PR 5 R16 / S-m2: Rust's line asks for a new invite (contains, not ends with: owner.rs:584 ends in a bracket).
+bool needsNewInvite(String line) => line.contains('需要新的邀請');
 
 /// How a CheckRun ended (§2.8).
 enum CheckEnd { upgraded, answered, notCreator, nothingToCheck, noAnswer, loginFailed, blocked, unreadable }
