@@ -306,7 +306,7 @@ class _MyRequestPageState extends State<MyRequestPage> {
                       Navigator.of(context)
                           .pushReplacement(MaterialPageRoute(builder: (_) => ImportApprovalPage(app: a, ui: widget.ui))),
           ),
-          BatButton('放棄申請', kind: BtnKind.danger, onPressed: _running ? null : _drop),
+          BatButton('放棄申請', kind: BtnKind.text, onPressed: _running ? null : _drop), // T-C3: one primary
         ],
       ),
     );

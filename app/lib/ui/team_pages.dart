@@ -381,7 +381,7 @@ class _ApprovePageState extends State<ApprovePage> {
         if (_line.isNotEmpty) Text(_line, key: const Key('approve-line')),
       ], foot: [
         BatButton('數字不一樣',
-            kind: BtnKind.danger,
+            kind: BtnKind.secondary, // T-C3: one primary (確認碼的按鈕)
             onPressed: _running
                 ? null
                 : () => Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const MismatchPage()))),
