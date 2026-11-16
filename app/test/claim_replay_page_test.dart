@@ -8,6 +8,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart' show Uint64List;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:batman_app/src/nodelink/ble_gate.dart';
+import 'package:batman_app/src/nodelink/lease.dart';
+import 'package:batman_app/src/nodelink/raw_use.dart';
+
+import 'nodelink/node_link_test.dart' as nlt show Clock, Radio;
 
 import 'package:batman_app/claim.dart';
 import 'package:batman_app/src/rust/api/claim.dart';
@@ -146,6 +151,8 @@ class FakeRust implements RustLibApi {
 /// The claim page's BLE: one device 'AA'; each write gets the next frame on TX ([1] -> [2], [3] -> [4], [5] -> [6]
 /// unless the finish answer is held back)
 class FakeBle implements FlutterReactiveBle {
+  @override
+  Stream<BleStatus> get statusStream => Stream.value(BleStatus.ready); // the recovery waits for it (ReactiveRecoveryBle)
   final tx = StreamController<List<int>>.broadcast();
   final written = <List<int>>[];
   bool answerFinish = true;
@@ -200,7 +207,8 @@ void main() {
   late FakeBle ble;
 
   /// scan, 「認領」, answer dialogs in [confirm] order as they appear, run (wall-clock search, fake-clock recovery)
-  Future<void> runPage(WidgetTester t, {List<String> confirm = const [], int iters = 400, bool Function()? until, bool t4 = false}) async {
+  Future<void> runPage(WidgetTester t,
+      {List<String> confirm = const [], int iters = 400, bool Function()? until, bool t4 = false, RawUse? use, bool fakeRecovery = true}) async {
     final t0 = t.binding.clock.now();
     now = () => t.binding.clock.now().difference(t0);
     mockPlatformReadOnly(t, (c) async { // read-only replies, as on the S20
@@ -224,7 +232,9 @@ void main() {
       }
       return FakePlatform().handle(c);
     });
-    await t.pumpWidget(MaterialApp(home: ClaimPage(ble: ble, recoveryBle: field, findFor: const Duration(milliseconds: 800))));
+    await t.pumpWidget(MaterialApp(
+        home: ClaimPage(
+            ble: ble, recoveryBle: fakeRecovery ? field : null, use: use, findFor: const Duration(milliseconds: 800))));
     if (t4) {
       await t.pumpAndSettle(); // the pending list is read at start
       await t.tap(find.text('從認領暫存恢復'));
@@ -435,6 +445,32 @@ void main() {
       'bbbbbbbbbbbb0c4f2a': 'bbbbbbbbbbbb0c4f2a',
       'e61551410cfd538e24': '…538e24',
     });
+  });
+
+  // #329 PR 1 review r5 I-M1: the real ClaimPage builds its recovery radio itself (no injected recoveryBle): the
+  // recovery's scan is counted by the gate (A10, 4 in 30 s). Negative control: ClaimPage's
+  // ReactiveRecoveryBle(_ble) without onScan -> FAIL.
+  testWidgets('r5 I-M1: T4 on the real recovery radio -> its scan is counted by the gate', (t) async {
+    devTrust = true;
+    rust.pendingIds.add(deviceId);
+    final clock = nlt.Clock();
+    final reg = LeaseRegistry(after: clock.after);
+    final gate = BleGate(nlt.Radio(), reg, now: () => clock.t, after: clock.after);
+    final lease = reg.acquire('新增節點', LeaseKind.raw)!;
+    await runPage(t,
+        t4: true,
+        confirm: ['節點 …0c4f2a', '恢復'],
+        use: RawUse(lease, gate),
+        fakeRecovery: false,
+        iters: 60,
+        until: () => gate.recentScanStarts > 0);
+    expect(gate.recentScanStarts, greaterThan(0), reason: 'the recovery scanned through the page''s counted radio');
+    await t.pumpWidget(const SizedBox());
+    for (var i = 0; i < 40; i++) {
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 5)));
+      await t.pump(const Duration(seconds: 30)); // the recovery's own waits run out (it stops without a page)
+    }
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
   });
 
   // D22: cancelled at the confirmation -> no connection, nothing written, the pending kept. Negative control: the

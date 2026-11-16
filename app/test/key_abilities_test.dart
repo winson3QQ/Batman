@@ -6,6 +6,8 @@
 // - owner_enc not allowed (field: SOFTWARE) -> no claim / recovery; dev + SOFTWARE owner_enc -> allowed, with the notice;
 // - no answer, a missing entry, an entry that is not a bool, a platform error -> nothing allowed (fail closed).
 // The gate inside a claim is in claim_target_test; here: the decision, the start page, and the login of 「我的節點」.
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
@@ -13,7 +15,12 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:batman_app/key_abilities.dart';
 import 'package:batman_app/main.dart';
+import 'package:batman_app/claim.dart';
 import 'package:batman_app/nodes.dart';
+import 'package:batman_app/scan.dart';
+import 'package:batman_app/src/nodelink/node_list.dart';
+import 'package:batman_app/src/nodelink/app_link.dart';
+import 'package:batman_app/src/nodelink/core.dart' show Why;
 import 'package:batman_app/src/rust/api/simple.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
 
@@ -295,6 +302,84 @@ void main() {
     Iterable<ButtonStyleButton> live(WidgetTester t) =>
         t.widgetList<ButtonStyleButton>(find.bySubtype<ButtonStyleButton>()).where((b) => b.onPressed != null);
 
+    // #329 PR 1 review r3 E-M1 (E6 / E8): the start page opens an older page under a raw lease and hands it to the
+    // page (its busy work holds it); the lease goes when the page is gone. Negative controls: _open without the lease
+    // (page(a, null)) or without openRawPage -> FAIL.
+    for (final (button, lease, Type type) in [
+      ('我的節點', '我的節點', NodesPage),
+      ('認領節點', '新增節點', ClaimPage),
+      ('附近的節點（開發用：藍牙測試）', '附近的節點', ScanPage),
+    ]) {
+      testWidgets('r3 E-M1 / r4 G-M1: $button opens its page under a raw lease handed to the page; back releases it',
+          (t) async {
+        mock(t, answer());
+        AppLink.forgetForTest();
+        final ble = _ScanBle();
+        await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: ble)));
+        await t.pumpAndSettle();
+        final a = AppLink.instance!;
+        addTearDown(() {
+          a.link.dispose();
+          AppLink.forgetForTest();
+        });
+        expect(find.byType(NodeStatusList), findsOneWidget, reason: 'the status list is on the start page');
+        expect(a.reg.current, isNull);
+        await t.tap(find.text(button));
+        await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+        await t.pumpAndSettle();
+        expect(find.byType(type), findsOneWidget);
+        expect(a.reg.current?.name, lease);
+        final use = switch (t.widget(find.byType(type))) {
+          final NodesPage p => p.use,
+          final ClaimPage p => p.use,
+          final ScanPage p => p.use,
+          _ => null,
+        };
+        expect(use?.lease, same(a.reg.current), reason: 'the page holds the lease it runs under');
+        t.state<NavigatorState>(find.byType(Navigator)).pop();
+        await t.pumpAndSettle();
+        expect(a.reg.current, isNull, reason: 'idle page gone: released');
+        await t.runAsync(a.link.dispose);
+      });
+    }
+
+    // r4 G1: the start page passes the app's lifecycle state: started in the background -> no reading until back
+    testWidgets('r4: the start page started while the app is in the background does not read', (t) async {
+      mock(t, answer());
+      AppLink.forgetForTest();
+      // the user leaves while the startup check runs, just before AppLink and its observer exist
+      await t.pumpWidget(BatmanApp(makeLink: (dir) {
+        t.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        return AppLink.create(platform: platform, filesDir: dir, ble: _ScanBle());
+      }));
+      addTearDown(() => t.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed));
+      for (var i = 0; i < 20 && AppLink.instance == null; i++) {
+        await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+        await t.pump(const Duration(milliseconds: 100));
+      }
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+      final a = AppLink.instance!;
+      addTearDown(() {
+        a.link.dispose();
+        AppLink.forgetForTest();
+      });
+      expect(a.link.core.fg, isFalse);
+      expect(a.link.core.roundActive, isFalse);
+      await t.runAsync(a.link.dispose);
+    });
+
+    // r3 F-M1: the startup key check is NodeLink's key precondition (login not allowed -> 2.4 overlay, no reading)
+    testWidgets('r3: login not allowed at startup -> NodeLink holds the key precondition', (t) async {
+      mock(t, answer(login: false));
+      AppLink.forgetForTest();
+      await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: _ScanBle())));
+      await t.pumpAndSettle();
+      final a = AppLink.instance!;
+      expect(a.link.core.blocked, Why.keys);
+      await t.runAsync(a.link.dispose);
+      AppLink.forgetForTest();
+    });
+
     testWidgets('every key fits: the three entries are there and on', (t) async {
       await start(t, answer());
       expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
@@ -451,4 +536,18 @@ void main() {
     expect(calls, isNot(contains('blePermissions')));
     expect(calls, isNot(contains('open')));
   });
+}
+
+/// A radio for the start page's NodeLink: a status stream and a scan that never reports anything.
+class _ScanBle implements FlutterReactiveBle {
+  @override
+  Stream<BleStatus> get statusStream => const Stream.empty();
+  @override
+  Stream<ConnectionStateUpdate> get connectedDeviceStream => const Stream.empty();
+  @override
+  Stream<DiscoveredDevice> scanForDevices(
+          {required List<Uuid> withServices, ScanMode scanMode = ScanMode.balanced, bool requireLocationServicesEnabled = true}) =>
+      StreamController<DiscoveredDevice>().stream;
+  @override
+  dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
 }

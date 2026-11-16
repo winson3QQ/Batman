@@ -1302,3 +1302,69 @@ fn v042_a_vpn_stops_before_anything_is_sent_and_offers_retry_or_cancel() {
     assert_eq!(text(&r.put(Put::Vpn)), su::T_VPN);
     assert_eq!(verb(&r.press(Button::Cancel)), Verb::BulkClose);
 }
+
+// ---- #329 A13 (2026-11-16; review r7 M / N): 「讀不到節點的狀態」 says why on the technical line — the kind and the
+// code only. Each case fails on 02eeab3 or on a0f3fbb.
+
+fn tech(a: &Action) -> String {
+    match a {
+        Action::Show(s) | Action::Done(s) => s.tech.clone(),
+        _ => panic!("not a screen: {a:?}"),
+    }
+}
+
+/// the status read answered the same way 4 times (1 + TRIES)
+fn unread_after(answer: impl Fn() -> Reply, dev: bool) -> Action {
+    let mut r = Run::new(dev);
+    r.start();
+    let mut a = r.reply(answer());
+    for _ in 0..3 {
+        r.after(&a);
+        a = r.reply(answer());
+    }
+    a
+}
+
+#[test]
+fn a13_status_unread_names_its_cause_and_nothing_else() {
+    let unread = su::T_STATUS_UNREAD.to_string();
+    // the node said stale -> 過期
+    let a = unread_after(stale, true);
+    assert_eq!((text(&a), tech(&a)), (unread.clone(), "status：快取過期（stale）".to_string()));
+    // no key 15 at all, or a key 15 without trust and without stale -> not called stale (N-1)
+    let a = unread_after(|| Reply::Ok(m(vec![(1, V::Uint(2))])), true);
+    assert_eq!(tech(&a), "status：沒有 trust");
+    let a = unread_after(|| status15(None, vec![]), true);
+    assert_eq!(tech(&a), "status：沒有 trust");
+    // rate limited on every read: retried, then its code
+    let a = unread_after(|| Reply::Err { code: 12, detail: V::Null }, true);
+    assert_eq!((text(&a), tech(&a)), (unread.clone(), "status：代碼 12".to_string()));
+    // another error at once: its code, never its detail (text or map)
+    for detail in [V::Text("SECRET-DETAIL".into()), m(vec![(2, V::Text("SECRET-DETAIL".into()))])] {
+        let mut r = Run::new(true);
+        r.start();
+        let a = r.reply(Reply::Err { code: 9, detail });
+        assert_eq!((text(&a), tech(&a)), (unread.clone(), "status：代碼 9".to_string()));
+        assert!(!format!("{a:?}").contains("SECRET"));
+    }
+    // no answer
+    let mut r = Run::new(true);
+    r.start();
+    let a = r.reply(Reply::Lost);
+    assert_eq!((text(&a), tech(&a)), (unread, "status：沒有回答".to_string()));
+}
+
+#[test]
+fn a13_an_earlier_trust_is_not_shown_next_to_an_unread_status() {
+    // dev build: trust read once, then 重新整理 and the status is no longer readable (review r7 N-2)
+    let mut r = Run::new(true);
+    r.start();
+    assert_eq!(verb(&r.reply(status15(Some(TRUST), vec![]))), Verb::Info);
+    r.start();
+    let mut a = r.reply(stale());
+    for _ in 0..3 {
+        r.after(&a);
+        a = r.reply(stale());
+    }
+    assert_eq!(tech(&a), "status：快取過期（stale）", "no 測試信任 line next to it");
+}

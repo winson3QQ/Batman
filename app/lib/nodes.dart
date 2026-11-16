@@ -14,6 +14,7 @@ import 'key_abilities.dart';
 import 'member_ui.dart';
 import 'say.dart';
 import 'scan.dart' show provdService;
+import 'src/nodelink/raw_use.dart';
 import 'src/rust/api/claim.dart' show frameLimit, storeRemove;
 import 'src/rust/api/member.dart';
 import 'src/rust/api/owner.dart';
@@ -56,7 +57,10 @@ const _sendUnclear = '[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁
 const staleRecordLine = '紀錄已被別處更新，請重新開啟再試';
 
 class NodesPage extends StatefulWidget {
-  const NodesPage({super.key, this.ble});
+  const NodesPage({super.key, this.ble, this.use});
+
+  /// #329 §4.4: the raw lease this page runs under (null in tests of the page alone)
+  final RawUse? use;
 
   /// tests: a fake BLE (null = the platform's)
   final FlutterReactiveBle? ble;
@@ -65,11 +69,14 @@ class NodesPage extends StatefulWidget {
   State<NodesPage> createState() => _NodesPageState();
 }
 
-class _NodesPageState extends State<NodesPage> {
+class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
+  @override
+  RawUse? get rawUse => widget.use;
   late final _ble = widget.ble ?? FlutterReactiveBle(); // late: first used by a login
   final _lines = <String>[];
   List<String> _nodes = [];
-  bool _busy = false;
+  bool get _busy => rawBusy; // #329 §4.4: busy = the raw lease is held (it outlives a pop until the work ends)
+  set _busy(bool v) => rawBusy = v;
   // the live owner session
   OwnerSession? _session;
   String? _deviceId;
@@ -137,6 +144,10 @@ class _NodesPageState extends State<NodesPage> {
 
   @override
   void dispose() {
+    // the link goes with the page: a request still waiting for the node ends now as 「結果不明」 (the same as its
+    // timeout), so the lease is not held for the rest of that wait (review pr1 r5 I-m1)
+    final a = _answer;
+    if (a != null && !a.isCompleted) a.complete(_unclear != null ? _unclearNow() : _waitLine);
     _drop();
     super.dispose();
   }
@@ -245,8 +256,10 @@ class _NodesPageState extends State<NodesPage> {
             final OwnerStep p = st;
             _track.persisted();
             try {
-              final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': p.record, 'aad': p.aad}))!;
-              await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
+              await _underLease(() async {
+                final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': p.record, 'aad': p.aad}))!;
+                await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
+              });
               _saved = true;
               _log('已在手機存下網路資料（${p.rel.substring(0, 8)}…，第 ${p.generation} 版）');
               st = s.netPersisted();
@@ -376,6 +389,7 @@ class _NodesPageState extends State<NodesPage> {
       final tried = <String>{};
       final end = DateTime.now().add(const Duration(seconds: 60));
       final found = <String>[];
+      rawScanStarted();
       final scan = _ble.scanForDevices(withServices: [provdService], scanMode: ScanMode.lowLatency).listen((d) {
         if (tried.add(d.id)) found.add(d.id);
       });
@@ -388,6 +402,11 @@ class _NodesPageState extends State<NodesPage> {
           final id = found.removeAt(0);
           scan.pause();
           final ok = await _tryLogin(id, record, ownerPub);
+          if (ok && !mounted) {
+            _wait?.cancel(); // no request will be sent from a page that is gone (r3: its wait timer stays otherwise)
+            await _drop(); // #329 review pr1 B-M1: a login that ends after the page is gone keeps no link
+            return;
+          }
           if (ok) {
             _deviceId = deviceId;
             _lastNode = deviceId;
@@ -403,7 +422,7 @@ class _NodesPageState extends State<NodesPage> {
     } catch (e) {
       _say('[LOGIN_FAIL] 連線中斷：$e');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
   }
 
@@ -445,7 +464,7 @@ class _NodesPageState extends State<NodesPage> {
       _lastNode = null;
     }
     try {
-      await storeRemove(dir: await _dir(), rel: 'node/$deviceId');
+      await _underLease(() async => storeRemove(dir: await _dir(), rel: 'node/$deviceId'));
       _say('[FORGOT] 已忘記節點 …$last4');
     } catch (e) {
       _say('忘記失敗：$e');
@@ -496,6 +515,9 @@ class _NodesPageState extends State<NodesPage> {
       String? unclear,
       bool held = false}) async {
     _askEnd = null;
+    // a page that is gone starts no new request (nor a login for one): it would go out without the lease (review
+    // pr1 r5 I-m3)
+    if (!mounted && !held) return null;
     if (_busy && !held) return null;
     if (_session == null && _lastNode != null && !held) await _login(_lastNode!);
     var s = _session;
@@ -562,7 +584,7 @@ class _NodesPageState extends State<NodesPage> {
       _wait?.cancel();
       _answer = null;
       _unclear = null;
-      if (mounted && !held) setState(() => _busy = false);
+      if (!held) rawIdle();
     }
   }
 
@@ -608,7 +630,7 @@ class _NodesPageState extends State<NodesPage> {
     try {
       net = await _pickNet('要加入哪個網路？', forJoin: true);
     } finally {
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
     if (net == null || !mounted) return;
     final n = net; // non-null from here (the request closure below cannot promote `net`)
@@ -689,7 +711,7 @@ class _NodesPageState extends State<NodesPage> {
       }
       _say(last);
     } finally {
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
   }
 
@@ -723,11 +745,24 @@ class _NodesPageState extends State<NodesPage> {
     }
   }
 
+  /// #329 §4.4: a record is sealed and written while this page's lease is held, also when the page goes meanwhile
+  /// (PR 1 review r6 K-m1 / K-m2). A lease that is already gone throws here: nothing is written (fail-closed).
+  Future<T> _underLease<T>(Future<T> Function() write) async {
+    final hold = rawUse?.lease.hold();
+    try {
+      return await write();
+    } finally {
+      hold?.call();
+    }
+  }
+
   /// Seal a record step's plain bytes and write them by CAS; the error text is store_write_cas's (or the sealing's).
   Future<String?> _writeRecord(OwnerStep p) async {
     try {
-      final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': p.record, 'aad': p.aad}))!;
-      await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
+      await _underLease(() async {
+        final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': p.record, 'aad': p.aad}))!;
+        await storeWriteCas(dir: await _dir(), rel: p.rel, expectedGen: p.expectedGen, sealed: sealed);
+      });
       return null;
     } catch (e) {
       return e is String ? e : (e is PlatformException ? (KeyAbilities.refusedBy(e) ?? 'seal ${e.code}') : '${e.runtimeType}');
@@ -772,7 +807,7 @@ class _NodesPageState extends State<NodesPage> {
     } catch (e) {
       _say('[REQ_FAIL] 邀請沒有成功：$e');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
   }
 
@@ -881,7 +916,7 @@ class _NodesPageState extends State<NodesPage> {
     try {
       await body();
     } finally {
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
   }
 
@@ -988,7 +1023,7 @@ class _NodesPageState extends State<NodesPage> {
       }
       // accepted fail-closed (§3): a request written meanwhile is removed too; a failed removal is harmless
       try {
-        await storeRemove(dir: await _dir(), rel: 'mpend/$id');
+        await _underLease(() async => storeRemove(dir: await _dir(), rel: 'mpend/$id'));
       } catch (_) {}
       _say(st.detail);
     } on PlatformException catch (e) {
@@ -1009,7 +1044,7 @@ class _NodesPageState extends State<NodesPage> {
     try {
       pick = await _pickMnet();
     } finally {
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
     if (pick == null || !mounted) return;
     final (gen, plain) = await _readRecord('mnet/${pick.$1}');
@@ -1218,8 +1253,10 @@ class _NodesPageState extends State<NodesPage> {
     if (pick != 'forget') return;
     try {
       final st = netForgetJoining(recordPlain: net.plain, recordGen: net.gen, dacHash: m.dacHash);
-      final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': st.record, 'aad': st.aad}))!;
-      await storeWriteCas(dir: await _dir(), rel: st.rel, expectedGen: st.expectedGen, sealed: sealed);
+      await _underLease(() async {
+        final sealed = (await _platform.invokeMethod<Uint8List>('seal', {'plain': st.record, 'aad': st.aad}))!;
+        await storeWriteCas(dir: await _dir(), rel: st.rel, expectedGen: st.expectedGen, sealed: sealed);
+      });
       _say(st.detail);
     } catch (e) {
       _say('[REQ_FAIL] 忘記沒有成功：${KeyAbilities.refusedBy(e) ?? e}');
@@ -1519,6 +1556,7 @@ class _NodesPageState extends State<NodesPage> {
   /// gone); its answer goes to the update, which says what is next. A timeout or a lost link = `lost`, no session =
   /// `noLink`. Unlike [_ask] nothing is logged or shown here (D8: the bulk/open answer carries secrets).
   Future<SwAction> _askSw(SwUpdate sw, SwHold h, int waitMs) async {
+    if (!mounted) return sw.noLink(nowMs: h.now()); // a gone page asks nothing, as in _ask (review pr1 r6 L-m4)
     if (_session == null && _lastNode != null && !_busy) await _login(_lastNode!);
     final s = _session;
     if (s == null || _busy) return sw.noLink(nowMs: h.now());
@@ -1546,7 +1584,7 @@ class _NodesPageState extends State<NodesPage> {
       _answer = null;
       _unclear = null;
       _quiet = false;
-      if (mounted) setState(() => _busy = false);
+      rawIdle();
     }
   }
 

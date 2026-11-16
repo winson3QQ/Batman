@@ -18,6 +18,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:batman_app/src/nodelink/ble_gate.dart';
+import 'package:batman_app/src/nodelink/core.dart' show NodeLinkCore;
+import 'package:batman_app/src/nodelink/lease.dart';
+import 'package:batman_app/src/nodelink/node_link.dart';
+import 'package:batman_app/src/nodelink/raw_use.dart';
+
+import 'nodelink/node_link_test.dart' as nlt show Clock, Radio, FakeProber;
 // ignore: depend_on_referenced_packages
 import 'package:reactive_ble_platform_interface/reactive_ble_platform_interface.dart' show CharacteristicInstance;
 
@@ -59,7 +66,9 @@ OwnerStep step(OwnerKind kind, {int? frame, String detail = '', String rel = '',
     sendUpdate: false,
     info: info ?? Uint8List(0),
     sw: false,
-    note: ''); // 254-app-team-status: OwnerStep.note (the duplicate-address line)
+    note: '', // 254-app-team-status: OwnerStep.note (the duplicate-address line)
+    loginEnd: 0, // #329 T8: not a login end
+    loginCode: BigInt.zero);
 
 class FakeSession implements OwnerSession {
   FakeSession(this.rust);
@@ -237,6 +246,8 @@ class FakeNode extends ReactiveBlePlatform {
   final values = StreamController<CharacteristicValue>.broadcast(sync: true);
   final written = <int>[];
   CharacteristicInstance? tx;
+  Completer<void>? holdConnect; // #329 r3 E2: the connection comes up only when this completes
+  final disconnects = <String>[];
 
   @override
   Future<void> initialize() async {}
@@ -261,13 +272,14 @@ class FakeNode extends ReactiveBlePlatform {
 
   @override
   Stream<void> connectToDevice(String id, Map<Uuid, List<Uuid>>? servicesWithCharacteristicsToDiscover, Duration? connectionTimeout) {
-    Timer(const Duration(milliseconds: 10),
-        () => conns.add(ConnectionStateUpdate(deviceId: id, connectionState: DeviceConnectionState.connected, failure: null)));
+    void up() => conns.add(ConnectionStateUpdate(deviceId: id, connectionState: DeviceConnectionState.connected, failure: null));
+    final h = holdConnect;
+    h == null ? Timer(const Duration(milliseconds: 10), up) : h.future.then((_) => up());
     return Stream.value(null);
   }
 
   @override
-  Future<void> disconnectDevice(String deviceId) async {}
+  Future<void> disconnectDevice(String deviceId) async => disconnects.add(deviceId);
   @override
   Future<int> requestMtuSize(String deviceId, int? mtu) async => 517;
   @override
@@ -341,7 +353,7 @@ void main() {
     await settle(t);
   }
 
-  Future<void> open(WidgetTester t, {required Set<String> records, String clipboard = ''}) async {
+  Future<void> open(WidgetTester t, {required Set<String> records, String clipboard = '', Widget? home}) async {
     rust
       ..calls.clear()
       ..sends.clear()
@@ -383,9 +395,54 @@ void main() {
       return null;
     });
     m.setMockMethodCallHandler(SystemChannels.platform, (c) async => c.method == 'Clipboard.getData' ? {'text': clipboard} : null);
-    await t.pumpWidget(const MaterialApp(home: NodesPage()));
+    await t.pumpWidget(MaterialApp(home: home ?? const NodesPage()));
     await settle(t, 5);
   }
+
+  // #329 PR 1 review r3 E-M1 (B-M1 / A-M1 with the real 我的節點): opened by openRawPage, popped while its login waits
+  // for the connection; the login then succeeds after the page is gone -> its link is dropped (not left open, which
+  // would hide the node from NodeLink until the node's idle timeout) and the lease goes at once. Negative controls:
+  // nodes.dart without the `ok && !mounted` drop, or NodesPage's rawUse => null -> FAIL.
+  testWidgets('r3 E-M1: 我的節點 popped mid-login: a login that succeeds later drops its link, the lease goes', (t) async {
+    final clock = nlt.Clock();
+    final reg = LeaseRegistry(after: clock.after);
+    final gate = BleGate(nlt.Radio(), reg, now: () => clock.t, after: clock.after);
+    final nl = NodeLink(
+        core: NodeLinkCore(const []),
+        gate: gate,
+        reg: reg,
+        prober: nlt.FakeProber({}),
+        readRecords: () async => const [],
+        now: () => clock.t,
+        after: clock.after);
+    node.disconnects.clear();
+    final hold = node.holdConnect = Completer<void>();
+    try {
+      await open(t,
+          records: {'node/$deviceId'},
+          home: Builder(
+              builder: (c) => TextButton(
+                  onPressed: () => openRawPage(Navigator.of(c), nl, gate, '我的節點', (u) => NodesPage(use: u)),
+                  child: const Text('open'))));
+      await t.tap(find.text('open'));
+      await settle(t, 5);
+      final lease = reg.current!;
+      await t.tap(find.byType(ListTile)); // log in: waits for the connection
+      await settle(t, 3);
+      t.state<NavigatorState>(find.byType(Navigator)).pop();
+      await settle(t, 5);
+      expect(find.byType(NodesPage), findsNothing);
+      expect(reg.current, same(lease), reason: 'the login still runs');
+      hold.complete(); // the node answers: the login succeeds with the page gone
+      await settle(t, 25);
+      expect(node.written, [fLogin], reason: 'the login did go through');
+      expect(gate.recentScanStarts, greaterThan(0), reason: 'r4 G-M1: the login''s scan is counted by the gate');
+      expect(node.disconnects, isNotEmpty, reason: 'the link of a login that ended after the pop is dropped');
+      expect(reg.current, isNull, reason: 'and the lease goes at once');
+    } finally {
+      node.holdConnect = null;
+    }
+  });
 
   testWidgets('T30: an imported update is not sent to the node until the button is pressed', (t) async {
     await open(t, records: {'node/$deviceId', 'mnet/$netId'}, clipboard: 'a1');

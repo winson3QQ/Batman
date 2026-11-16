@@ -66,8 +66,11 @@ abstract class RecoveryBle {
 }
 
 class ReactiveRecoveryBle implements RecoveryBle {
-  ReactiveRecoveryBle(this.ble);
+  ReactiveRecoveryBle(this.ble, {this.onScan});
   final FlutterReactiveBle ble;
+
+  /// #329 §4.4: a scan start, counted by the gate (4 in 30 s)
+  final void Function()? onScan;
 
   @override
   Stream<RecoveryBleState> get ready => ble.statusStream.where((s) => s != BleStatus.unknown).map((s) => switch (s) {
@@ -79,6 +82,7 @@ class ReactiveRecoveryBle implements RecoveryBle {
   @override
   Future<Map<String, int>> scan(Duration d) async {
     final seen = <String, int>{};
+    onScan?.call();
     final sub = ble.scanForDevices(withServices: [provdService], scanMode: ScanMode.lowLatency).listen((x) {
       final o = seen[x.id];
       if (o == null || x.rssi > o) seen[x.id] = x.rssi;
