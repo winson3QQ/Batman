@@ -14,6 +14,7 @@ import 'package:batman_app/ui/ui_state.dart';
 import 'package:batman_app/ui/more_pages.dart' show MorePage;
 import 'package:batman_app/ui/settings_pages.dart' show CountryPage, WifiPage;
 import 'package:batman_app/src/flows/op_session.dart' show OpDeps;
+import 'package:batman_app/src/flows/offline_op.dart' show offlineTodoText;
 import 'package:batman_app/src/rust/api/swupdate.dart';
 import 'package:batman_app/swupdate.dart' show SwFlow, SwHold, SwUpdatePage;
 import 'package:batman_app/secure_screen.dart' show secureChannel;
@@ -118,6 +119,12 @@ void main() {
       a.reg.unsavedTodos.add('上一個操作可能沒有存完：新增節點');
       return HomePage(app: a, ui: ui, devTrust: true, keys: keys());
     },
+    'home, an offline to-do banner (PR 5 R12)': (ui) {
+      final a = app(sv('green'));
+      a.reg.unsavedTodos.add('上一個操作可能沒有存完：移除隊員');
+      a.reg.unsavedText['上一個操作可能沒有存完：移除隊員'] = offlineTodoText('移除隊員');
+      return HomePage(app: a, ui: ui, devTrust: true, keys: keys());
+    },
     'node page': (ui) => NodePage(app: app(sv('red')), id: id, ui: ui),
     'home, Bluetooth off': (ui) {
       final a = app(sv('green'));
@@ -196,4 +203,18 @@ void main() {
       }
     }
   }
+
+  testWidgets('PR 5 R12: an offline operation\'s todo shows its own sentence; a node one keeps the node sentence', (t) async {
+    final a = app(sv('green'));
+    a.reg.unsavedTodos.add('上一個操作可能沒有存完：新增節點');
+    a.reg.unsavedTodos.add('上一個操作可能沒有存完：移除隊員');
+    a.reg.unsavedText['上一個操作可能沒有存完：移除隊員'] = offlineTodoText('移除隊員');
+    await t.pumpWidget(MaterialApp(
+        theme: batThemeData(Brightness.light), home: HomePage(app: a, ui: UiState(MemStore()), devTrust: true, keys: keys())));
+    await t.pump(const Duration(milliseconds: 100));
+    expect(find.text(offlineTodoText('移除隊員')), findsOneWidget);
+    expect(find.textContaining('請到那台節點的頁面'), findsOneWidget, reason: 'the node todo keeps its sentence');
+    await t.pumpWidget(const SizedBox());
+    AppLink.forgetForTest();
+  });
 }

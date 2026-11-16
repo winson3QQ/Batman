@@ -303,8 +303,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         ),
         if (h.row == 14 && !widget.ui.homeTip) HomeTipCard(onDone: () => widget.ui.setHomeTip().then((_) => mounted ? setState(() {}) : null)),
         for (final m in a.reg.unsavedTodos)
-          BatBanner(look: Look.warn, title: m, text: '這個操作沒有在時間內結束，app 已經停止它。請到那台節點的頁面看目前的狀態，需要的話再做一次。',
-              action: Btn.gotIt, onAction: () => setState(() => a.reg.unsavedTodos.remove(m))),
+          BatBanner(
+              look: Look.warn,
+              title: m,
+              // #329 PR 5 R12: an offline operation's own sentence (it touches no node), else the node one
+              text: a.reg.unsavedText[m] ?? '這個操作沒有在時間內結束，app 已經停止它。請到那台節點的頁面看目前的狀態，需要的話再做一次。',
+              action: Btn.gotIt,
+              onAction: () => setState(() {
+                    a.reg.unsavedTodos.remove(m);
+                    a.reg.unsavedText.remove(m);
+                  })),
         if (_pending > 0)
           BatBanner(look: Look.warn, title: '上次新增節點沒有做完', action: Btn.finishIt, onAction: _addNode),
         // F41 (§2.7): the line of a claim that ended after its page was closed, once
