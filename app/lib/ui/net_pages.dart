@@ -20,6 +20,7 @@ import '../say.dart' show screenText;
 import '../src/flows/net_index.dart';
 import '../src/flows/net_run.dart';
 import '../src/flows/owner_console.dart';
+import '../src/flows/rekey_send.dart' show RekeyEnd;
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl show Page;
 import '../src/nodelink/handoff.dart';
@@ -28,6 +29,8 @@ import '../src/nodelink/raw_use.dart' show openRawPage;
 import '../swupdate.dart' show swChannel;
 import 'home_logic.dart';
 import 'home_page.dart' show nodeInfo;
+import 'join_pages.dart' show JoinTeamPage;
+import 'rekey_result.dart';
 import 'theme.dart';
 import 'ui_state.dart';
 import 'widgets.dart';
@@ -454,6 +457,7 @@ class NetRunPage extends StatefulWidget {
     this.joinRel,
     this.name = 'Batman',
     this.channel = 40,
+    this.member = false,
     this.flow,
     this.checkFlow,
   });
@@ -462,6 +466,9 @@ class NetRunPage extends StatefulWidget {
   final Lease lease;
   final List<String> ids;
   final bool makes;
+
+  /// #329 PR 5 R16: a member's own node joins the team network of [joinRel] (mnet)
+  final bool member;
   final String? joinRel;
   final String name;
   final int channel;
@@ -476,6 +483,10 @@ class NetRunPage extends StatefulWidget {
   @override
   State<NetRunPage> createState() => _NetRunPageState();
 }
+
+/// The run [p] asks for (the app's flow, on [d]); every parameter of the page goes in (R16: [NetRunPage.member]).
+NetRun runFor(NetRunPage p, FlowDeps d, Future<bool> Function(RunRow) go) => NetRun(d,
+    ids: p.ids, makes: p.makes, joinRel: p.joinRel, name: p.name, channel: p.channel, member: p.member, askGoOn: go);
 
 class _NetRunPageState extends State<NetRunPage> {
   AppLink get a => widget.app;
@@ -492,15 +503,8 @@ class _NetRunPageState extends State<NetRunPage> {
     _work(run.run);
   }
 
-  NetRun _appFlow(Future<bool> Function(RunRow) go, AskUser country, AskUser removed, void Function() lost) => NetRun(
-        flowDeps(a, widget.lease, askCountry: country, askRemoved: removed, onLost: lost),
-        ids: widget.ids,
-        makes: widget.makes,
-        joinRel: widget.joinRel,
-        name: widget.name,
-        channel: widget.channel,
-        askGoOn: go,
-      );
+  NetRun _appFlow(Future<bool> Function(RunRow) go, AskUser country, AskUser removed, void Function() lost) =>
+      runFor(widget, flowDeps(a, widget.lease, askCountry: country, askRemoved: removed, onLost: lost), go);
 
   void _changed() {
     if (mounted) setState(() {});
@@ -640,8 +644,12 @@ class _NetRunPageState extends State<NetRunPage> {
             StatusHero(look: Look.busy, text: i >= 0 ? '${_name(run.rows[i].id)}：${run.rows[i].line}' : '正在進行', next: '請留在這個畫面')
           else
             StatusHero(
-                look: run.rows.every((r) => r.state == RowState.ok) ? Look.ok : Look.warn,
-                text: run.rows.every((r) => r.state == RowState.ok) ? '完成' : '有節點沒有完成',
+                look: run.rows.every((r) => r.state == RowState.ok && r.sendEnd != RekeyEnd.applying) ? Look.ok : Look.warn,
+                text: !run.rows.every((r) => r.state == RowState.ok)
+                    ? '有節點沒有完成'
+                    : run.rows.any((r) => r.sendEnd == RekeyEnd.applying)
+                        ? '已加入，有節點的新密碼還在套用'
+                        : '完成',
                 next: switch (run.stopped) {
                   StopWhy.blocked => '藍牙或權限現在不能用，已經停止。',
                   StopWhy.keys => '這支手機的金鑰現在不能用，已經停止。',
@@ -661,9 +669,15 @@ class _NetRunPageState extends State<NetRunPage> {
                     RowState.waiting => '等待中',
                     RowState.notDone => '還沒做',
                   }}', style: TextStyle(fontSize: Fs.body, fontWeight: FontWeight.w700, color: t.ink)),
-                  if (r.line.isNotEmpty && r.state != RowState.waiting && r.state != RowState.notDone)
+                  if (r.line.isNotEmpty && r.line != r.sendLine && r.state != RowState.waiting && r.state != RowState.notDone)
                     Text(plain(r.line), style: TextStyle(fontSize: Fs.body, height: 1.5, color: t.ink)),
                   if (r.note.isNotEmpty) Text(r.note, style: TextStyle(fontSize: Fs.meta, color: t.sub)),
+                  if (r.sendEnd case final e?) RekeyResult(end: e, line: r.sendLine, member: widget.member), // R14
+                  if (!working && r.state == RowState.failed && needsNewInvite(r.line) && a.devTrust)
+                    BatButton('收隊長的邀請', // S-m2
+                        kind: BtnKind.secondary,
+                        onPressed: () => Navigator.of(context)
+                            .push(MaterialPageRoute(builder: (_) => JoinTeamPage(app: a, ui: widget.ui)))),
                   if (!working && r.canRetry)
                     BatButton(Btn.retryNode, kind: BtnKind.secondary, onPressed: () => _work(() => run.retry(r))),
                   if (!working && r.canCheck) BatButton(Btn.checkNetwork, kind: BtnKind.secondary, onPressed: () => _check(r)),

@@ -75,6 +75,11 @@ class RunRow {
   /// Joined (the join's own answer was [JOINED]).
   bool joined = false;
 
+  /// #329 PR 5 R14: the send of the new secrets after the join: Rust's line and its class (null = not sent). Shown only
+  /// through RekeyResult.
+  String sendLine = '';
+  RekeyEnd? sendEnd;
+
   /// §2.5 result page (design :750): a make row with a written record offers only 「檢查網路」; without one, 「再試這一台」
   /// (make again); a join row 「再試這一台」 (the whole join rule again).
   bool get canRetry => state == RowState.failed && (!makes || persistedRel == null);
@@ -166,6 +171,8 @@ class NetRun extends ChangeNotifier {
     running = true;
     stopped = StopWhy.none;
     r.note = '';
+    r.sendLine = '';
+    r.sendEnd = null;
     notifyListeners();
     try {
       await _one(r, clearNotY: true, retrying: true);
@@ -308,6 +315,8 @@ class NetRun extends ChangeNotifier {
       final u = await c.sendUpdateFor(rel, member: member);
       // #329 PR 5 R14 / D12: only Rust's two success sentences count; 「正在套用」 is joined, the key not yet in place
       final e = rekeyEnd(u.text, u.kind, r.id);
+      r.sendLine = u.text;
+      r.sendEnd = e;
       if (e == RekeyEnd.applying) {
         r.note = '已加入，新密碼正在套用，稍後到節點頁再送一次確認';
       } else if (e != RekeyEnd.current) {

@@ -12,6 +12,10 @@ import 'widgets.dart';
 const kRekeyDoneRule = '每台都要看到「已是新密碼」或「已換成新密碼」才算換好。沒看到的，再按一次「送出」確認。看到「正在套用」或'
     '「還有沒完成的變更」時，等幾分鐘再按；超過 10 分鐘仍如此，重新開機一次。沒看到這兩句、或讀不到的節點，被移除的人仍可能連得上。';
 
+/// R14 / X-m5 / Z-M1: what the leader cannot see (a limit of the baseline, only said).
+const kRekeyOthersRule = 'app 看不到其他隊員有沒有把新密碼送到他們自己的節點，要請他們各自確認兩件事：他手機上的版本號和你的「目前是第 N 版」一樣，'
+    '而且他的每台節點都看到「已換成這支手機的版本」。';
+
 /// R14: the member's rule. A member's phone cannot know whether its bundle is the newest (T-M1): no tick, ever.
 const kMemberRekeyRule = '這只代表節點換成了這支手機有的版本。請把上面的版本號唸給隊長聽，和他手機上的「目前是第 N 版」比對；'
     '不一樣的話，請他重新產生你的更新包。';
@@ -43,8 +47,10 @@ class RekeyResult extends StatelessWidget {
         Text(version == null ? '這支手機的版本讀不到' : '這支手機是第 $version 版', key: const Key('rekey-version'), style: note),
         Text(ok ? '這台節點已換成這支手機的版本' : '這台還沒換好，先不要跟隊長說換好了', key: const Key('rekey-node'), style: note),
         Text(kMemberRekeyRule, style: note),
-      ] else
+      ] else ...[
         Text(kRekeyDoneRule, style: note),
+        Text(kRekeyOthersRule, style: note),
+      ],
     ]);
   }
 }
