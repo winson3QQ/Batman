@@ -10,9 +10,20 @@ import '../rust/api/claim.dart' show frameLimit;
 import '../rust/api/owner.dart';
 import 'ble_gate.dart';
 import 'core.dart';
+import 'handoff.dart';
 import 'node_link.dart';
 
 const eForbidden = 3; // batman-proto flow.rs E_FORBIDDEN: the node does not accept this owner key
+
+/// #329 PR 3 §2.2: the core outcome of an `ended` step (a login end and its code), shared by the read and the hand-off
+/// probers. 5 (Broken in the login) and anything before a login are noResponse — never plant a 「是 Y」 (driver
+/// contract, core.dart Res).
+Outcome loginOutcome(int loginEnd, int code, {required bool loggedIn}) => switch (loginEnd) {
+      2 => const Outcome(Res.undecryptable),
+      3 => const Outcome(Res.certRejected),
+      4 => code == eForbidden ? const Outcome(Res.refusedForbidden) : const Outcome(Res.refusedOther),
+      _ => loggedIn ? const Outcome(Res.broken) : const Outcome(Res.noResponse),
+    };
 
 class SessionProber implements Prober {
   SessionProber({
@@ -22,7 +33,20 @@ class SessionProber implements Prober {
     this.keyError,
     this.log,
     this.answerMax = const Duration(seconds: 20),
-  });
+  }) : _handoff = false;
+
+  SessionProber._handoff({
+    required this.openRecord,
+    required this.ownerPub,
+    required this.signOwner,
+    this.keyError,
+    this.log,
+    this.answerMax = const Duration(seconds: 20),
+  }) : _handoff = true;
+
+  /// #329 PR 3 §2.2: a login for a flow (HandoffProber) stops at `loggedIn` and hands the session over instead of
+  /// reading the status page.
+  final bool _handoff;
 
   /// The plain node record of [id] (store + Keystore), or null when it is gone.
   final Future<Uint8List?> Function(String id) openRecord;
@@ -61,6 +85,8 @@ class SessionProber implements Prober {
     OwnerSession? s;
     StreamSubscription<List<int>>? sub;
     Timer? answer;
+    final inbox = FrameInbox(); // built before the subscription (§2.2)
+    LoginHandoff? handed;
 
     Future<void> run(OwnerStep? st) async {
       while (st != null && !result.isCompleted) {
@@ -84,7 +110,15 @@ class SessionProber implements Prober {
             st = session.signed(der: der);
           case OwnerKind.loggedIn:
             loggedIn = true;
-            st = session.requestStatusPage();
+            if (_handoff) {
+              // §2.2: from here the frames wait in the inbox for the flow (set synchronously, before any await)
+              inbox.handle(null, null);
+              handed = LoginHandoff(id: id, link: link, inbox: inbox, session: session, sub: sub, detail: st.detail);
+              done(Outcome(Res.body, '', handed));
+              st = null;
+            } else {
+              st = session.requestStatusPage();
+            }
           case OwnerKind.answer:
             final v = session.statusView(hasNet: false, hasMnet: false);
             // a status answer that is an error code (Rust row 2') is 不變, not a read (§4.3.3-4, round-5 B-M1);
@@ -93,14 +127,7 @@ class SessionProber implements Prober {
             st = null;
           case OwnerKind.ended:
             log?.call('probe $id: login ended ${st.loginEnd} code ${st.loginCode} (logged in: $loggedIn)');
-            done(switch (st.loginEnd) {
-              2 => const Outcome(Res.undecryptable),
-              3 => const Outcome(Res.certRejected),
-              4 => st.loginCode.toInt() == eForbidden ? const Outcome(Res.refusedForbidden) : const Outcome(Res.refusedOther),
-              // 5 (Broken in the login) and anything before a login: noResponse — never plant a 「是 Y」 (driver
-              // contract, core.dart Res)
-              _ => loggedIn ? const Outcome(Res.broken) : const Outcome(Res.noResponse),
-            });
+            done(loginOutcome(st.loginEnd, st.loginCode.toInt(), loggedIn: loggedIn));
             st = null;
           default:
             // a read never meets a step that writes a record or asks the user (§4.3.3-9): give the node up
@@ -130,7 +157,7 @@ class SessionProber implements Prober {
       if (result.isCompleted) return;
       final (session, first) = OwnerSession.start(recordPlain: r, ownerPub: pub, frameLimit: fl);
       s = session;
-      sub = link.subscribe(Char.tx).listen((f) {
+      inbox.handle((f) {
         if (result.isCompleted) return;
         final OwnerStep? st;
         try {
@@ -148,7 +175,8 @@ class SessionProber implements Prober {
           log?.call('probe $id: ${e.runtimeType} $e after a frame (logged in: $loggedIn)');
           done(failed());
         });
-      }, onError: (Object _) => done(failed()));
+      }, (Object _) => done(failed()));
+      sub = link.subscribe(Char.tx).listen(inbox.add, onError: inbox.addError);
       await run(first);
     }
 
@@ -157,21 +185,36 @@ class SessionProber implements Prober {
       log?.call('probe $id: ${e.runtimeType} $e (logged in: $loggedIn)'); // a type and a message, never bytes
       done(failed());
     }));
+    final o = await result.future; // never completes with an error
+    // the cleanup never changes the outcome: each step on its own, a failure only logged
+    answer?.cancel();
+    final h = handed;
+    if (h != null && identical(o.extra, h)) return o; // §2.2: handed over — subscription, link, session are the flow's
+    inbox.handle(null, null);
     try {
-      return await result.future;
-    } finally {
-      // the cleanup never changes the outcome: each step on its own, a failure only logged
-      answer?.cancel();
-      try {
-        await sub?.cancel();
-      } catch (e) {
-        log?.call('probe $id cleanup: subscription ${e.runtimeType} $e');
-      }
-      try {
-        s?.dispose();
-      } catch (e) {
-        log?.call('probe $id cleanup: dispose ${e.runtimeType} $e');
-      }
+      await sub?.cancel();
+    } catch (e) {
+      log?.call('probe $id cleanup: subscription ${e.runtimeType} $e');
     }
+    try {
+      s?.dispose();
+    } catch (e) {
+      log?.call('probe $id cleanup: dispose ${e.runtimeType} $e');
+    }
+    return o;
   }
+}
+
+/// #329 PR 3 §2.2: the login of a flow under its lease (NodeLink.loginFor). Same attempt rules and budgets as a read
+/// (8 s to msg2, then 20 s); at `loggedIn` it ends as a read would (`Res.body`) with a [LoginHandoff] as the extra and
+/// leaves the subscription, the link and the session open for the flow.
+class HandoffProber extends SessionProber {
+  HandoffProber({
+    required super.openRecord,
+    required super.ownerPub,
+    required super.signOwner,
+    super.keyError,
+    super.log,
+    super.answerMax,
+  }) : super._handoff();
 }

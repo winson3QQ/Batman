@@ -57,18 +57,24 @@ class AppLink {
     final reg = LeaseRegistry(after: _after);
     final gate = BleGate(ReactiveBackend(radio), reg, now: _now, after: _after);
     final records = '$filesDir/records';
-    final prober = SessionProber(
-      openRecord: (id) async {
-        final sealed = await storeReadSealed(dir: records, rel: 'node/$id');
-        if (sealed == null) return null;
-        return platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad});
-      },
-      ownerPub: () async => ((await platform.invokeMapMethod<String, dynamic>('publicKeys'))!['owner']) as Uint8List,
-      signOwner: (input) async => (await platform.invokeMethod<Uint8List>('signOwner', {'input': input}))!,
-      log: (l) => debugPrint('BMAPP nl ${NodeLink.mask(l)}'),
-      // X26: the key gate refused a key use -> 2.4 until the app is opened again (review pr1 B-M5)
-      keyError: (e) => keyErrorToRadio(e, _one?.link),
-    );
+    Future<Uint8List?> openRecord(String id) async {
+      final sealed = await storeReadSealed(dir: records, rel: 'node/$id');
+      if (sealed == null) return null;
+      return platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad});
+    }
+
+    Future<Uint8List> ownerPub() async =>
+        ((await platform.invokeMapMethod<String, dynamic>('publicKeys'))!['owner']) as Uint8List;
+    Future<Uint8List> signOwner(Uint8List input) async =>
+        (await platform.invokeMethod<Uint8List>('signOwner', {'input': input}))!;
+    void log(String l) => debugPrint('BMAPP nl ${NodeLink.mask(l)}');
+    // X26: the key gate refused a key use -> 2.4 until the app is opened again (review pr1 B-M5)
+    void keyError(Object e) => keyErrorToRadio(e, _one?.link);
+    final prober =
+        SessionProber(openRecord: openRecord, ownerPub: ownerPub, signOwner: signOwner, log: log, keyError: keyError);
+    // #329 PR 3 §2.1: a flow's login under its lease, same keys and rules, handing the session over
+    final handoff =
+        HandoffProber(openRecord: openRecord, ownerPub: ownerPub, signOwner: signOwner, log: log, keyError: keyError);
     Future<List<Rec>> readRecords() async {
       final ids = await listNodes(dir: records);
       // A23: the record file's last write orders the records (newest first); unreadable time = oldest
@@ -93,6 +99,9 @@ class AppLink {
       now: _now,
       after: _after,
       trace: (l) => debugPrint('BMAPP nl $l'),
+      loginProber: handoff,
+      // design §4.1: the keys are read live before each login
+      keysOk: () async => (await KeyAbilities.read(platform)).login,
     );
     final writer = RecordWriter(
       reg,

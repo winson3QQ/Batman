@@ -9,6 +9,7 @@ import 'package:flutter/widgets.dart' show AppLifecycleState;
 
 import 'ble_gate.dart';
 import 'core.dart';
+import 'handoff.dart';
 import 'lease.dart';
 
 /// One attempt's login + status read on an open link, for record [id]. [due] completes when the attempt's 8 s from
@@ -21,6 +22,18 @@ abstract class Prober {
 /// The phone's node records and their file times (A23), read after start-up and after every lease release.
 typedef ReadRecords = Future<List<Rec>> Function();
 
+/// #329 PR 3 §2.1: how a flow's login under its lease ended. `noLease`: the lease given is not the registry's current
+/// session lease (or was taken back meanwhile), or another login is running.
+enum LoginForEnd { ok, identity, refused, notFound, precondition, noLease }
+
+class LoginForResult {
+  const LoginForResult(this.end, [this.handoff]);
+  final LoginForEnd end;
+
+  /// Only with `ok`: the logged-in session, now the caller's.
+  final LoginHandoff? handoff;
+}
+
 class NodeLink implements LeaseListener {
   NodeLink({
     required this.core,
@@ -32,6 +45,8 @@ class NodeLink implements LeaseListener {
     required this.after,
     DateTime Function()? wall,
     this.trace,
+    this.loginProber,
+    this.keysOk,
   }) : wall = wall ?? DateTime.now {
     reg.listeners.add(this);
   }
@@ -52,6 +67,12 @@ class NodeLink implements LeaseListener {
   /// last 4 characters (T-S4: no long hex run in a log).
   final void Function(String line)? trace;
   String? _traced;
+
+  /// #329 PR 3 §2.1: the prober of a flow's login (HandoffProber in the app). Null = no flow logins (tests of reads).
+  final Prober? loginProber;
+
+  /// The live key read before a flow's login (design §4.1: KeyAbilities before each login). Null = not checked.
+  final Future<bool> Function()? keysOk;
 
   static String mask(String s) => s
       .replaceAllMapped(RegExp(r'[0-9a-fA-F]{8,}'), (m) => '…${m[0]!.substring(m[0]!.length - 4)}')
@@ -94,6 +115,7 @@ class NodeLink implements LeaseListener {
   bool _disposed = false;
   List<Rec> _recs = const [];
   final Set<String> _writtenWaiting = {}; // records written under a lease released while another one was taken
+  Future<void>? _releasing; // the record read after the last release (§2.1, P7)
 
   // ---- events from the app ----------------------------------------------------------------------------------
 
@@ -145,12 +167,20 @@ class NodeLink implements LeaseListener {
 
   void radio({bool? bluetooth, bool? permission, bool? keyOk}) {
     core.setRadio(now(), bluetooth: bluetooth, permission: permission, keyOk: keyOk);
+    _lfCut(); // a login under a lease ends as precondition at once (core.setRadio), its attempt with it
+    _lfPoke();
     _pump();
   }
 
   /// §4.4 拿到之前: cancel the round, wait until its link is gone (at most 5 s), then the lease. Null = another
   /// operation holds it (the caller shows 「另一個操作還在進行：<名稱>」 with [LeaseRegistry.current]).
   Future<Lease?> acquire(String name, LeaseKind kind) async {
+    // #329 PR 3 §2.1 (P7): the last release's record read ends first (at most 5 s), so the N9 window of a record
+    // written under it is set before the next lease
+    final r = _releasing;
+    if (r != null) {
+      await r.timeout(const Duration(seconds: 5), onTimeout: () {});
+    }
     if (reg.current != null) return null;
     core.acquireLease(now());
     await _dropAll();
@@ -163,18 +193,223 @@ class NodeLink implements LeaseListener {
     return l;
   }
 
+
+  // ---- a flow's login under its lease (#329 PR 3 §2.1, design §4.3.9) -------------------------------------------
+
+  // the driver's own fields (never the round's): one login at a time
+  bool _lfBusy = false;
+  int _lfGen = 0; // a scan that comes back after its login ended never feeds the next one
+  LoginFor? _lf;
+  GateScan? _lfScan;
+  bool _lfScanStarting = false;
+  Cancel? _lfScanWait;
+  Cancel? _lfTimer;
+  Completer<void>? _lfWake;
+  Completer<void>? _lfCancel;
+
+  void _lfPoke() {
+    final w = _lfWake;
+    _lfWake = null;
+    if (w != null && !w.isCompleted) w.complete();
+  }
+
+  /// The running attempt is cut when the login is over (60 s, a precondition) or its lease is gone.
+  void _lfCut() {
+    final c = _lfCancel;
+    if (c != null && !c.isCompleted && (_lf?.done ?? true)) c.complete();
+  }
+
+  /// §4.3.9: log in to node [id] under the session lease [lease], up to 60 s from the moment its scan really started.
+  /// [clearNotY]: 「再試這一台」 (a node just claimed may have been memoed 「不是」). On `ok` the session, its link and
+  /// its frames are handed over ([LoginForResult.handoff]); every other end leaves no link open.
+  Future<LoginForResult> loginFor(Lease lease, String id, {bool clearNotY = false}) async {
+    final p = loginProber;
+    bool mine() => identical(reg.current, lease) && lease.valid && lease.kind == LeaseKind.session;
+    if (p == null || _disposed || _lfBusy || !mine()) return const LoginForResult(LoginForEnd.noLease);
+    _lfBusy = true;
+    _lfGen++;
+    try {
+      return await _loginFor(p, lease, id, clearNotY, mine);
+    } finally {
+      await _lfStop();
+      _lfBusy = false;
+    }
+  }
+
+  Future<LoginForResult> _loginFor(Prober p, Lease lease, String id, bool clearNotY, bool Function() mine) async {
+    // design §4.1: the keys are read live before each login; a no is 2.4, as a key the gate refused (X26)
+    final k = keysOk;
+    if (k != null) {
+      var ok = false;
+      try {
+        ok = await k();
+      } catch (_) {}
+      if (!ok) radio(keyOk: false);
+    }
+    if (!mine()) return const LoginForResult(LoginForEnd.noLease);
+    if (core.blocked != null) return const LoginForResult(LoginForEnd.precondition);
+    final early = <String>[];
+    final gen = _lfGen;
+    void seen(String a) {
+      if (gen != _lfGen) return;
+      final l = _lf;
+      if (l == null) {
+        early.add(a); // seen before the login's clock started
+      } else if (!l.seen.contains(a)) {
+        l.onScan(now(), a);
+        _lfPoke();
+      }
+    }
+
+    // the 60 s start when the scan really starts: a wait for a scan slot (4 in 30 s) is not counted
+    await _lfStartScan(lease, seen);
+    if (!mine()) return const LoginForResult(LoginForEnd.noLease);
+    final l = _lf = core.loginFor(now(), id, clearNotY: clearNotY);
+    for (final a in early) {
+      l.onScan(now(), a);
+    }
+    while (true) {
+      if (_disposed || !mine()) return const LoginForResult(LoginForEnd.noLease);
+      l.tick(now());
+      if (l.done) break;
+      if (_lfScan == null && !_lfScanStarting && _lfScanWait == null) unawaited(_lfStartScan(lease, seen));
+      final a = gate.links == 0 ? l.next(now()) : null;
+      if (a != null) {
+        final o = await _lfAttempt(p, lease, l, a);
+        l.result(now(), a, o);
+        final h = o.extra;
+        if (h is LoginHandoff) {
+          if (l.end == LoginEnd.ok && mine() && !_disposed) return LoginForResult(LoginForEnd.ok, h);
+          await h.close(); // logged in, but the login was over meanwhile (60 s, a precondition, the lease)
+        }
+        continue;
+      }
+      final w = l.wakeAt(now());
+      // a link still closing is waited for in short steps; otherwise the next deadline or an event (an address, the
+      // radio, the lease)
+      final ms = gate.links > 0 ? 100 : (w == null ? null : w - now());
+      await _lfSleep(ms);
+    }
+    trace?.call(mask('loginFor $id -> ${l.end!.name}'));
+    return LoginForResult(switch (l.end!) {
+      LoginEnd.ok => LoginForEnd.notFound, // an ok without a hand-off cannot happen: never claim a login
+      LoginEnd.identity => LoginForEnd.identity,
+      LoginEnd.refused => LoginForEnd.refused,
+      LoginEnd.notFound => LoginForEnd.notFound,
+      LoginEnd.precondition => LoginForEnd.precondition,
+    });
+  }
+
+  Future<void> _lfSleep(int? ms) async {
+    final w = _lfWake = Completer<void>();
+    _lfTimer?.call();
+    _lfTimer = ms == null ? null : after(Duration(milliseconds: ms < 0 ? 0 : ms), _lfPoke);
+    await w.future;
+  }
+
+  Future<void> _lfStartScan(Lease lease, void Function(String) seen) async {
+    final gen = _lfGen;
+    _lfScanStarting = true;
+    late final GateScan s;
+    try {
+      s = await gate.scan(lease.token, seen, ended: (_) {
+        // the radio ended the scan while the login goes on: a new one a little later (§2.1 重掃)
+        if (identical(_lfScan, s)) _lfScan = null;
+        _lfScanWait?.call();
+        _lfScanWait = after(NodeLink.scanEndedRetry, () {
+          _lfScanWait = null;
+          _lfPoke();
+        });
+      });
+    } on Refused {
+      _lfScanWait?.call();
+      _lfScanWait = after(NodeLink.scanRetry, () {
+        _lfScanWait = null;
+        _lfPoke();
+      });
+      return;
+    } finally {
+      _lfScanStarting = false;
+    }
+    if (gen != _lfGen || !_lfBusy || _disposed) {
+      await s.stop(); // the login ended while the scan waited for a slot
+      return;
+    }
+    if (s.open) _lfScan = s;
+  }
+
+  Future<Outcome> _lfAttempt(Prober p, Lease lease, LoginFor l, Attempt a) async {
+    final cancel = _lfCancel = Completer<void>();
+    final due = Completer<void>();
+    final stopDue = after(msg2, () => due.isCompleted ? null : due.complete());
+    // the 60 s cut the running attempt too (code-1 A-m6)
+    final left = l.start + LoginFor.budget - now();
+    final stopBudget = after(Duration(milliseconds: left < 0 ? 0 : left), () {
+      if (!cancel.isCompleted) cancel.complete();
+    });
+    final t0 = now();
+    GateLink? link;
+    Outcome o;
+    try {
+      final k = link = gate.connect(lease.token, a.addr, timeout: msg2);
+      final up = await Future.any<bool>([
+        k.state.firstWhere((s) => s, orElse: () => false),
+        due.future.then((_) => false),
+        cancel.future.then((_) => false),
+      ]);
+      o = (!up || cancel.isCompleted)
+          ? const Outcome(Res.noResponse)
+          : await p.probe(k, a.id, due: due.future, cancelled: cancel.future);
+    } on Refused {
+      o = const Outcome(Res.noResponse);
+    } catch (e) {
+      o = const Outcome(Res.noResponse); // one attempt's exception ends that attempt only
+      trace?.call(mask('loginFor $a: ${e.runtimeType} $e'));
+    }
+    stopDue();
+    stopBudget();
+    if (identical(_lfCancel, cancel)) _lfCancel = null;
+    trace?.call(mask('loginFor $a result=${o.res.name} after ${now() - t0}ms'));
+    // a failed attempt's link is gone before the next one (§2.1); a hand-off keeps its link
+    if (o.extra is! LoginHandoff) await link?.close();
+    return o;
+  }
+
+  Future<void> _lfStop() async {
+    _lfTimer?.call();
+    _lfTimer = null;
+    _lfScanWait?.call();
+    _lfScanWait = null;
+    final c = _lfCancel;
+    _lfCancel = null;
+    if (c != null && !c.isCompleted) c.complete();
+    _lf = null;
+    _lfPoke();
+    final s = _lfScan;
+    _lfScan = null;
+    await s?.stop();
+  }
   // ---- lease registry --------------------------------------------------------------------------------------------
 
   @override
-  void revoked(Token t) {}
+  void revoked(Token t) {
+    // a login under the lease taken back ends now (its attempt's link is closed by the gate)
+    final c = _lfCancel;
+    if (c != null && !c.isCompleted) c.complete();
+    _lfPoke();
+  }
 
   @override
   void released(Lease l, {required bool revoked}) {
     // §4.4 釋放之後: read the records again (a claim added one, a removal deleted one), drop the memos of the
     // records written under it, a round 6 s later. An older page (raw lease) does not report what it wrote: the
     // records that appeared, went or changed time are taken as written by it (review pr1 A-M2).
+    // a login under the released lease ends now, its attempt with it
+    final c = _lfCancel;
+    if (c != null && !c.isCompleted) c.complete();
+    _lfPoke();
     final before = _recs;
-    readRecords().then<List<Rec>?>((r) => r, onError: (Object _) => null).then((recs) {
+    _releasing = readRecords().then<List<Rec>?>((r) => r, onError: (Object _) => null).then((recs) {
       if (_disposed) return;
       final written = {..._writtenWaiting, ...l.writtenNodes};
       if (recs != null) {
@@ -351,6 +586,9 @@ class NodeLink implements LeaseListener {
 
   Future<void> dispose() async {
     _disposed = true;
+    _lfPoke();
+    final c = _lfCancel;
+    if (c != null && !c.isCompleted) c.complete();
     reg.listeners.remove(this);
     _timer?.call();
     await _dropAll();

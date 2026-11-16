@@ -446,3 +446,15 @@
 |---|---|
 | AF-M1 加入列再試只寫 `joinNetwork` | §2.5：照迴圈的加入規則整段；§6 改壞對照 |
 | AE-m1–m7、AF m1–m11 | §2.9 逐條；D12；§3.1；§3.2 |
+
+### v17 審查 AG、AH 的對應（v18；AH 0 MAJOR，MINOR 在實作對應步驟時補）
+
+| 項目 | 處理 |
+|---|---|
+| AG-M1 `open` 失敗分不出金鑰 | v18 §2.9：一律當成「這筆打不開」 |
+| AH m1 斷線落在 PersistNet 寫入瞬間 | 第 3 步：`ConsoleReply` 等 `FrameInbox` 正在跑的處理者做完才組；建立列文字照 `persistedRel` |
+| AH m2 金鑰規則接縫 | v18 §2.9 已改；`loginFor` 的 `precondition` 由 `keysOk` / `keyErrorToRadio` 進 `core.blocked`，頁面看 `core.blocked == Why.keys` 顯示 2.4 |
+| AH m3 「擋住」定義 | 以 §2.9 為準：`core.blocked` 非 null 或 `!lease.valid` |
+| AH m4 回 4.1 後的模式 | 第 5 步：收到「去建立」→ 建立模式，之後 `NetIndex` 通知只更新快照、不改模式 |
+| AH m5 檢查網路頁「再試」清 notY | 第 5 步：檢查網路頁的「再檢查一次」傳 `clearNotY: true`（設計 :547） |
+| AH m6–m9 | 第 5 步：從 4.1 進檢查網路頁照 §2.8 名稱預選；結果頁再試加入的失敗照迴圈規則；§6 殘字；沒勾時「開始」停用；「沒有已建立的 net」只看打得開的 |
