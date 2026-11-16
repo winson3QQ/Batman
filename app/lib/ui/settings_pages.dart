@@ -207,7 +207,7 @@ class _WifiPageState extends State<WifiPage> {
               ),
             ),
             Text('改完之後，正連著這台 Wi-Fi 的手機（例如跑 TAK 的）會斷線，要用新的名稱和密碼重新連。',
-                style: TextStyle(fontSize: Fs.note, height: 1.55, color: t.sub)),
+                style: TextStyle(fontSize: Fs.note, height: 1.55, color: t.ink)),
             if (_line.isNotEmpty) Text(_line, key: const Key('wifi-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
           ],
           foot: [

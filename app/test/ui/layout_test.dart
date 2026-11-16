@@ -11,6 +11,12 @@ import 'package:batman_app/ui/node_page.dart';
 import 'package:batman_app/ui/settings_page.dart';
 import 'package:batman_app/ui/theme.dart';
 import 'package:batman_app/ui/ui_state.dart';
+import 'package:batman_app/ui/more_pages.dart' show MorePage;
+import 'package:batman_app/ui/settings_pages.dart' show CountryPage, WifiPage;
+import 'package:batman_app/src/flows/op_session.dart' show OpDeps;
+import 'package:batman_app/src/rust/api/swupdate.dart';
+import 'package:batman_app/swupdate.dart' show SwFlow, SwHold, SwUpdatePage;
+import 'package:batman_app/secure_screen.dart' show secureChannel;
 import 'package:flutter/material.dart' hide Page;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -20,7 +26,7 @@ import 'ui_state_test.dart' show MemStore;
 
 const id = '0000000000000c4f2a7d2c';
 
-StatusView sv(String color, {int nodeState = 2}) => StatusView(
+StatusView sv(String color, {int nodeState = 2, bool canLeave = false}) => StatusView(
     color: color,
     row: '3',
     sentence: color == 'green' ? '已連上隊伍網路' : '沒有連上隊伍網路',
@@ -34,7 +40,7 @@ StatusView sv(String color, {int nodeState = 2}) => StatusView(
     rateNote: '',
     unfinished: '',
     unfinishedUnderVerdict: false,
-    canLeave: false);
+    canLeave: canLeave);
 
 KeyAbilities keys() => KeyAbilities.from({
       'RECORD_AES': 1,
@@ -69,7 +75,40 @@ AppLink app(StatusView? view) {
 
 final retired = RegExp(r'網主|末四碼|管理者(?!金鑰)|成員|(?<![A-Za-z_])SAS(?![A-Za-z_])|StrongBox|ownerEnc|#\d');
 
+/// #329 PR 4: a session that is always taken (no login is tried in a layout test)
+final busy = OpDeps(
+    acquire: (_) async => null,
+    busyName: () => '建立網路',
+    login: (_, _) => throw StateError('no login'),
+    console: (_, _) => throw StateError('no console'),
+    keepScreen: (_) async {});
+
+final _ready = SwAction(
+    kind: SwKind.show_,
+    waitMs: BigInt.zero,
+    note: '套用後節點會重開，大約 2 分鐘連不到。',
+    text: '更新已經準備好',
+    tech: 'phase 2',
+    percent: -1,
+    buttons: const [SwButton.apply, SwButton.abandon],
+    ip: '',
+    port: 0,
+    bearerHex: '',
+    size: BigInt.zero,
+    payload: 0,
+    uploading: false);
+
+class _Flow implements SwFlow {
+  @override
+  SwAction start() => SwAction(
+      kind: SwKind.send, waitMs: BigInt.one, note: '', text: '', tech: '', percent: -1, buttons: const [], ip: '', port: 0, bearerHex: '', size: BigInt.zero, payload: 0, uploading: false);
+  @override
+  dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
+}
+
 void main() {
+  setUp(() => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .setMockMethodCallHandler(secureChannel, (c) async => true));
   final pages = <String, Widget Function(UiState ui)>{
     'home, all fine': (ui) => HomePage(app: app(sv('green')), ui: ui, devTrust: true, keys: keys()),
     'home, not in a network': (ui) => HomePage(app: app(sv('red', nodeState: 1)), ui: ui, devTrust: true, keys: keys()),
@@ -116,6 +155,13 @@ void main() {
     'about': (ui) => const AboutPage(),
     'intro': (ui) => IntroPages(onDone: () {}),
     'permissions': (ui) => PermissionsPage(ask: () async => false),
+    // #329 PR 4: the new pages (5.6 / 5.8 with a session that is busy: they show their read-failed state)
+    'more': (ui) => MorePage(app: app(sv('green', canLeave: true)), ui: ui, id: id),
+    'phone Wi-Fi': (ui) => WifiPage(app: app(sv('green')), ui: ui, id: id, deps: busy),
+    'country': (ui) => CountryPage(app: app(sv('red', nodeState: 1)), ui: ui, id: id, deps: busy),
+    'help': (ui) => const HelpPage(),
+    'phone lost': (ui) => const PhoneLostPage(),
+    'software update, prepared': (ui) => SwUpdatePage(hold: SwHold(_Flow()), ask: (_) async => _ready, onSetAp: () {}),
   };
   for (final size in const [Size(360, 640), Size(412, 915)]) {
     for (final scale in const [1.0, 1.3, 2.0]) {
