@@ -16,6 +16,7 @@ import 'package:flutter/foundation.dart' show ChangeNotifier, visibleForTesting;
 import '../../member_ui.dart' show forgettable;
 import '../../ui/home_logic.dart' show NetRecords;
 import '../nodelink/lease.dart';
+import '../rust/api/member.dart' show MnetView;
 import '../rust/api/owner.dart' show NetView, MemberView;
 
 /// One openable net record.
@@ -25,6 +26,18 @@ class NetEntry {
   final NetView view;
   String get rel => 'net/$id';
   bool get applied => view.applied;
+}
+
+/// #329 PR 5 §2.11: a member's team network as listed: its name and its entry node's last four (no version: R19
+/// reads the record itself). [opens] false: the record did not open (Y-m4); the name and last four are then empty.
+class MnetEntry {
+  const MnetEntry(this.id, {this.name = '', this.entryLast4 = '', this.opens = true});
+  final String id, name;
+
+  /// '' = no own-node entry left (a new invite is needed, V-m5)
+  final String entryLast4;
+  final bool opens;
+  String get rel => 'mnet/$id';
 }
 
 /// 「節點加入網路沒有做完」: a joining member (not the pending creator) that is one of this phone's nodes.
@@ -46,6 +59,7 @@ class NetSnapshot {
     this.todos = const [],
     this.mnetIds = const [],
     this.mpendIds = const [],
+    this.mnets = const [],
   });
 
   /// Nothing computed yet, or a newer computation running: the screens use the neutral 「加入網路」 (PR 2 D-m9).
@@ -65,6 +79,9 @@ class NetSnapshot {
   /// #329 PR 5 §2.11: the mnet / mpend files listed (ids only; nothing opened for these). anyMnet / anyMpend stay as
   /// they were (home row 6 reads them).
   final List<String> mnetIds, mpendIds;
+
+  /// #329 PR 5 §2.11: every mnet listed, opened or not.
+  final List<MnetEntry> mnets;
 
   /// Home row 6 / 3.5 / 3.6 (PR 2 joinChoice, unchanged): any net file wins over mnet over mpend.
   NetRecords get records => computing || listFailed
@@ -86,7 +103,7 @@ class NetSnapshot {
 
 /// What NetIndex reads (injected so it is testable without the bridge or Kotlin).
 class NetSource {
-  const NetSource({required this.list, required this.open, required this.summary, required this.nodeIds});
+  const NetSource({required this.list, required this.open, required this.summary, required this.nodeIds, this.mnetSummary});
 
   /// The names in a records folder ('net', 'mnet', 'mpend'), list_kind's rules (see [listKind]).
   final Future<List<String>> Function(String kind) list;
@@ -97,6 +114,9 @@ class NetSource {
 
   /// This phone's node ids (node/ records).
   final Future<List<String>> Function() nodeIds;
+
+  /// #329 PR 5 §2.11: an mnet record's summary (null: mnets are listed as ids only).
+  final MnetView Function(Uint8List plain)? mnetSummary;
 }
 
 /// list_kind's rules on a real folder: '.' names skipped, a missing folder is empty, any other error thrown.
@@ -143,7 +163,8 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
           anyMpend: _now.anyMpend,
           todos: _now.todos,
           mnetIds: _now.mnetIds,
-          mpendIds: _now.mpendIds);
+          mpendIds: _now.mpendIds,
+          mnets: _now.mnets);
       notifyListeners();
     }
     final s = await compute();
@@ -173,6 +194,21 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
         log?.call('NetIndex: net ${id.length > 8 ? id.substring(0, 8) : id}… does not open (${e.runtimeType})');
       }
     }
+    final mnetEntries = <MnetEntry>[];
+    final ms = src.mnetSummary;
+    if (ms != null) {
+      for (final id in mnets) {
+        try {
+          final p = await src.open('mnet/$id');
+          if (p == null) throw StateError('none');
+          final v = ms(p); // the plain bytes go no further (§2.11)
+          mnetEntries.add(MnetEntry(id, name: v.netName, entryLast4: v.entryState.isEmpty ? '' : v.deviceLast4));
+        } catch (e) {
+          mnetEntries.add(MnetEntry(id, opens: false));
+          log?.call('NetIndex: mnet ${id.length > 8 ? id.substring(0, 8) : id}… does not open (${e.runtimeType})');
+        }
+      }
+    }
     var todos = <JoinTodo>[];
     try {
       final mine = (await src.nodeIds()).toSet();
@@ -194,7 +230,8 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
         anyMpend: mpends.isNotEmpty,
         todos: todos,
         mnetIds: mnets,
-        mpendIds: mpends);
+        mpendIds: mpends,
+        mnets: mnetEntries);
   }
 
   // §2.6: after every lease release (a flow may have written a record). Not in the same call: a release often comes

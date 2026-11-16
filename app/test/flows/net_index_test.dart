@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:batman_app/src/flows/net_index.dart';
 import 'package:batman_app/src/nodelink/lease.dart';
+import 'package:batman_app/src/rust/api/member.dart' show MnetView;
 import 'package:batman_app/src/rust/api/owner.dart';
 import 'package:batman_app/ui/home_logic.dart' show NetRecords;
 import 'package:flutter_test/flutter_test.dart';
@@ -189,5 +190,59 @@ void main() {
     }
     expect(await listKind(d.path, 'net'), ['a1', 'b2']);
     d.deleteSync(recursive: true);
+  });
+
+  group('#329 PR 5 §2.11: mnets', () {
+    MnetView mv(String name, String state, String last4) =>
+        MnetView(netId: 'x', netName: name, entryState: state, deviceLast4: last4);
+    final views = {'m1': mv('山隊', 'applied', 'AA01'), 'm2': mv('海隊', '', '')}; // m3: does not open
+    NetSource src({MnetView Function(Uint8List)? summary}) => NetSource(
+          list: (k) async => k == 'mnet' ? ['m1', 'm2', 'm3'] : <String>[],
+          open: (rel) async {
+            final id = rel.split('/').last;
+            if (!views.containsKey(id)) throw Exception('keystore');
+            return Uint8List.fromList(id.codeUnits);
+          },
+          summary: (p) => throw StateError('no net here'),
+          nodeIds: () async => const [],
+          mnetSummary: summary,
+        );
+
+    test('name and entry last four; no entry -> empty last four (V-m5); one that does not open is kept, marked (Y-m4)',
+        () async {
+      final s = await NetIndex(src(summary: (p) => views[String.fromCharCodes(p)]!)).compute();
+      expect([for (final m in s.mnets) '${m.id}:${m.name}:${m.entryLast4}:${m.opens}'],
+          ['m1:山隊:AA01:true', 'm2:海隊::true', 'm3:::false']);
+      expect(s.mnets.first.rel, 'mnet/m1');
+      expect(s.records, NetRecords.mnet, reason: 'row 6 unchanged');
+    });
+
+    test('no summary given: ids only, nothing opened', () async {
+      final s = await NetIndex(src()).compute();
+      expect(s.mnets, isEmpty);
+      expect(s.mnetIds, ['m1', 'm2', 'm3']);
+    });
+
+    test('a recomputation keeps the old mnets while it runs (AA-m3)', () async {
+      final gate = Completer<void>();
+      var first = true;
+      final i = NetIndex(NetSource(
+        list: (k) async {
+          if (k == 'mnet' && !first) await gate.future;
+          return k == 'mnet' ? ['m1'] : <String>[];
+        },
+        open: (rel) async => Uint8List.fromList('m1'.codeUnits),
+        summary: (p) => throw StateError('no net here'),
+        nodeIds: () async => const [],
+        mnetSummary: (p) => views['m1']!,
+      ));
+      await i.recompute();
+      first = false;
+      final again = i.recompute();
+      expect(i.now.computing, isTrue);
+      expect(i.now.mnets.map((m) => m.id), ['m1']);
+      gate.complete();
+      await again;
+    });
   });
 }

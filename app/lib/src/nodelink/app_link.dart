@@ -12,6 +12,7 @@ import '../../key_abilities.dart' show KeyAbilities, KeyUse;
 import '../flows/owner_console.dart' show ConsolePlatform;
 import '../flows/net_index.dart';
 import '../rust/api/claim.dart' show storeKeepCopy, storeRemove, storeWriteSealed;
+import '../rust/api/member.dart' show mnetSummary;
 import '../rust/api/owner.dart' show listNodes, netSummary, storeReadSealed, storeWriteCas;
 import 'ble_backend.dart';
 import 'ble_gate.dart';
@@ -174,6 +175,7 @@ class AppLink {
         },
         summary: (p) => netSummary(recordPlain: p),
         nodeIds: () => listNodes(dir: records),
+        mnetSummary: (p) => mnetSummary(mnetPlain: p),
       ),
       log: (l) => debugPrint('BMAPP $l'),
     );
