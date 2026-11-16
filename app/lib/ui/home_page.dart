@@ -112,6 +112,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       if (mounted) setState(() {});
     });
     a.nets.addListener(_netsChanged); // #329 PR 3 §2.6: row 6 and the join todos follow the network records
+    a.sw.addListener(_netsChanged); // #329 PR 4 §2.8: 「軟體更新還沒做完」
     _tick = Timer.periodic(const Duration(seconds: 15), (_) => mounted ? setState(() {}) : null);
     _todos();
   }
@@ -123,6 +124,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void dispose() {
     a.nets.removeListener(_netsChanged);
+    a.sw.removeListener(_netsChanged);
     WidgetsBinding.instance.removeObserver(this);
     _sub?.cancel();
     _tick?.cancel();
@@ -240,9 +242,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     if (r == addAgain) await _addNode(); // 3.6 「再加一台」
   }
 
-  void _open(String id) {
+  void _open(String id, {bool update = false}) {
     a.link.setPage(nl.Page.node, node: id);
-    _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => NodePage(app: a, id: id, ui: widget.ui))));
+    _back(Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => NodePage(app: a, id: id, ui: widget.ui, openUpdate: update))));
   }
 
   @override
@@ -251,7 +254,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final ids = a.link.core.states.keys.toList()..sort();
     final infos = [for (final id in ids) nodeInfo(a, id, widget.ui)];
     final nets = a.nets.now;
-    final todos = _pending + a.reg.unsavedTodos.length + nets.todos.length;
+    final todos = _pending + a.reg.unsavedTodos.length + nets.todos.length + a.sw.unfinishedOf(a.link.core.states.containsKey).length;
     final firstRounds = a.link.core.roundsRun < 3;
     final h = decideHome(
         HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: nets.records));
@@ -320,6 +323,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               text: '${nodeInfo(a, j.deviceId, widget.ui).name} 加入「${j.net.view.netName.isEmpty ? j.net.view.meshId : j.net.view.netName}」還沒有完成。',
               action: Btn.finishIt,
               onAction: () => _form(makes: false, todo: j)),
+        // #329 PR 4 §2.8 (design §4.8): an update prepared and not applied (memory only, as the update itself)
+        for (final id in a.sw.unfinishedOf(a.link.core.states.containsKey))
+          BatBanner(
+              look: Look.warn,
+              title: '軟體更新還沒做完',
+              text: '${nodeInfo(a, id, widget.ui).name}：更新已經準備好，還沒套用。',
+              action: Btn.finishIt,
+              onAction: () => _open(id, update: true)),
         if (infos.isNotEmpty) ...[
           const BatLabel('我的節點'),
           BatCard(children: [

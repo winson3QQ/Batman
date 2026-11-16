@@ -9,6 +9,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'src/rust/api/swupdate.dart';
+import 'ui/theme.dart';
+import 'ui/widgets.dart';
 
 const swChannel = MethodChannel('dev.batman/swupdate');
 
@@ -84,7 +86,11 @@ SwPut putOf(String? r) => switch (r) {
     };
 
 class SwUpdatePage extends StatefulWidget {
-  const SwUpdatePage({super.key, required this.hold, required this.ask, required this.onSetAp, this.channel = swChannel, this.specifierText});
+  const SwUpdatePage(
+      {super.key, required this.hold, required this.ask, required this.onSetAp, this.channel = swChannel, this.specifierText, this.onShown});
+
+  /// #329 PR 4 §2.8: the page showed a new action (AppLink.sw notifies the home page)
+  final VoidCallback? onShown;
 
   final SwHold hold;
 
@@ -144,6 +150,10 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
 
   void _show(SwAction a) {
     _h.last = a;
+    // #329 PR 4 §2.8: the home page's todo follows (review C m8); after this frame — the first action is shown from
+    // initState, while the route is being built (code review A m1 / B m1)
+    final n = widget.onShown;
+    if (n != null) scheduleMicrotask(n);
     if (mounted) setState(() => _a = a);
   }
 
@@ -319,37 +329,47 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
     await _ch.invokeMethod<void>('cancelUpload');
   }
 
+  /// #329 PR 4 §2.8: the dangerous buttons (they cut the node off for a while: the note says how long)
+  BtnKind _kind(SwButton b) => switch (b) {
+        SwButton.apply || SwButton.applyAnyway => BtnKind.danger,
+        SwButton.cancel || SwButton.abandon => BtnKind.text,
+        _ => BtnKind.primary,
+      };
+
   @override
   Widget build(BuildContext context) {
     final a = _a;
     final uploading = a?.kind == SwKind.upload;
+    final t = BatTheme.of(context);
+    // #329 PR 4 §2.8: PR 2's page parts; what shows when, and every button, as before
     return PopScope(
       canPop: !_running,
-      child: Scaffold(
-        appBar: AppBar(title: const Text('軟體更新')),
-        body: Padding(
-          padding: const EdgeInsets.all(16),
-          child: ListView(children: [
-            if (a != null && a.text.isNotEmpty) Text(a.text, style: Theme.of(context).textTheme.titleMedium),
-            if (a != null && a.note.isNotEmpty) Text(a.note),
-            if (a != null && a.percent >= 0) LinearProgressIndicator(value: a.percent / 100),
-            if (uploading && a != null) ...[
-              LinearProgressIndicator(value: a.size > BigInt.zero ? _sent / a.size.toDouble() : null),
-              Text('已送出 ${(_sent / 1048576).toStringAsFixed(1)} / ${(a.size.toDouble() / 1048576).toStringAsFixed(1)} MB'),
-              OutlinedButton(onPressed: _cancel ? null : _cancelUpload, child: const Text('取消')),
-            ],
-            if (_running && !uploading) const Padding(padding: EdgeInsets.all(8), child: Center(child: CircularProgressIndicator())),
-            if (a != null && !_running)
-              Wrap(spacing: 8, children: [
-                for (final b in a.buttons) FilledButton(onPressed: () => _press(b), child: Text(buttonLabel(b))),
-                if (a.kind == SwKind.done) FilledButton(onPressed: () => Navigator.pop(context), child: const Text('關閉')),
-              ]),
-            if (a != null && (a.tech.isNotEmpty || _h.putCode.isNotEmpty))
-              ExpansionTile(title: const Text('技術資訊'), children: [
-                Text([if (a.tech.isNotEmpty) a.tech, if (_h.putCode.isNotEmpty) 'PUT: ${_h.putCode}'].join(';')),
-              ]),
-          ]),
-        ),
+      child: BatPage(
+        title: '軟體更新',
+        body: [
+          if (a != null && a.text.isNotEmpty)
+            Text(a.text, style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, height: 1.4, color: t.ink)),
+          if (a != null && a.note.isNotEmpty) Text(a.note, style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+          if (a != null && a.percent >= 0) LinearProgressIndicator(value: a.percent / 100),
+          if (uploading && a != null) ...[
+            LinearProgressIndicator(value: a.size > BigInt.zero ? _sent / a.size.toDouble() : null),
+            Text('已送出 ${(_sent / 1048576).toStringAsFixed(1)} / ${(a.size.toDouble() / 1048576).toStringAsFixed(1)} MB',
+                style: TextStyle(fontSize: Fs.meta, color: t.sub)),
+            BatButton('取消', kind: BtnKind.secondary, onPressed: _cancel ? null : _cancelUpload),
+          ],
+          if (_running && !uploading) const Padding(padding: EdgeInsets.all(8), child: Center(child: CircularProgressIndicator())),
+          if (a != null && (a.tech.isNotEmpty || _h.putCode.isNotEmpty))
+            ExpansionTile(title: const Text('技術資訊'), children: [
+              Text([if (a.tech.isNotEmpty) a.tech, if (_h.putCode.isNotEmpty) 'PUT: ${_h.putCode}'].join(';'),
+                  style: TextStyle(fontFamily: 'monospace', fontSize: Fs.meta, color: t.ink)),
+            ]),
+        ],
+        foot: [
+          if (a != null && !_running) ...[
+            for (final b in a.buttons) BatButton(buttonLabel(b), kind: _kind(b), onPressed: () => _press(b)),
+            if (a.kind == SwKind.done) BatButton('關閉', onPressed: () => Navigator.pop(context)),
+          ],
+        ],
       ),
     );
   }

@@ -24,6 +24,19 @@ class SettingsPage extends StatelessWidget {
     final t = BatTheme.of(context);
     return BatPage(title: '設定', body: [
       BatCard(children: [
+        // #329 PR 4 §2.9 (design §5.8 10.1 / 10.4)
+        BatRow(
+          icon: Icons.help_outline,
+          title: '說明',
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const HelpPage())),
+        ),
+        BatRow(
+          icon: Icons.phonelink_erase,
+          title: '換手機 / 手機遺失',
+          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PhoneLostPage())),
+        ),
+      ]),
+      BatCard(children: [
         BatRow(
           icon: Icons.info_outline,
           title: Btn.about,
@@ -101,6 +114,46 @@ class _AboutPageState extends State<AboutPage> {
       Text('對別人說是哪一台節點時，請報後四碼。', style: TextStyle(fontSize: Fs.note, height: 1.55, color: t.sub)),
       Text('© 2026 台灣曙豐防災自訓團　保留所有權利\n臂章與名稱為台灣曙豐防災自訓團所有，未經同意不得使用。',
           textAlign: TextAlign.center, style: TextStyle(fontSize: Fs.meta, height: 1.7, color: t.sub)),
+    ]);
+  }
+}
+
+/// #329 PR 4 §2.9: plain text, one paragraph each (design :374, §3.3 後四碼).
+class HelpPage extends StatelessWidget {
+  const HelpPage({super.key});
+
+  @override
+  Widget build(BuildContext context) => const _TextPage(title: '說明', paragraphs: [
+        '首頁列出這支手機管理的節點。點一台進去，可以看它的狀態、加入網路、設定手機 Wi-Fi、軟體更新與更多。',
+        '畫面上的狀態大約每分鐘更新一次，旁邊的時間是讀取的時間。節點那邊的狀態本身也會慢一點。',
+        '每台節點有兩個名字：暱稱只在這支手機看得到；後四碼印在節點的 QR 上，每支手機都一樣。對別人說是哪一台時，請報後四碼。',
+        '要用藍牙連到節點：請開著藍牙，並靠近節點。',
+      ]);
+}
+
+/// #329 PR 4 §2.9 (design §6 情境 10, board 10.4): what this version cannot do, said plainly.
+class PhoneLostPage extends StatelessWidget {
+  const PhoneLostPage({super.key});
+
+  @override
+  Widget build(BuildContext context) => const _TextPage(title: '換手機 / 手機遺失', paragraphs: [
+        '管理節點用的金鑰只存在這支手機裡，沒有備份，也不能搬到另一支手機。',
+        '換手機：新手機不能接手這支手機的節點。舊手機還在的話，節點仍然由舊手機管理。',
+        '手機遺失：請隊長把你從隊伍移除。你管理的節點要請維修人員重新燒錄，燒完是新的身分和新的 QR，之後再用新手機新增。',
+        '這一版沒有「恢復出廠設定」，也沒有把節點交給另一支手機的功能。',
+      ]);
+}
+
+class _TextPage extends StatelessWidget {
+  const _TextPage({required this.title, required this.paragraphs});
+  final String title;
+  final List<String> paragraphs;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = BatTheme.of(context);
+    return BatPage(title: title, body: [
+      for (final p in paragraphs) Text(p, style: TextStyle(fontSize: Fs.body, height: 1.7, color: t.ink)),
     ]);
   }
 }

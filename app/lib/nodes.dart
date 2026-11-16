@@ -1229,7 +1229,7 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
         try {
           final mv = mnetSummary(mnetPlain: p);
           names[id] = mv.netName;
-          if (mv.entryState.isNotEmpty && mv.deviceLast4 == last4) entries.add(id);
+          if (memberEntryOf(mv, last4)) entries.add(id);
         } catch (_) {}
       }
     }

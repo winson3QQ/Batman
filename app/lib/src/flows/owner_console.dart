@@ -22,6 +22,29 @@ import '../nodelink/handoff.dart';
 import '../nodelink/lease.dart';
 import '../nodelink/record_writer.dart';
 import '../rust/api/owner.dart';
+import '../rust/api/swupdate.dart' show SwAction, SwUpdate;
+
+/// The software update's side of a request (Rust's `SwUpdate`; a fake in tests): what to send and what an answer, a
+/// lost request or no link makes of it. Every call gets the update's own clock.
+abstract class SwLink {
+  OwnerStep request(OwnerSession s);
+  SwAction answered(OwnerSession s, BigInt now);
+  SwAction lost(BigInt now);
+  SwAction noLink(BigInt now);
+}
+
+class RustSwLink implements SwLink {
+  RustSwLink(this.sw);
+  final SwUpdate sw;
+  @override
+  OwnerStep request(OwnerSession s) => s.requestSw(sw: sw);
+  @override
+  SwAction answered(OwnerSession s, BigInt now) => s.swAnswer(sw: sw, nowMs: now);
+  @override
+  SwAction lost(BigInt now) => sw.lost(nowMs: now);
+  @override
+  SwAction noLink(BigInt now) => sw.noLink(nowMs: now);
+}
 
 /// The old console's lines, unchanged (nodes.dart:47-55).
 const joinUnclearLine = '[JOIN_STATE] 結果不明，稍後在這台按「加入網路」';
@@ -30,6 +53,12 @@ const linkUnknownLine = '[JOINED] 已套用，連線狀態未知';
 const sendUnclearLine = '[REQ_FAIL] 結果不明 — 請重新連線後看狀態頁';
 const joinCancelledLine = '[JOIN_STATE] 已取消：沒有寫入、沒有送出';
 const recordUnopenedLine = '[REQ_FAIL] 手機裡的網路紀錄打不開';
+
+/// #329 PR 4 §2.2: a settings/set whose outcome is unknown (it went out); the page offers 「重新讀取」.
+const settingsUnclearLine = '[REQ_FAIL] 結果不明 — 請重新讀取設定';
+
+/// The update request's unclear mark (nodes.dart:1598 `_swUnanswered`): a lost link ends it at once; never shown.
+const swUnansweredMark = '[SW_LOST]';
 
 /// join2 §3.3-7 (nodes.dart:41-42).
 const linkWindow = Duration(seconds: 120);
@@ -58,8 +87,25 @@ enum ReplyKind {
 
 class ConsoleReply {
   const ConsoleReply(this.kind, this.text,
-      {this.persistedRel, this.sendUpdate = false, this.pollLink = false, this.sessionAlive = true, this.keyError = false});
+      {this.persistedRel,
+      this.sendUpdate = false,
+      this.pollLink = false,
+      this.sessionAlive = true,
+      this.keyError = false,
+      this.left = false,
+      this.settings,
+      this.value});
   final ReplyKind kind;
+
+  /// #329 PR 4 §2.2: network/leave answered 0 (Rust `left`; leaveFlow reads the page once more).
+  final bool left;
+
+  /// #329 PR 4 §2.1: a settings/get or settings/set answer that succeeded (Rust gives it only then).
+  final SettingsView? settings;
+
+  /// #329 PR 4 §2.2: what the request made of its answer on the session that answered it, in the step loop (a
+  /// `StatusView` for [OwnerConsole.statusPage], a `SwAction` for [OwnerConsole.askSw]); null otherwise.
+  final Object? value;
 
   /// [ReplyKind.answer]: Rust's detail, without the old `[ANSWER] ` mark. Otherwise the line to show (the old
   /// console's, Dart or Rust).
@@ -163,6 +209,7 @@ class OwnerConsole {
   bool _keyError = false;
   String? _removedQ;
   int? _linkFrom; // set when a join was applied: the link checks count from here
+  Object? Function(OwnerSession s, OwnerStep st)? _derive; // the outstanding request's use of its answer
 
   bool get alive => _session != null && !_closed;
 
@@ -180,13 +227,17 @@ class OwnerConsole {
     });
   }
 
-  ConsoleReply _reply(ReplyKind k, String text, {bool? alive, bool sendUpdate = false, bool pollLink = false}) =>
+  ConsoleReply _reply(ReplyKind k, String text,
+          {bool? alive, bool sendUpdate = false, bool pollLink = false, bool left = false, SettingsView? settings, Object? value}) =>
       ConsoleReply(k, text,
           persistedRel: _persistedRel,
           sendUpdate: sendUpdate,
           pollLink: pollLink,
           sessionAlive: alive ?? (_session != null && !_closed),
-          keyError: _keyError);
+          keyError: _keyError,
+          left: left,
+          settings: settings,
+          value: value);
 
   void _complete(ConsoleReply r) {
     final a = _answer;
@@ -277,7 +328,12 @@ class OwnerConsole {
           st = null; // a login is NodeLink's (never here after the hand-off)
         case OwnerKind.answer:
           if (st.pollLink) _linkFrom = nowMs();
-          _complete(_reply(ReplyKind.answer, st.detail, sendUpdate: st.sendUpdate, pollLink: st.pollLink));
+          // #329 PR 4 §2.2: made here, on the session that answered, and only for the request still waiting (a late
+          // answer changes nothing: review D m8); a software-update answer is never logged (update D8)
+          final d = _derive, w = _answer;
+          final v = d != null && w != null && !w.isCompleted ? d(s, st) : null;
+          _complete(_reply(ReplyKind.answer, st.detail,
+              sendUpdate: st.sendUpdate, pollLink: st.pollLink, left: st.left, settings: st.settings, value: v));
           st = null;
         case OwnerKind.ended:
           log?.call('owner console: session ended');
@@ -323,11 +379,21 @@ class OwnerConsole {
   /// plan §2.3: leaseLost only from the lease itself, whatever ended the request.
   ConsoleReply _leaseCheck(ConsoleReply r) => lease.valid
       ? r
-      : ConsoleReply(ReplyKind.leaseLost, r.text, persistedRel: r.persistedRel, sessionAlive: r.sessionAlive, keyError: r.keyError);
+      : ConsoleReply(ReplyKind.leaseLost, r.text,
+          persistedRel: r.persistedRel,
+          sessionAlive: r.sessionAlive,
+          keyError: r.keyError,
+          left: r.left,
+          settings: r.settings,
+          value: r.value); // #329 PR 4 code review B m2: what the answer already made is kept
 
   /// One request (nodes.dart `_ask` without its login and resend branch). [wait] runs from each write to the node.
   Future<ConsoleReply> _ask(OwnerStep Function(OwnerSession) req,
-      {Duration wait = const Duration(seconds: 15), String? unclear, String? timeoutLine}) async {
+      {Duration wait = const Duration(seconds: 15),
+      String? unclear,
+      String? timeoutLine,
+      Object? Function(OwnerSession s, OwnerStep st)? derive,
+      bool endedAfterSent = false}) async {
     final s = _session;
     if (_closed || s == null) return _reply(ReplyKind.notSent, askNoLink, alive: false);
     if (!lease.valid) return _reply(ReplyKind.leaseLost, askNoLink);
@@ -338,6 +404,7 @@ class OwnerConsole {
     _unclear = unclear;
     _track = SendTrack();
     _removedQ = null;
+    _derive = derive;
     final answer = _answer = Completer<ConsoleReply>();
     try {
       try {
@@ -366,12 +433,16 @@ class OwnerConsole {
         final u = unclear;
         if (u != null) r = _unclearReply(u);
       }
+      // #329 PR 4 §2.0 (review C m3): Rust ended the session; after a write marked `sent` that is "outcome unknown"
+      final uc = unclear;
+      if (endedAfterSent && r.kind == ReplyKind.ended && uc != null) r = _unclearReply(uc);
       return _leaseCheck(r);
     } finally {
       _wait?.call();
       _wait = null;
       _answer = null;
       _unclear = null;
+      _derive = null;
       _busy = false;
     }
   }
@@ -440,6 +511,59 @@ class OwnerConsole {
     final keys = await platform.publicKeys();
     return _ask((s) => s.requestSendUpdate(recordPlain: plain, member: member, adminPub: keys['admin']!),
         wait: joinWait, unclear: sendUnclearLine);
+  }
+
+  // ---- #329 PR 4 §2.2: settings, leave, the status page, the software update ------------------------------------
+
+  /// `settings/get` (nodes.dart:1672): the answer's [ConsoleReply.settings] is the current values.
+  Future<ConsoleReply> settings() {
+    _keyError = false;
+    return _ask((s) => s.requestSettings());
+  }
+
+  /// `settings/set` {2: country} (nodes.dart:1694). Waits [joinWait] (the node takes up to about 230 s: D2); a lost link
+  /// after the signed write is 「結果不明」 (§2.1 (a)).
+  Future<ConsoleReply> setCountry(String country) {
+    _keyError = false;
+    return _ask((s) => s.requestSetCountry(country: country),
+        wait: joinWait, unclear: settingsUnclearLine, endedAfterSent: true);
+  }
+
+  /// `settings/set` {20: {1: ssid, 2: passphrase}} (nodes.dart:1714). The passphrase goes straight into Rust's
+  /// encrypted request: it is never logged and never in a reply (owner.rs request_set_ap).
+  Future<ConsoleReply> setAp(String ssid, String passphrase) {
+    _keyError = false;
+    return _ask((s) => s.requestSetAp(ssid: ssid, passphrase: passphrase),
+        wait: joinWait, unclear: settingsUnclearLine, endedAfterSent: true);
+  }
+
+  /// 「離開網路」 (leave v4.1 §3): the call policy comes from `sendLeave` (wait, unclear); never re-sent.
+  Future<ConsoleReply> leave({required Duration wait, required String unclear}) {
+    _keyError = false;
+    return _ask((s) => s.requestLeaveNetwork(), wait: wait, unclear: unclear);
+  }
+
+  /// The status page read (nodes.dart:1155-1160): [ConsoleReply.value] is its `StatusView`, made on the session that
+  /// answered (so the read right after a leave is cut once, `after_left`).
+  Future<ConsoleReply> statusPage({required bool hasNet, required bool hasMnet}) {
+    _keyError = false;
+    return _ask((s) => s.requestStatusPage(), derive: (s, st) => s.statusView(hasNet: hasNet, hasMnet: hasMnet));
+  }
+
+  /// One request of a software update (nodes.dart:1590-1626 `_askSw` without its login): the update's next action.
+  /// [now] is the update's own clock (`SwHold.now`, the one every call of this update uses: plan §2.2, review D M1).
+  /// Anything but the node's answer is `lost`, and this session is not used again (the old `_drop`).
+  Future<SwAction> askSw(SwLink sw, BigInt Function() now, int waitMs) async {
+    final r = await _ask(sw.request,
+        wait: Duration(milliseconds: waitMs),
+        unclear: swUnansweredMark,
+        derive: (s, st) => st.sw ? sw.answered(s, now()) : null);
+    final v = r.value;
+    // the node's answer was handed to the update already (swAnswer ran): its action, whatever came after (code review
+    // B m2: never `lost` on top of it)
+    if (v is SwAction) return v;
+    _session = null; // the request may still be outstanding in that session (nodes.dart:1621)
+    return sw.lost(now());
   }
 
   /// join2 §3.3-7 (nodes.dart:687-716): after an applied join, the status every 10 s until connected or 120 s. Any

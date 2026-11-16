@@ -134,12 +134,12 @@ class EchoRadio implements BleBackend {
 }
 
 class Rig {
-  Rig(this.rust) {
+  Rig(this.rust, {Session Function(FakeRust)? make}) {
     reg = LeaseRegistry(after: clock.after);
     gate = BleGate(radio, reg, now: () => clock.t, after: clock.after);
     lease = reg.acquire('建立網路', LeaseKind.session)!;
     link = gate.connect(lease.token, 'a1');
-    session = Session(rust);
+    session = (make ?? Session.new)(rust); // #329 PR 4: a session with more requests (owner_console_pr4_test)
     final inbox = FrameInbox();
     h = LoginHandoff(id: 'Y1', link: link, inbox: inbox, session: session, sub: radio.tx.stream.listen(inbox.add));
     writer = RecordWriter(
@@ -175,6 +175,7 @@ class Rig {
   String? makeRefusal;
   final keyErrors = <Object>[];
   String? countryAnswer, removedAnswer;
+  final logs = <String>[]; // #329 PR 4 security review LOW-2: the console's log lines
 
   late final OwnerConsole c = OwnerConsole(
     h,
@@ -207,6 +208,7 @@ class Rig {
     askCountry: (q) async => countryAnswer == '改',
     askRemoved: (q) async => removedAnswer == '確定，加回',
     keyError: keyErrors.add,
+    log: logs.add,
     onLost: () => lost++,
   );
 

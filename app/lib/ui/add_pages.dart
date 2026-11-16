@@ -17,11 +17,14 @@ const addAgain = 'again';
 
 /// Board 3.2: the node's name on this phone (UiState.setNick).
 class NickPage extends StatefulWidget {
-  const NickPage({super.key, required this.app, required this.ui, required this.id, this.devTrust = false});
+  const NickPage({super.key, required this.app, required this.ui, required this.id, this.devTrust = false, this.rename = false});
   final AppLink app;
   final UiState ui;
   final String id;
   final bool devTrust;
+
+  /// #329 PR 4 §2.6 (review A M3): 5.7 「改暱稱」 — its own title and words, and a save goes back (never 3.5 / 3.6)
+  final bool rename;
 
   @override
   State<NickPage> createState() => _NickPageState();
@@ -49,6 +52,10 @@ class _NickPageState extends State<NickPage> {
       });
       return;
     }
+    if (widget.rename) {
+      Navigator.of(context).pop();
+      return;
+    }
     // code review B M1: push, not pushReplacement (a replaced route ends at once with null and 再加一台 would be lost);
     // 3.5 / 3.6's answer goes back to the home page through this page
     final r = await Navigator.of(context).push<String>(MaterialPageRoute(
@@ -60,15 +67,16 @@ class _NickPageState extends State<NickPage> {
   Widget build(BuildContext context) {
     final t = BatTheme.of(context);
     return BatPage(
-      title: '幫節點取名',
+      title: widget.rename ? '改暱稱' : '幫節點取名',
       body: [
-        StatusHero(look: Look.ok, text: '已加入這支手機：後四碼 ${last4(widget.id)}'),
+        if (!widget.rename) StatusHero(look: Look.ok, text: '已加入這支手機：後四碼 ${last4(widget.id)}'),
         TextField(
           controller: _name,
           maxLength: nickMax,
           decoration: InputDecoration(border: const OutlineInputBorder(), errorText: _err),
         ),
-        Text('這個名字只有這支手機看得到。對別人說是哪一台時，請報後四碼。', style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.sub)),
+        Text(widget.rename ? '只有這支手機看得到；對別人請報後四碼（${last4(widget.id)}）。' : '這個名字只有這支手機看得到。對別人說是哪一台時，請報後四碼。',
+            style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.sub)),
       ],
       foot: [BatButton(Btn.save, onPressed: _saving ? null : _save)],
     );
