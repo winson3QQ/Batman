@@ -9,8 +9,11 @@ import 'package:flutter/services.dart';
 const secureChannel = MethodChannel('dev.batman/secure');
 
 class SecureScreen extends StatefulWidget {
-  const SecureScreen({super.key, required this.child});
+  const SecureScreen({super.key, required this.child, this.fallback});
   final Widget child;
+
+  /// #329 PR 5 R3: shown instead of the default sentence when the flag cannot be set; null = the default (unchanged)
+  final Widget? fallback;
 
   @override
   State<SecureScreen> createState() => _SecureScreenState();
@@ -41,7 +44,7 @@ class _SecureScreenState extends State<SecureScreen> {
   @override
   Widget build(BuildContext context) => switch (_on) {
         true => widget.child,
-        false => const Center(child: Text('這支手機無法防止這個畫面被截圖，所以不顯示內容')),
+        false => widget.fallback ?? const Center(child: Text('這支手機無法防止這個畫面被截圖，所以不顯示內容')),
         null => const SizedBox.shrink(),
       };
 }
