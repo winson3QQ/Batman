@@ -18,6 +18,7 @@ import 'ble_gate.dart';
 import 'core.dart';
 import 'lease.dart';
 import '../flows/sw_holds.dart';
+import '../flows/team_holds.dart';
 import 'node_link.dart';
 import 'prober.dart';
 import 'record_writer.dart';
@@ -40,6 +41,10 @@ class AppLink {
 
   /// #329 PR 4 §2.8: the software updates left half-way (memory only).
   final sw = SwHolds();
+
+  /// #329 PR 5 §2.6: the invite a member took, and 8.4's marks (memory only).
+  final invite = InviteHolds();
+  final ticks = RemoveTicks();
 
   /// #329 PR 3 §2.6: the phone's network records, summarised for the screens (computed after the startup check and
   /// after every lease release).
