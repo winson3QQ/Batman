@@ -12,6 +12,7 @@ import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl;
 import '../src/nodelink/raw_use.dart';
 import '../src/rust/api/owner.dart' show StatusView, listPending;
+import 'add_pages.dart';
 import 'home_logic.dart';
 import 'intro_pages.dart';
 import 'node_page.dart';
@@ -58,6 +59,24 @@ Future<void> openUnderLease(BuildContext context, AppLink a, String name, Widget
   });
   slow.cancel();
   if (busy != null) m.showSnackBar(SnackBar(content: Text('另一個操作還在進行：$busy')));
+}
+
+/// #329 PR 3 §2.7: [openUnderLease] that returns what the page popped (ClaimPage: ClaimDone).
+Future<T?> openUnderLeaseFor<T>(BuildContext context, AppLink a, String name, Widget Function(RawUse use) page) async {
+  final m = ScaffoldMessenger.of(context);
+  var shown = false;
+  final slow = Timer(const Duration(milliseconds: 300), () {
+    shown = true;
+    m.showSnackBar(const SnackBar(content: Text('正在結束上一個讀取…')));
+  });
+  final (busy, r) = await openRawPageFor<T>(Navigator.of(context), a.link, a.gate, name, (u) {
+    slow.cancel();
+    if (shown) m.hideCurrentSnackBar();
+    return page(u);
+  });
+  slow.cancel();
+  if (busy != null) m.showSnackBar(SnackBar(content: Text('另一個操作還在進行：$busy')));
+  return r;
 }
 
 class HomePage extends StatefulWidget {
@@ -191,7 +210,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
     if (a.link.core.blocked == nl.Why.noPermission && !await _permission()) return;
     if (!mounted) return;
-    await _back(openUnderLease(context, a, '新增節點', (u) => ClaimPage(ble: a.ble, use: u)));
+    // §2.7: the claim page pops ClaimDone when a node was added -> 3.2 取名 -> 3.5 / 3.6; a claim that ends after the
+    // page was closed leaves its line for the home page (F41)
+    final done = await openUnderLeaseFor<ClaimDone>(
+        context, a, '新增節點', (u) => ClaimPage(ble: a.ble, use: u, goneNote: (s) => a.lastClaimNote = s));
+    a.link.setPage(nl.Page.home);
+    await _todos();
+    if (done == null || !mounted) {
+      if (mounted) setState(() {});
+      return;
+    }
+    final r = await Navigator.of(context).push<String>(
+        MaterialPageRoute(builder: (_) => NickPage(app: a, ui: widget.ui, id: done.id, devTrust: widget.devTrust)));
+    a.link.setPage(nl.Page.home);
+    if (!mounted) return;
+    setState(() {});
+    if (r == addAgain) await _addNode(); // 3.6 「再加一台」
   }
 
   void _open(String id) {
@@ -258,6 +292,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               action: Btn.gotIt, onAction: () => setState(() => a.reg.unsavedTodos.remove(m))),
         if (_pending > 0)
           BatBanner(look: Look.warn, title: '上次新增節點沒有做完', action: Btn.finishIt, onAction: _addNode),
+        // F41 (§2.7): the line of a claim that ended after its page was closed, once
+        if (a.lastClaimNote != null)
+          BatBanner(
+              look: Look.unk,
+              title: '剛才的新增節點',
+              text: a.lastClaimNote,
+              action: Btn.gotIt,
+              onAction: () => setState(() => a.lastClaimNote = null)),
         // §5.1: a node of this phone that started joining a network and did not finish (NetIndex, `forgettable`)
         for (final j in nets.todos)
           BatBanner(

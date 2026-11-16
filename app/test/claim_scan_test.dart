@@ -74,7 +74,7 @@ void main() {
       await scan(t);
       expect(rust.parsed, isEmpty);
       expect(button(t, '認領').onPressed, isNull, reason: 'no QR read');
-      expect(find.descendant(of: find.byType(ListView), matching: find.byType(Text)), findsNothing, reason: 'no line said');
+      expect(find.byKey(claimLinesKey), findsNothing, reason: 'no line said'); // #329 PR 3: the lines are a card now
     });
 
     testWidgets('$flavor: a scanned text is parsed, shows the last 4; a later null keeps it', (t) async {

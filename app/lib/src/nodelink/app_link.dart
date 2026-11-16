@@ -44,6 +44,9 @@ class AppLink {
   /// #329 PR 3 §2.3: what OwnerConsole needs from Kotlin and the record store.
   final ConsolePlatform console;
 
+  /// #329 PR 3 §2.7 (F41): the last line of a claim whose page was closed while it ran; the home page shows it once.
+  String? lastClaimNote;
+
   static AppLink? _one;
   static AppLink? get instance => _one;
 

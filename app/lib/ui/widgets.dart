@@ -387,11 +387,19 @@ abstract final class Btn {
   static const forgetJoin = '放棄這次加入';
   static const done = '完成';
   static const oldConsole = '到舊控制台';
+  // #329 PR 3 §2.7 (D1): the claim page keeps its words; 3.2 / 3.5 / 3.6
+  static const scanQr = '掃描 QR';
+  static const pasteQr = '貼上 QR 碼（開發用）';
+  static const stopRecovery = '停止恢復';
+  static const fromPending = '從認領暫存恢復';
+  static const addAnother = '再加一台';
+  static const memberJoin = '我是隊員，加入隊長的網路';
 
   static const all = {
     refresh, addNode, makeNetwork, joinNetwork, checkNetwork, seeNode, allowBluetooth, openBluetooth, tryAgain, gotIt,
     remove, cancel, save, more, devOptions, about, leaveNetwork, requestJoin, showRequestAgain, sendNewKey,
     excludeThis, goOn, claim, seeRequest, joinTeam, openAppSettings, next, skipIntro, start, finishIt,
     nextNode, stopHere, retryNode, checkAgain, otherNode, forgetJoin, done, oldConsole,
+    scanQr, pasteQr, stopRecovery, fromPending, addAnother, memberJoin,
   };
 }

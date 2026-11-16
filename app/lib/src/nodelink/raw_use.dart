@@ -80,3 +80,17 @@ Future<String?> openRawPage(NavigatorState nav, NodeLink link, BleGate gate, Str
   await nav.push(MaterialPageRoute<void>(builder: (_) => RawLeaseScope(lease: lease, child: page(RawUse(lease, gate)))));
   return null;
 }
+
+/// #329 PR 3 §2.7: [openRawPage] that also returns what the page popped (ClaimPage pops ClaimDone). (busy, result):
+/// busy = the name of the operation that holds the radio (nothing opened), else null.
+Future<(String?, T?)> openRawPageFor<T>(
+    NavigatorState nav, NodeLink link, BleGate gate, String name, Widget Function(RawUse use) page) async {
+  final lease = await link.acquire(name, LeaseKind.raw);
+  if (lease == null) return (link.reg.current?.name ?? '', null);
+  if (!nav.mounted) {
+    await lease.release(); // never keep a lease no page will use
+    return (null, null);
+  }
+  final r = await nav.push<T>(MaterialPageRoute<T>(builder: (_) => RawLeaseScope(lease: lease, child: page(RawUse(lease, gate)))));
+  return (null, r);
+}

@@ -368,6 +368,72 @@ void main() {
     expect(reg.current, isNull, reason: 'the claim ended: released');
     expect(rust.calls, contains('write node/$deviceId'));
   });
+
+  // #329 PR 3 §2.7: a pushed claim page that adds the node pops ClaimDone with it (3.2 取名 next). Negative control:
+  // no _done after [CLAIMED] -> nothing popped -> FAIL. (A page that is the first route stays: the tests above.)
+  testWidgets('§2.7: a claim that succeeds pops ClaimDone with the node', (t) async {
+    rust
+      ..calls.clear()
+      ..target = ClaimTarget.nothing
+      ..pendingOnDisk = false
+      ..copyFails = false;
+    mockPlatform(t);
+    final ble = FakeBle();
+    Object? popped;
+    await t.pumpWidget(MaterialApp(
+        home: Builder(
+            builder: (c) => TextButton(
+                onPressed: () async => popped = await Navigator.of(c).push(MaterialPageRoute(builder: (_) => ClaimPage(ble: ble))),
+                child: const Text('open')))));
+    await t.tap(find.text('open'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('掃描 QR'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('認領'));
+    for (var i = 0; i < 100 && popped == null; i++) {
+      await t.runAsync(() => Future<void>.delayed(Duration.zero));
+      await t.pump(const Duration(milliseconds: 200));
+    }
+    await t.pumpAndSettle();
+    expect(popped, isA<ClaimDone>().having((d) => d.id, 'id', deviceId));
+    expect(find.byType(ClaimPage), findsNothing);
+  });
+
+  // #329 PR 3 §2.7 (F41): the page closed while its claim waits for the node; the claim then ends: its line goes to
+  // goneNote (the home page shows it once). Negative control: _say without the goneNote branch -> FAIL.
+  testWidgets('F41: a claim that ends after its page was closed leaves its line for the home page', (t) async {
+    rust
+      ..calls.clear()
+      ..target = ClaimTarget.nothing
+      ..pendingOnDisk = false
+      ..copyFails = false;
+    mockPlatform(t);
+    final ble = HoldBle();
+    final notes = <String>[];
+    await t.pumpWidget(MaterialApp(
+        home: Builder(
+            builder: (c) => TextButton(
+                onPressed: () => Navigator.of(c).push(MaterialPageRoute(builder: (_) => ClaimPage(ble: ble, goneNote: notes.add))),
+                child: const Text('open')))));
+    await t.tap(find.text('open'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('掃描 QR'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('認領'));
+    for (var i = 0; i < 20 && ble.written.isEmpty; i++) {
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await t.pump(const Duration(milliseconds: 100));
+    }
+    t.state<NavigatorState>(find.byType(Navigator)).pop(); // back mid-claim
+    await t.pumpAndSettle();
+    expect(notes, isEmpty);
+    ble.hold.complete();
+    for (var i = 0; i < 50 && !notes.any((n) => n.contains('認領成功')); i++) {
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await t.pump(const Duration(milliseconds: 200));
+    }
+    expect(notes.last, contains('認領成功'));
+  });
 }
 
 /// The node's first answer (msg2) waits for [hold].
