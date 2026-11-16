@@ -1,5 +1,7 @@
 // #254 app S1 — first slice: the startup flavor cross-check (design v8.5.1 §4.1) and an on-device self-test of the Rust
 // core. No BLE, no keys generated yet.
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -151,6 +153,7 @@ class _StartupCheckState extends State<StartupCheck> {
         final a = make((await _platform.invokeMethod<String>('filesDir'))!);
         a.link.radio(keyOk: keys.login); // X26: the startup key check is the key precondition
         await a.link.start(nlcore.Page.home, life: WidgetsBinding.instance.lifecycleState);
+        unawaited(a.nets.recompute()); // #329 PR 3 §2.6: once the startup check passed
         _app = a;
       } catch (e) {
         lines.add('節點自動讀取沒有啟動：$e');

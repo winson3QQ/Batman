@@ -4820,16 +4820,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MemberView dco_decode_member_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return MemberView(
       name: dco_decode_String(arr[0]),
       last4: dco_decode_String(arr[1]),
-      joining: dco_decode_bool(arr[2]),
-      prevCountry: dco_decode_String(arr[3]),
-      dacHash: dco_decode_String(arr[4]),
-      creator: dco_decode_bool(arr[5]),
-      approved: dco_decode_bool(arr[6]),
+      deviceId: dco_decode_String(arr[2]),
+      joining: dco_decode_bool(arr[3]),
+      prevCountry: dco_decode_String(arr[4]),
+      dacHash: dco_decode_String(arr[5]),
+      creator: dco_decode_bool(arr[6]),
+      approved: dco_decode_bool(arr[7]),
     );
   }
 
@@ -5927,6 +5928,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_name = sse_decode_String(deserializer);
     var var_last4 = sse_decode_String(deserializer);
+    var var_deviceId = sse_decode_String(deserializer);
     var var_joining = sse_decode_bool(deserializer);
     var var_prevCountry = sse_decode_String(deserializer);
     var var_dacHash = sse_decode_String(deserializer);
@@ -5935,6 +5937,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return MemberView(
       name: var_name,
       last4: var_last4,
+      deviceId: var_deviceId,
       joining: var_joining,
       prevCountry: var_prevCountry,
       dacHash: var_dacHash,
@@ -7098,6 +7101,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.name, serializer);
     sse_encode_String(self.last4, serializer);
+    sse_encode_String(self.deviceId, serializer);
     sse_encode_bool(self.joining, serializer);
     sse_encode_String(self.prevCountry, serializer);
     sse_encode_String(self.dacHash, serializer);

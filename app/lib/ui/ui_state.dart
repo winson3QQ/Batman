@@ -193,6 +193,18 @@ class UiState {
     if (newer) await _save();
   }
 
+  /// 3.2 (design §5.3, plan §2.7): this phone's name for a node — trimmed, 1–24 characters, and refused (not
+  /// stripped) when it holds a control, format, line or paragraph separator character. Null once saved, else why not.
+  Future<String?> setNick(String id, String raw) async {
+    final s = raw.trim();
+    if (_unsafe.hasMatch(s)) return '名字裡有不能用的字元';
+    final n = s.runes.length;
+    if (n < 1 || n > nickMax) return '名字要 1 到 $nickMax 個字';
+    nodes[id] = (nodes[id] ?? const UiNode()).copy(nick: s);
+    await _save();
+    return null;
+  }
+
   /// 「從這支手機移除這台節點」: its nickname and status go too.
   Future<void> forget(String id) async {
     if (nodes.remove(id) != null) await _save();

@@ -21,8 +21,19 @@ import 'src/nodelink/raw_use.dart';
 import 'src/rust/api/claim.dart';
 import 'src/rust/api/owner.dart' show listNodes, listPending;
 import 'src/rust/api/simple.dart';
+import 'ui/theme.dart';
+import 'ui/widgets.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
+
+/// The card of the lines the page has said (tests: 「no line said」 = no card).
+const claimLinesKey = Key('claim-lines');
+
+/// #329 PR 3 §2.7: what ClaimPage pops when a node was added (claimed, recovered, or claimed over): its device id.
+class ClaimDone {
+  const ClaimDone(this.id);
+  final String id;
+}
 
 void _log(String s) => debugPrint('BMAPP claim $s');
 
@@ -49,7 +60,11 @@ const devSoftEncText = '這支手機的復原／隊員金鑰是軟體保護，�
     '之後換手機、或改用 field 版／硬體 owner_enc，這支手機認領的每個節點都要重燒卡回收。';
 
 class ClaimPage extends StatefulWidget {
-  const ClaimPage({super.key, this.ble, this.findFor = const Duration(seconds: 60), this.recoveryBle, this.use});
+  const ClaimPage({super.key, this.ble, this.findFor = const Duration(seconds: 60), this.recoveryBle, this.use, this.goneNote});
+
+  /// #329 PR 3 §2.7 (F41): a line said after the page was closed (a claim keeps running after 返回); the home page
+  /// shows the last one once.
+  final void Function(String line)? goneNote;
 
   /// #329 §4.4: the raw lease this page runs under (null in tests of the page alone)
   final RawUse? use;
@@ -80,6 +95,15 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
   final _typed = TextEditingController(); // dev: the QR hex typed in (e.g. over adb), cleared once read
   ClaimRecovery? _recovery; // 254-app-replay: the recovery of this press, while it runs
   List<String> _pending = const []; // 254-app-replay T4: claim-pending/ file names (dev builds only)
+  bool _dev = false; // a dev build (devTrust): the typed / pasted QR
+
+  /// #329 PR 3 §2.7: the node was added -> back to the caller with it (3.2 取名 next). A page that is the first route
+  /// (the page alone in a test) stays and shows its lines.
+  void _done(String id) {
+    if (!mounted) return;
+    final nav = Navigator.of(context);
+    if (nav.canPop()) nav.pop(ClaimDone(id));
+  }
 
   @override
   void initState() {
@@ -100,7 +124,9 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
   Future<void> _loadPending() async {
     var ids = const <String>[];
     try {
-      if (await _platform.invokeMethod<bool>('devTrust') ?? false) {
+      final dev = await _platform.invokeMethod<bool>('devTrust') ?? false;
+      if (mounted && dev != _dev) setState(() => _dev = dev); // design §5.3: the dev inputs only in a dev build
+      if (dev) {
         ids = await listPending(dir: '${(await _platform.invokeMethod<String>('filesDir'))!}/records');
       }
     } catch (e) {
@@ -153,7 +179,11 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
   /// [s] may start with log markers ("[CLAIMED] ", ...): logcat keeps them, the screen does not.
   void _say(String s) {
     _log(s);
-    if (mounted) setState(() => _lines.add(screenText(s)));
+    if (mounted) {
+      setState(() => _lines.add(screenText(s)));
+    } else {
+      widget.goneNote?.call(screenText(s)); // F41: the page was closed while the claim ran
+    }
   }
 
   Future<void> _paste() async {
@@ -438,6 +468,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
               : '[CLAIM_FAIL] 認領沒有完成：$r');
       if (claimed && pendingKept != null) _say('[PENDING_KEPT] $pendingKept');
       if (claimed && mounted) setState(() => _qr = null); // R6: claiming again needs a new scan
+      if (claimed) _done(q.deviceId);
       // 254-app-replay §2 T1: the finish went out and its end is unknown / 9 / 13 / OK without credentials -> replay
       // this very device. replay_due() failing = false (§7: no replay; the next 「認領」 finds it claimed -> T2).
       if (!claimed) {
@@ -487,6 +518,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
           askT3: () => _ask('要恢復這台節點嗎？', q == null ? t3Body : t3Text, '恢復', '沒有恢復，手機裡的紀錄沒有改動'),
           intro: intro);
       if (out == RecoveryOutcome.recovered && q != null && mounted) setState(() => _qr = null); // R6: a new scan for another claim
+      if (out == RecoveryOutcome.recovered) _done(deviceId);
       return out;
     } finally {
       _recovery = null;
@@ -494,33 +526,40 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
     }
   }
 
+  /// #329 PR 3 §2.7 (D1): the new screens' look; the claim, its search and its recovery are unchanged.
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('認領節點')),
-      body: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    final t = BatTheme.of(context);
+    return BatPage(
+      title: Btn.addNode,
+      body: [
+        // design §5.3 / §3.3: one explanation of 認領, one main action
+        Text('掃描節點機身上的 QR code，把它加入這支手機（這一步叫「認領」）。之後這台節點只聽這支手機的設定。',
+            style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+        if (_dev)
           TextField(
               controller: _typed,
               obscureText: true,
               autocorrect: false,
               enableSuggestions: false,
               decoration: const InputDecoration(labelText: '開發用：QR 碼內容（16 進位）；留空就從剪貼簿讀取')),
-          Wrap(spacing: 8, children: [ // three buttons do not fit one row on a narrow phone
-            FilledButton.tonal(onPressed: (_busy || _scanning) ? null : _scan, child: const Text('掃描 QR')),
-            OutlinedButton(onPressed: _busy ? null : _paste, child: const Text('貼上 QR 碼（開發用）')),
-            if (_recovery != null) // 254-app-replay §3-6
-              FilledButton(onPressed: () => _recovery?.cancel(), child: const Text('停止恢復'))
-            else
-              FilledButton(onPressed: (_qr == null || _busy) ? null : _claim, child: const Text('認領')),
-            if (_pending.isNotEmpty) // 254-app-replay T4 (§19.2-1): dev builds with a claim-pending only
-              OutlinedButton(onPressed: (_busy || _scanning) ? null : _fromPending, child: const Text('從認領暫存恢復')),
+        BatButton(Btn.scanQr, onPressed: (_busy || _scanning) ? null : _scan),
+        if (_dev) BatButton(Btn.pasteQr, kind: BtnKind.secondary, onPressed: _busy ? null : _paste),
+        if (_recovery != null) // 254-app-replay §3-6
+          BatButton(Btn.stopRecovery, onPressed: () => _recovery?.cancel())
+        else
+          BatButton(Btn.claim, onPressed: (_qr == null || _busy) ? null : _claim),
+        if (_pending.isNotEmpty) // 254-app-replay T4 (§19.2-1): dev builds with a claim-pending only
+          BatButton(Btn.fromPending, kind: BtnKind.secondary, onPressed: (_busy || _scanning) ? null : _fromPending),
+        if (_lines.isNotEmpty)
+          BatCard(key: claimLinesKey, children: [
+            for (final l in _lines)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                child: Text(l, style: TextStyle(fontSize: Fs.body, height: 1.5, color: t.ink)),
+              ),
           ]),
-          const SizedBox(height: 12),
-          Expanded(child: ListView(children: [for (final l in _lines) Text(l, style: const TextStyle(fontFamily: 'monospace'))])),
-        ]),
-      ),
+      ],
     );
   }
 }

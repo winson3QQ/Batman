@@ -11,10 +11,12 @@ import '../nodes.dart';
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl;
 import '../src/nodelink/raw_use.dart';
-import '../src/rust/api/owner.dart' show StatusView, listPending, listNets;
-import '../src/rust/api/member.dart' show listMnets, listPends;
+import '../src/rust/api/owner.dart' show StatusView, listPending;
+import '../src/flows/net_index.dart' show JoinTodo;
+import 'add_pages.dart';
 import 'home_logic.dart';
 import 'intro_pages.dart';
+import 'net_pages.dart' show NetFormPage;
 import 'node_page.dart';
 import 'settings_page.dart';
 import 'theme.dart';
@@ -61,6 +63,24 @@ Future<void> openUnderLease(BuildContext context, AppLink a, String name, Widget
   if (busy != null) m.showSnackBar(SnackBar(content: Text('另一個操作還在進行：$busy')));
 }
 
+/// #329 PR 3 §2.7: [openUnderLease] that returns what the page popped (ClaimPage: ClaimDone).
+Future<T?> openUnderLeaseFor<T>(BuildContext context, AppLink a, String name, Widget Function(RawUse use) page) async {
+  final m = ScaffoldMessenger.of(context);
+  var shown = false;
+  final slow = Timer(const Duration(milliseconds: 300), () {
+    shown = true;
+    m.showSnackBar(const SnackBar(content: Text('正在結束上一個讀取…')));
+  });
+  final (busy, r) = await openRawPageFor<T>(Navigator.of(context), a.link, a.gate, name, (u) {
+    slow.cancel();
+    if (shown) m.hideCurrentSnackBar();
+    return page(u);
+  });
+  slow.cancel();
+  if (busy != null) m.showSnackBar(SnackBar(content: Text('另一個操作還在進行：$busy')));
+  return r;
+}
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key, required this.app, required this.ui, required this.devTrust, required this.keys, this.notes = const []});
   final AppLink app;
@@ -80,7 +100,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   StreamSubscription<void>? _sub;
   Timer? _tick;
   int _pending = 0;
-  NetRecords _records = NetRecords.unknown; // until the records were looked at: the neutral button (review r3 E-m3)
 
   AppLink get a => widget.app;
 
@@ -92,12 +111,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _remember();
       if (mounted) setState(() {});
     });
+    a.nets.addListener(_netsChanged); // #329 PR 3 §2.6: row 6 and the join todos follow the network records
     _tick = Timer.periodic(const Duration(seconds: 15), (_) => mounted ? setState(() {}) : null);
     _todos();
   }
 
+  void _netsChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    a.nets.removeListener(_netsChanged);
     WidgetsBinding.instance.removeObserver(this);
     _sub?.cancel();
     _tick?.cancel();
@@ -126,21 +151,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   /// §5.1 todos this version knows: an unfinished claim (devTrust only, F48) and a lease taken back (§4.4).
+  /// Row 6's records and the join todos come from NetIndex (#329 PR 3 §2.6).
   Future<void> _todos() async {
-    // §5.1 row 6: which network records the phone holds (names only, nothing opened)
-    var recs = NetRecords.none;
-    try {
-      if ((await listNets(dir: a.records)).isNotEmpty) {
-        recs = NetRecords.net;
-      } else if ((await listMnets(dir: a.records)).isNotEmpty) {
-        recs = NetRecords.mnet;
-      } else if ((await listPends(dir: a.records)).isNotEmpty) {
-        recs = NetRecords.mpend;
-      }
-    } catch (_) {
-      recs = NetRecords.unknown; // could not tell: the neutral 加入網路 into the console, never 建立網路 (review r2 D-m9)
-    }
-    _records = recs;
     var n = 0;
     if (widget.devTrust) {
       try {
@@ -166,8 +178,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _addNode();
       case HomeAction.seeNode:
         if (h.node != null) _open(h.node!);
-      // the network flows come in PR 3: until then these open the older console, where the same button is
-      case HomeAction.joinNetwork || HomeAction.makeNetwork || HomeAction.seeRequest || HomeAction.joinTeam:
+      // #329 PR 3: 建立 / 加入網路 are the new pages (4.1); only a team network (mnet) or a request (mpend) still go
+      // to the older console, where the member's join is (D3, PR 5)
+      case HomeAction.makeNetwork:
+        _form(makes: true, node: h.node);
+      case HomeAction.joinNetwork when a.nets.now.records != NetRecords.mnet:
+        _form(makes: false, node: h.node);
+      case HomeAction.joinNetwork || HomeAction.seeRequest || HomeAction.joinTeam:
         _back(openUnderLease(context, a, '我的節點', (u) => NodesPage(ble: a.ble, use: u)));
       case HomeAction.refresh:
         a.link.refresh();
@@ -177,6 +194,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         break;
     }
   }
+
+  /// 4.1 (§2.4 / §2.5): make or join, [node] ticked; [todo]: 「節點加入網路沒有做完」 (its network, 「放棄這次加入」).
+  void _form({required bool makes, String? node, JoinTodo? todo}) => _back(Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => NetFormPage(
+          app: a, ui: widget.ui, makes: makes, ticked: {?node}, todo: todo, devTrust: widget.devTrust))));
 
   /// Opens a system settings page; when the phone has none, says where to go instead (review r2 D-m8).
   Future<void> _settings(String method, String otherwise) async {
@@ -200,7 +222,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
     if (a.link.core.blocked == nl.Why.noPermission && !await _permission()) return;
     if (!mounted) return;
-    await _back(openUnderLease(context, a, '新增節點', (u) => ClaimPage(ble: a.ble, use: u)));
+    // §2.7: the claim page pops ClaimDone when a node was added -> 3.2 取名 -> 3.5 / 3.6; a claim that ends after the
+    // page was closed leaves its line for the home page (F41)
+    final done = await openUnderLeaseFor<ClaimDone>(
+        context, a, '新增節點', (u) => ClaimPage(ble: a.ble, use: u, goneNote: (s) => a.lastClaimNote = s));
+    a.link.setPage(nl.Page.home);
+    await _todos();
+    if (done == null || !mounted) {
+      if (mounted) setState(() {});
+      return;
+    }
+    final r = await Navigator.of(context).push<String>(
+        MaterialPageRoute(builder: (_) => NickPage(app: a, ui: widget.ui, id: done.id, devTrust: widget.devTrust)));
+    a.link.setPage(nl.Page.home);
+    if (!mounted) return;
+    setState(() {});
+    if (r == addAgain) await _addNode(); // 3.6 「再加一台」
   }
 
   void _open(String id) {
@@ -213,10 +250,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final t = BatTheme.of(context);
     final ids = a.link.core.states.keys.toList()..sort();
     final infos = [for (final id in ids) nodeInfo(a, id, widget.ui)];
-    final todos = _pending + a.reg.unsavedTodos.length;
+    final nets = a.nets.now;
+    final todos = _pending + a.reg.unsavedTodos.length + nets.todos.length;
     final firstRounds = a.link.core.roundsRun < 3;
     final h = decideHome(
-        HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: _records));
+        HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: nets.records));
     // the status area's time is only ever a fresh read's: an older one is not 「讀取於」 (review r3 E-m8 / C-m8)
     final freshest = infos.where((n) => n.fresh).map((n) => n.readWall).whereType<DateTime>().fold<DateTime?>(null, (x, y) => x == null || y.isAfter(x) ? y : x);
     // a row about one node shows that node's read time, and only a fresh one (review r2 C-m8)
@@ -266,6 +304,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               action: Btn.gotIt, onAction: () => setState(() => a.reg.unsavedTodos.remove(m))),
         if (_pending > 0)
           BatBanner(look: Look.warn, title: '上次新增節點沒有做完', action: Btn.finishIt, onAction: _addNode),
+        // F41 (§2.7): the line of a claim that ended after its page was closed, once
+        if (a.lastClaimNote != null)
+          BatBanner(
+              look: Look.unk,
+              title: '剛才的新增節點',
+              text: a.lastClaimNote,
+              action: Btn.gotIt,
+              onAction: () => setState(() => a.lastClaimNote = null)),
+        // §5.1: a node of this phone that started joining a network and did not finish (NetIndex, `forgettable`)
+        for (final j in nets.todos)
+          BatBanner(
+              look: Look.warn,
+              title: '節點加入網路沒有做完',
+              text: '${nodeInfo(a, j.deviceId, widget.ui).name} 加入「${j.net.view.netName.isEmpty ? j.net.view.meshId : j.net.view.netName}」還沒有完成。',
+              action: Btn.finishIt,
+              onAction: () => _form(makes: false, todo: j)),
         if (infos.isNotEmpty) ...[
           const BatLabel('我的節點'),
           BatCard(children: [

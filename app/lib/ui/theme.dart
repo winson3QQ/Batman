@@ -89,7 +89,11 @@ class BatTheme extends ThemeExtension<BatTheme> {
         ('danger/bg', danger, bg),
       ];
 
-  static BatTheme of(BuildContext c) => Theme.of(c).extension<BatTheme>()!;
+  /// The app always installs it (batThemeData); a host without it (an older page's test) gets the light / dark set.
+  static BatTheme of(BuildContext c) {
+    final th = Theme.of(c);
+    return th.extension<BatTheme>() ?? (th.brightness == Brightness.dark ? dark : light);
+  }
 
   @override
   BatTheme copyWith() => this;
