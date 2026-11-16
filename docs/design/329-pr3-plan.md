@@ -1,4 +1,4 @@
-# #329 PR 3 實作計畫 v17：新增節點、建立 / 加入 / 檢查網路（新畫面）
+# #329 PR 3 實作計畫 v18（凍結）：新增節點、建立 / 加入 / 檢查網路（新畫面）
 
 上層設計：`docs/design/329-app-uiux.md`（v12.1，已合併）§4.3.8、§4.3.9、§4.4、§4.7、§5.1、§5.3、§5.4、§9.1、§12。main = 29b0085。
 
@@ -83,7 +83,7 @@
   - 舊路徑對到 `kind`（v13 Y-m4）：沒有 session（:525）→ `notSent`；`retry: false` 的請求遇到非字串的寫入錯誤（:554、:580）→ `unclear`；`confirmRemoved` 之後的加入 → 回最後一次請求的 reply，取消或重讀失敗 → `notSent`；國家對話框回答「不要」→ Rust 回 `answer`（`[COUNTRY] 已取消…`，owner.rs:518），不是加入成功 → 照「其他」問繼續 / 停；只有「被移除過」對話框的取消是 `notSent`（v15 AC-m6）。
   - 「寫入失敗」分兩種（v15 AD m1）：**GATT 寫入**失敗（什麼都沒到節點）→ `notSent` 或 `unclear`（照舊碼的 `unclear` 參數）；**紀錄寫入**（`PersistNet` 的 `writeCas`）失敗 → Rust 回 `answer`（`[REQ_FAIL] …`，owner.rs:1131-1155），session 還在，`persistedRel` 不設。
   - `sessionAlive`（v13 Z-m2）：`unclear` / `ended` / GATT 寫入錯誤 / 帶 `unclear` 參數的請求回 `notSent` 之後舊碼會 drop session（nodes.dart:571-572），這時為 `false`（v15 AC-m2）。頁面要再對同一台送請求前，`sessionAlive == false` → 先 `await close()` 再 `loginFor`；不比對 Rust 的 `NOT_LOGGED_IN` 字串。其他 `refused`（例如 `NET_DAMAGED`、`ADDR_BUSY`）→ 顯示句子、那一台算失敗、問繼續 / 停。
-  - `keyError`（欄位，v14 AA-m5、AB m4；v15 AD-M2、AC-m4）：`OwnerConsole` 在**任何**金鑰呼叫接到 Keystore 例外時——seal / open，以及舊碼走 `_keyFail` 的 `sign` / `signAdmin`（nodes.dart:232-252）——先呼叫 `keyErrorToRadio`（app_link.dart:142-144；只有 `refusedBy != null` 時它才把金鑰標成不可用，所以迴圈不能只看 `core.blocked`），並設 `keyError = true`。頁面自己單筆重讀的 `open` 遇到同樣的例外，也呼叫 `keyErrorToRadio` 並整個停。`kind` 與 `text` 照 Rust 原樣（舊碼裡這是 Rust 的 `answer` 或 `ended`，owner.rs:1144-1154），不改成 `refused`；之前已寫成功的 `persistedRel` 保留（結果頁才會給「檢查網路」）。迴圈看到 `keyError` 就整個停、不問（和舊控制台不同：D11）。
+  - `keyError`（欄位，v14 AA-m5、AB m4；v15 AD-M2、AC-m4）：`OwnerConsole` 在**任何**金鑰呼叫接到 Keystore 例外時——seal / open，以及舊碼走 `_keyFail` 的 `sign` / `signAdmin`（nodes.dart:232-252）——先呼叫 `keyErrorToRadio`（app_link.dart:142-144；只有 `refusedBy != null` 時它才把金鑰標成不可用，所以迴圈不能只看 `core.blocked`），並設 `keyError = true`。頁面自己單筆重讀的 `open` 失敗 → 當成「這筆打不開」（§2.9），不設 `keyError`。`kind` 與 `text` 照 Rust 原樣（舊碼裡這是 Rust 的 `answer` 或 `ended`，owner.rs:1144-1154），不改成 `refused`；之前已寫成功的 `persistedRel` 保留（結果頁才會給「檢查網路」）。迴圈看到 `keyError` 就整個停、不問（和舊控制台不同：D11）。
   - `unclear` 的 `text` 是 Dart 的句子，不是 Rust 的（v13 Y-n4、v14 AB m5）：建立 / 加入用 `_unclearNow`；確認用舊 `_ask` 的逾時句（`_waitLine`，nodes.dart:531，等 15 s）；送新密碼用 `_sendUnclear`（nodes.dart:55），等 360 s（`_joinWait`，照舊控制台 nodes.dart:1581；v15 AC-m1、AD m2）；連線檢查用 `_linkUnknown`。
   - 寫入錯誤那條路徑舊碼不會 drop session（nodes.dart:554 → :579-582）；`OwnerConsole` 在這裡設 `sessionAlive = false`、頁面先關再登入，比舊碼保守（v14 AA-n1）。
   - 測試（改壞對照）：`text` 加回 `[ANSWER] ` 前綴 → 檢查網路頁從不給「建立網路」的測試 FAIL；`persistedRel` 在寫入前就設 → 「寫入失敗 → 結果頁給再試」的測試 FAIL。
@@ -186,7 +186,7 @@
 
 ### 2.9 v16 審查補的細節（AE、AF 的 MINOR；文字補齊，不加機制）
 
-- **金鑰例外一條規則**（AE-m3、AF m2）：任何地方（`OwnerConsole` 的 seal / open / sign / signAdmin、頁面的單筆重讀、檢查網路頁的重新列檔、4.1 的快照）遇到 Keystore 例外 → `keyErrorToRadio` → 整個流程 / 頁面停，顯示 `core` 的金鑰句子；**優先於**「重讀失敗 → 檢查網路」與「打不開就跳過」。建立回來就帶 `keyError` → 直接停，不重讀、不自動檢查。手機有 net 檔但全部因金鑰打不開 → 4.1 顯示 join2 T8 的提示句（AF m3）。
+- **金鑰例外**（AE-m3、AF m2；v17 AG-M1 改正——v17 這條是我寫錯的）：Kotlin 的 `open` 任何失敗都回錯誤碼 `"keystore"`（MainActivity.kt:136-139），分不出「金鑰壞了」與「這筆打不開」，所以 **`open` 的錯誤一律當成「這筆打不開」**，照舊控制台：列檔時跳過並記一行（`_pickNet`，nodes.dart:600-605）；單筆重讀時當成不是已建立（`_readRecord`，nodes.dart:738-746）。手機有 net 檔但全部打不開 → 顯示 T8 句（nodes.dart:609-610），不給表單、不給「建立網路」、不說「沒有需要檢查的網路」。`keyError` 只用在 seal / sign / signAdmin 與 `KeyUse` 的即時拒絕；紀錄金鑰真的不見時，`loginFor` 的 `KeyAbilities` 即時檢查會擋成 `precondition`（key_abilities.dart:39）。改壞對照：三筆裡一筆打不開 → 照常；全部打不開 → T8 句。
 - **`makeNetwork` 開頭的檢查**（AE-m4、AF m4）：舊 `_makeNetwork` 的 `KeyUse.makeNetwork` 即時檢查（nodes.dart:476-482）不過 → `notSent` + `keyError`；讀 `rel` 打不開 → 同金鑰規則（金鑰例外）或 `notSent`（其他）。
 - **送新密碼的列文字**（AE-m1、AF m10）：`answer` 但不是 `[UPDATED] `（`[REQ_FAIL] …`，含 `中斷（…）`）→「已加入，新密碼沒有換成」+ Rust 句子；`_readRecord` 回 null（nodes.dart:1573-1577）→ `notSent`，「已加入，新密碼沒有送出」。
 - **停下時的畫面**（AF m1）：流程停在哪一台、原因句子（登入失敗用 `Why`（core.dart:61）對應的句子；Rust / Dart 句子原樣），下面是逐台結果（設計 :546）。自動檢查的重新登入失敗 → 那一列「沒有連到節點，無法檢查」+ `Why`（AF m8）。
