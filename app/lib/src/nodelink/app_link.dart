@@ -51,6 +51,10 @@ class AppLink {
   /// #329 PR 3 §2.7 (F41): the last line of a claim whose page was closed while it ran; the home page shows it once.
   String? lastClaimNote;
 
+  /// #329 PR 5 §2.6: a dev / dev2 build. One writer: main sets it once, right after its startup check read the flavor
+  /// and the Rust library agree (main.dart:104-107); until then false (fail-closed). Every new entry reads it here.
+  bool devTrust = false;
+
   static AppLink? _one;
   static AppLink? get instance => _one;
 
@@ -86,8 +90,31 @@ class AppLink {
     void log(String l) => debugPrint('BMAPP nl ${NodeLink.mask(l)}');
     // X26: the key gate refused a key use -> 2.4 until the app is opened again (review pr1 B-M5)
     void keyError(Object e) => keyErrorToRadio(e, _one?.link);
-    final prober =
-        SessionProber(openRecord: openRecord, ownerPub: ownerPub, signOwner: signOwner, log: log, keyError: keyError);
+    // #329 PR 5 R6–R8: the remove-member §3.5 hint, worked out on the read of the open node page (dev builds only)
+    Future<Uint8List?> openNet(String rel) async {
+      final sealed = await storeReadSealed(dir: records, rel: rel);
+      if (sealed == null) return null;
+      try {
+        return await platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad});
+      } on PlatformException {
+        return null;
+      }
+    }
+
+    final hint = HintSource(
+      wanted: (id) {
+        final a = _one;
+        return a != null && a.devTrust && a.link.core.page == Page.node && a.link.core.pageNode == id;
+      },
+      netKnown: (netId) {
+        final n = _one?.nets.now;
+        return n != null && (n.nets.any((e) => e.view.netId == netId) || n.mnetIds.contains(netId));
+      },
+      openNet: openNet,
+      onHint: (id, h) => _one?.link.setHint(id, h),
+    );
+    final prober = SessionProber(
+        openRecord: openRecord, ownerPub: ownerPub, signOwner: signOwner, log: log, keyError: keyError, hint: hint);
     // #329 PR 3 §2.1: a flow's login under its lease, same keys and rules, handing the session over
     final handoff =
         HandoffProber(openRecord: openRecord, ownerPub: ownerPub, signOwner: signOwner, log: log, keyError: keyError);

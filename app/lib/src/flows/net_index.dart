@@ -44,6 +44,8 @@ class NetSnapshot {
     this.anyMnet = false,
     this.anyMpend = false,
     this.todos = const [],
+    this.mnetIds = const [],
+    this.mpendIds = const [],
   });
 
   /// Nothing computed yet, or a newer computation running: the screens use the neutral 「加入網路」 (PR 2 D-m9).
@@ -59,6 +61,10 @@ class NetSnapshot {
   final List<NetEntry> nets;
   final bool anyMnet, anyMpend;
   final List<JoinTodo> todos;
+
+  /// #329 PR 5 §2.11: the mnet / mpend files listed (ids only; nothing opened for these). anyMnet / anyMpend stay as
+  /// they were (home row 6 reads them).
+  final List<String> mnetIds, mpendIds;
 
   /// Home row 6 / 3.5 / 3.6 (PR 2 joinChoice, unchanged): any net file wins over mnet over mpend.
   NetRecords get records => computing || listFailed
@@ -135,7 +141,9 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
           nets: _now.nets,
           anyMnet: _now.anyMnet,
           anyMpend: _now.anyMpend,
-          todos: _now.todos);
+          todos: _now.todos,
+          mnetIds: _now.mnetIds,
+          mpendIds: _now.mpendIds);
       notifyListeners();
     }
     final s = await compute();
@@ -180,7 +188,13 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
       log?.call('NetIndex: node records not listed (${e.runtimeType})');
     }
     return NetSnapshot(
-        netFiles: netIds.length, nets: nets, anyMnet: mnets.isNotEmpty, anyMpend: mpends.isNotEmpty, todos: todos);
+        netFiles: netIds.length,
+        nets: nets,
+        anyMnet: mnets.isNotEmpty,
+        anyMpend: mpends.isNotEmpty,
+        todos: todos,
+        mnetIds: mnets,
+        mpendIds: mpends);
   }
 
   // §2.6: after every lease release (a flow may have written a record). Not in the same call: a release often comes
