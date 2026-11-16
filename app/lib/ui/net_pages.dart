@@ -546,7 +546,7 @@ class _NetRunPageState extends State<NetRunPage> {
     BuildContext? dc;
     final sub = a.link.changed.listen((_) {
       final c = dc;
-      if (c != null && (a.link.core.blocked != null || !widget.lease.valid)) _closeQ(c, false);
+      if (c != null && c.mounted && (a.link.core.blocked != null || !widget.lease.valid)) _closeQ(c, false);
     });
     try {
       return await showDialog<bool>(
