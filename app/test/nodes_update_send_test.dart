@@ -24,6 +24,7 @@ import 'package:batman_app/src/nodelink/lease.dart';
 import 'package:batman_app/src/nodelink/node_link.dart';
 import 'package:batman_app/src/nodelink/raw_use.dart';
 
+import 'console_paths.dart';
 import 'nodelink/node_link_test.dart' as nlt show Clock, Radio, FakeProber;
 // ignore: depend_on_referenced_packages
 import 'package:reactive_ble_platform_interface/reactive_ble_platform_interface.dart' show CharacteristicInstance;
@@ -46,7 +47,7 @@ final chars = [for (final c in const ['9', 'a', 'b']) Uuid.parse('540aa38c-0086-
 // frames of the fake protocol: the node answers every write [n] with [n + 1]
 const fLogin = 1, fInfo = 10, fSend = 20, fStatus = 30, fLink = 40, fConfirm = 50;
 
-OwnerStep step(OwnerKind kind, {int? frame, String detail = '', String rel = '', Uint8List? info, bool pollLink = false}) => OwnerStep(
+OwnerStep step(OwnerKind kind, {int? frame, String detail = '', String rel = '', Uint8List? info, bool pollLink = false, bool sent = false}) => OwnerStep(
     kind: kind,
     frames: [if (frame != null) Uint8List.fromList([frame])],
     signInput: Uint8List(1),
@@ -60,7 +61,7 @@ OwnerStep step(OwnerKind kind, {int? frame, String detail = '', String rel = '',
     hex: '',
     sas: '',
     renewed: false,
-    sent: false,
+    sent: sent,
     left: false,
     waitMs: BigInt.zero,
     sendUpdate: false,
@@ -182,6 +183,11 @@ class FakeRust implements RustLibApi {
   final records = <String>{}; // the records on "disk"
   String joinMode = 'plain'; // #329 PR 3 step 1: plain / country / removed
   bool pollAfterJoin = false; // the join answer asks for the link check
+  OwnerStep? forgetStep; // #329 PR 3 step 3: netForgetJoining's answer (flows/owner_console_test)
+
+  @override
+  OwnerStep crateApiOwnerNetForgetJoining({required List<int> recordPlain, required BigInt recordGen, required String dacHash}) =>
+      forgetStep ?? (throw '建立網路的節點不能忘記');
 
   @override
   Future<List<String>> crateApiOwnerListNodes({required String dir}) async => [deviceId];
@@ -493,67 +499,34 @@ void main() {
     await longWait(t);
   });
 
-  // ---- #329 PR 3 step 1: the console paths without a test, pinned before they move into OwnerConsole ----------------
-  // Each fails on a console that skips the step: no country question / its answer not sent; no 「確定，加回」 restart;
-  // no link check after a join that asks for it; no confirm request.
-
-  testWidgets('PR3-1 ConfirmCountry: the node asks, the user says 改 -> countryConfirmed(true), then the join goes on',
-      (t) async {
-    await open(t, records: {'node/$deviceId', 'net/$netId'});
-    rust.joinMode = 'country';
-    await press(t, find.byType(ListTile));
-    await press(t, find.widgetWithText(FilledButton, '加入網路'));
-    expect(find.text('要改這台節點的國家嗎？'), findsOneWidget);
-    await press(t, find.text('改'));
-    expect(rust.sends, ['join removed=false', 'country true']);
-    expect(node.written, contains(fSend), reason: 'the join was sent after the answer');
-    await longWait(t);
-  });
-
-  testWidgets('PR3-1 ConfirmCountry: 不要 -> countryConfirmed(false), nothing sent', (t) async {
-    await open(t, records: {'node/$deviceId', 'net/$netId'});
-    rust.joinMode = 'country';
-    await press(t, find.byType(ListTile));
-    await press(t, find.widgetWithText(FilledButton, '加入網路'));
-    await press(t, find.text('不要'));
-    expect(rust.sends, ['join removed=false', 'country false']);
-    expect(node.written, isNot(contains(fSend)));
-    await longWait(t);
-  });
-
-  testWidgets('PR3-1 ConfirmRemoved: asked, 確定，加回 -> the join starts again with removedConfirmed', (t) async {
-    await open(t, records: {'node/$deviceId', 'net/$netId'});
-    rust.joinMode = 'removed';
-    await press(t, find.byType(ListTile));
-    await press(t, find.widgetWithText(FilledButton, '加入網路'));
-    expect(find.text('這台之前被排除過'), findsOneWidget);
-    await press(t, find.text('確定，加回'));
-    expect(rust.sends, ['join removed=false', 'join removed=true']);
-    await longWait(t);
-  });
-
-  testWidgets('PR3-1 after a join that asks for it, the link is checked until [CONNECTED]', (t) async {
-    await open(t, records: {'node/$deviceId', 'net/$netId'});
-    rust.pollAfterJoin = true;
-    await press(t, find.byType(ListTile));
-    await press(t, find.widgetWithText(FilledButton, '加入網路'));
-    for (var i = 0; i < 4; i++) {
-      await t.pump(const Duration(seconds: 10));
-      await settle(t, 5);
-    }
-    expect(rust.sends.where((s) => s == 'link'), isNotEmpty, reason: rust.sends.join(', '));
-    expect(find.textContaining('節點已連上隊伍網路'), findsOneWidget);
-    await longWait(t);
-  });
-
-  testWidgets('PR3-1 檢查網路 sends a confirm request for the phone''s network', (t) async {
-    await open(t, records: {'node/$deviceId', 'net/$netId'});
-    await press(t, find.byType(ListTile));
-    await press(t, find.widgetWithText(OutlinedButton, '檢查網路'));
-    expect(rust.sends, ['confirm']);
-    expect(find.textContaining('網路已套用'), findsOneWidget);
-    await longWait(t);
-  });
+  // ---- #329 PR 3 step 1 / §2.3: the console paths, one table (console_paths.dart) run here on the old console and in
+  // flows/owner_console_test on OwnerConsole. Each row fails on a console that skips its step: no country question /
+  // its answer not sent; no 「確定，加回」 restart; no link check after a join that asks for it; no confirm request.
+  for (final p in consolePaths) {
+    testWidgets('PR3-1 ${p.name}', (t) async {
+      await open(t, records: {'node/$deviceId', 'net/$netId'});
+      rust.joinMode = p.joinMode;
+      rust.pollAfterJoin = p.poll;
+      await press(t, find.byType(ListTile));
+      await press(t, p.action == 'join' ? find.widgetWithText(FilledButton, '加入網路') : find.widgetWithText(OutlinedButton, '檢查網路'));
+      final a = p.answer;
+      if (a != null) {
+        expect(find.text(p.joinMode == 'country' ? '要改這台節點的國家嗎？' : '這台之前被排除過'), findsOneWidget);
+        await press(t, find.text(a));
+      }
+      if (p.poll) {
+        for (var i = 0; i < 4; i++) {
+          await t.pump(const Duration(seconds: 10));
+          await settle(t, 5);
+        }
+      }
+      expect(rust.sends, p.sends, reason: rust.sends.join(", "));
+      if (a == '改') expect(node.written, contains(fSend), reason: 'the join was sent after the answer');
+      if (a == '不要') expect(node.written, isNot(contains(fSend)));
+      expect(find.textContaining(p.ends), findsWidgets);
+      await longWait(t);
+    });
+  }
 
   testWidgets('r3 E-MINOR-1 (V5): both net and mnet, the user picks this phone''s network -> the owner''s join', (t) async {
     await open(t, records: {'node/$deviceId', 'mnet/$netId', 'net/$netId'});
