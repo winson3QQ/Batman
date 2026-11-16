@@ -282,7 +282,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           icon: Icon(Icons.settings_outlined, color: t.ink),
           onPressed: () {
             a.link.setPage(nl.Page.other); // §4.3.2: no reads while the settings are on screen (T-L8; review A-m3)
-            _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(app: a, devTrust: widget.devTrust, notes: widget.notes))));
+            _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(app: a, ui: widget.ui, devTrust: widget.devTrust, notes: widget.notes))));
           },
         ),
       ],

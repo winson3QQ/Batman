@@ -266,7 +266,7 @@ void main() {
 
   testWidgets('r2 D-m4: 開發者選項 only in a dev build', (t) async {
     for (final dev in [false, true]) {
-      await t.pumpWidget(host(SettingsPage(app: app(), devTrust: dev)));
+      await t.pumpWidget(host(SettingsPage(app: app(), ui: UiState(MemStore()), devTrust: dev)));
       await t.pump();
       expect(find.text('開發者選項'), dev ? findsOneWidget : findsNothing);
       expect(find.text('舊版控制台'), dev ? findsOneWidget : findsNothing);
@@ -435,10 +435,10 @@ void main() {
 
   testWidgets('r3 F-m4: what the startup check said is on the settings page', (t) async {
     final a = app();
-    await t.pumpWidget(host(SettingsPage(app: a, devTrust: false, notes: const ['注意：只有軟體保護'])));
+    await t.pumpWidget(host(SettingsPage(app: a, ui: UiState(MemStore()), devTrust: false, notes: const ['注意：只有軟體保護'])));
     expect(find.text('啟動時的提醒'), findsOneWidget);
     expect(find.text('注意：只有軟體保護'), findsOneWidget);
-    await t.pumpWidget(host(SettingsPage(app: a, devTrust: false)));
+    await t.pumpWidget(host(SettingsPage(app: a, ui: UiState(MemStore()), devTrust: false)));
     expect(find.text('啟動時的提醒'), findsNothing);
     a.link.dispose();
     AppLink.forgetForTest();

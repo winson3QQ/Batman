@@ -158,7 +158,7 @@ void main() {
         ..why = Why.identity;
       return NodePage(app: a, id: id, ui: ui);
     },
-    'settings (dev)': (ui) => SettingsPage(app: app(null), devTrust: true),
+    'settings (dev)': (ui) => SettingsPage(app: app(null), ui: ui, devTrust: true),
     'about': (ui) => const AboutPage(),
     'intro': (ui) => IntroPages(onDone: () {}),
     'permissions': (ui) => PermissionsPage(ask: () async => false),
