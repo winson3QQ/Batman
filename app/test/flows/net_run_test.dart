@@ -330,7 +330,8 @@ void main() {
       final w = World()
         ..goOn = false
         ..script('join', [ans('[REQ_FAIL] x'), ans('[JOINED] 已加入', send: true)])
-        ..script('send', [ans('[UPDATED] 節點 …0002 已換成新密碼')]);
+        // PR 5 R14: Rust prints the id's own last four (owner.rs:717); this id is '02'
+        ..script('send', [ans('[UPDATED] 節點 …02 已換成新密碼')]);
       final run = w.run(['02'], makes: false, joinRel: 'net/a');
       await run.run();
       await run.retry(run.rows[0]);
@@ -347,6 +348,25 @@ void main() {
       await run.run();
       await run.retry(run.rows[0]);
       expect((run.rows[0].state, run.rows[0].note), (RowState.failed, '已加入，新密碼沒有換成'));
+    });
+
+    test('PR 5 R14 / D12: the send answers 正在套用 -> joined with a note, not failed and not plainly done', () async {
+      final w = World()
+        ..script('join', [ans('[JOINED] 已加入', send: true)])
+        ..script('send', [ans('[UPDATED] 節點 …02 正在套用新密碼，稍後再看狀態頁')]);
+      final run = w.run(['02'], makes: false, joinRel: 'net/a');
+      await run.run();
+      expect((run.rows[0].state, run.rows[0].note), (RowState.ok, '已加入，新密碼正在套用，稍後到節點頁再送一次確認'));
+      expect(run.rows[0].canRetry, isFalse, reason: 'no 再試這一台 on a joined node');
+    });
+
+    test('PR 5 R14: an [UPDATED] sentence of another node is not a success', () async {
+      final w = World()
+        ..script('join', [ans('[JOINED] 已加入', send: true)])
+        ..script('send', [ans('[UPDATED] 節點 …0099 已換成新密碼')]);
+      final run = w.run(['02'], makes: false, joinRel: 'net/a');
+      await run.run();
+      expect(run.rows[0].state, RowState.failed);
     });
 
 

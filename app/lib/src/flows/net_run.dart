@@ -16,6 +16,7 @@ import '../nodelink/handoff.dart';
 import '../nodelink/node_link.dart' show LoginForEnd, LoginForResult;
 import 'net_index.dart';
 import 'owner_console.dart';
+import 'rekey_send.dart' show RekeyEnd, rekeyEnd;
 
 /// What the flows need from the app (the page binds them to its lease).
 class FlowDeps {
@@ -299,7 +300,11 @@ class NetRun extends ChangeNotifier {
     if (j.sendUpdate) {
       _set(r, RowState.running, '正在把新密碼送給節點');
       final u = await c.sendUpdateFor(rel);
-      if (!u.starts('[UPDATED] ')) {
+      // #329 PR 5 R14 / D12: only Rust's two success sentences count; 「正在套用」 is joined, the key not yet in place
+      final e = rekeyEnd(u.text, u.kind, r.id);
+      if (e == RekeyEnd.applying) {
+        r.note = '已加入，新密碼正在套用，稍後到節點頁再送一次確認';
+      } else if (e != RekeyEnd.current) {
         r.note = switch (u.kind) {
           ReplyKind.notSent => '已加入，新密碼沒有送出',
           ReplyKind.unclear => '已加入，新密碼結果不明',
