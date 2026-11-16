@@ -2,7 +2,6 @@
 // record that does not open is 「這筆打不開」 — never a key error, never an exception out of the flows. The app's two
 // readers: ConsolePlatform.readRecord (the console's requests) and flowDeps.applied (a record read again under the
 // lease). Real AppLink, fake Rust store, mocked platform channel.
-import 'dart:typed_data';
 
 import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/lease.dart';
