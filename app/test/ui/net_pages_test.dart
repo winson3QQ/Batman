@@ -408,13 +408,29 @@ void main() {
     await finish(t, a);
   });
 
+
+  testWidgets('device session 2026-11-16: networks with the same name are told apart (name, mesh id, state, nodes)', (t) async {
+    final a = app();
+    NetEntry e(String n, String mesh, int members) => NetEntry(
+        n,
+        NetView(netId: n, meshId: mesh, netName: 'Batman', applied: true, country: 'US', members: [
+          for (var i = 0; i < members; i++)
+            MemberView(name: 'm$i', last4: '', deviceId: 'd$i', joining: false, prevCountry: '', dacHash: '', creator: false, approved: false)
+        ]));
+    a.nets.setForTest(NetSnapshot(netFiles: 2, nets: [e('n1', 'bm-aaaa', 2), e('n2', 'bm-bbbb', 0)]));
+    await t.pumpWidget(host(NetFormPage(app: a, ui: UiState(MemStore()..ids = [id]), ticked: const {id})));
+    await t.pump();
+    expect(find.text('Batman bm-aaaa（已建立，2 台）'), findsOneWidget);
+    expect(find.text('Batman bm-bbbb（已建立，0 台）'), findsOneWidget);
+    await finish(t, a);
+  });
   testWidgets('code review C N-3: the network the user picked is gone -> no 開始 (never another network instead)', (t) async {
     final a = app();
     NetEntry e(String n) => NetEntry(n, NetView(netId: n, meshId: 'bm', netName: n, applied: true, country: 'US', members: const []));
     a.nets.setForTest(NetSnapshot(netFiles: 2, nets: [e('A'), e('B')]));
     await t.pumpWidget(host(NetFormPage(app: a, ui: UiState(MemStore()..ids = [id]), ticked: const {id})));
     await t.pump();
-    await t.tap(find.textContaining('B（已建立）'));
+    await t.tap(find.textContaining('B bm（已建立'));
     await t.pump();
     a.nets.setForTest(NetSnapshot(netFiles: 2, nets: [e('A')])); // B no longer opens
     await t.pump();

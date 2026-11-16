@@ -101,7 +101,12 @@ Future<bool> askYesNo(BuildContext context, String title, String body, String ye
 String nodeName(AppLink a, String id, UiState ui) =>
     a.link.core.states.containsKey(id) ? nodeInfo(a, id, ui).name : '節點 ${last4(id)}';
 
-String _netLabel(NetEntry n) => '${n.view.netName.isEmpty ? n.view.meshId : n.view.netName}（${n.applied ? '已建立' : '建立中'}）';
+/// The old console's label (nodes.dart:621: mesh id, state, nodes) with the network's name first, so several networks
+/// named 「Batman」 are told apart (device session 2026-11-16: four identical 「Batman（已建立）」 rows).
+String _netLabel(NetEntry n) {
+  final name = n.view.netName.isEmpty ? '' : '${n.view.netName} ';
+  return '$name${n.view.meshId}（${n.applied ? '已建立' : '建立中'}，${n.view.members.length} 台）';
+}
 
 // ---- 4.1 -----------------------------------------------------------------------------------------------------------
 

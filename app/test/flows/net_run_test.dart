@@ -393,6 +393,16 @@ void main() {
       expect(run.rows[0].note, '已加入，新密碼沒有送出');
       expect(run.rows[0].joined, isTrue);
     });
+
+    test('device session 2026-11-16: a done row shows the join\'s own answer, not the last 「正在…」 line', () async {
+      final w = World()
+        ..script('join', [ans('[JOINED] 已加入網路 bm-x', poll: true)])
+        ..script('link', [ans('[CONNECTED] 已連上隊伍網路')]);
+      final run = w.run(['02'], makes: false, joinRel: 'net/a');
+      await run.run();
+      expect(run.rows[0].state, RowState.ok);
+      expect(run.rows[0].line, '[JOINED] 已加入網路 bm-x');
+    });
     test('code review A m-2: the page gone during the link check stops it (its console closed)', () async {
       final w = World()
         ..hangLink = true

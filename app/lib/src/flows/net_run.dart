@@ -293,7 +293,7 @@ class NetRun extends ChangeNotifier {
     r.joined = true;
     if (_stopNow) {
       // §2.5: the page is gone: no send, no link check
-      _set(r, RowState.ok);
+      _set(r, RowState.ok, j.text);
       return false;
     }
     if (j.sendUpdate) {
@@ -314,7 +314,8 @@ class NetRun extends ChangeNotifier {
       final l = await c.linkCheck().whenComplete(() => _inLinkCheck = false);
       if (!l.starts('[CONNECTED]')) r.note = '連線狀態未知';
     }
-    _set(r, RowState.ok);
+    // device session 2026-11-16: a done row shows the join's own answer, not the last 「正在…」 line
+    _set(r, RowState.ok, j.text);
     return true;
   }
 }
