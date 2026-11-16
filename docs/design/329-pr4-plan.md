@@ -253,7 +253,7 @@
   - 不進 log、不進 `ConsoleReply.text`、不進 `ui/state-v1`、不進 argv；節點不回傳。
   - `SecureScreen`（不能截圖、不出現在最近使用的 app 縮圖；設不了就整頁不顯示）；IME 不學習；不能選取 / 複製；不讓密碼管理器提示儲存（§2.4）。
   - 驗證：測試輸入一個特徵密碼，斷言 debugPrint 擷取、回覆文字、`UiState` 檔案都不含它（負對照：把密碼放進 log 行，測試 FAIL）；欄位的 `enableInteractiveSelection` / `autofillHints` / IME 旗標各有 widget 斷言（負對照：拿掉旗標）；PR 3 的原始碼鎖涵蓋新檔案。
-- **更新**：D8 不變（回答不記 log）；新增的 `sw` 臂加測試：sw 回答不出現在 log 擷取裡（負對照：記 log）。
+- **更新**：update 設計的 D8 不變（回答不記 log）；新增的 `sw` 臂加測試：sw 回答不出現在 log 擷取裡（負對照：記 log）。
 - **同一支手機上的其他 app**：沒有新的檔案；密碼欄不能複製。
 - **被入侵的節點的字串**（v3，審查 C m6 / D m4）：`SettingsView` 的每個字串欄位在 Rust 端經過 `statuspage::shown`（`display_name` 換掉控制 / 格式字元，最多 64 字，statuspage.rs:186-190），和狀態頁的節點字串同一個處理；Rust 測試給一個帶控制字元、超長的 ssid，斷言輸出（負對照：不經 `shown`）。
 - **更新的秘密**：搬到 `AppLink.sw` 之後，`SwUpdate` 裡的 bearer / AP 認證活得比現況久（到 `done`、移除節點或 app 結束）；只在程序記憶體，不落地、不記 log。接受。
