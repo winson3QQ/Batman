@@ -112,6 +112,20 @@ void main() {
     await done(t, a);
   });
 
+  testWidgets('T-H3: the todos are computed again when a lease is released (a claim that finished behind the home page)',
+      (t) async {
+    rust.pending = [other]; // a claim running: no node record yet
+    final a = await home(t);
+    expect(find.text('上次新增節點沒有做完'), findsOneWidget);
+    final l = (await t.runAsync(() => a.link.acquire('新增節點', LeaseKind.raw)))!;
+    rust.pending = []; // the claim finished meanwhile (its pending record removed)
+    await t.runAsync(() => l.release());
+    await t.pump();
+    await t.pump();
+    expect(find.text('上次新增節點沒有做完'), findsNothing, reason: 'computed again at the release');
+    await done(t, a);
+  });
+
   testWidgets('T-H3 / T-G3(c): a raw lease taken back -> 「上一個操作可能沒有存完：<名稱>」 on the home page; 知道了 removes it',
       (t) async {
     final a = await home(t, devTrust: false);
