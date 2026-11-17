@@ -78,6 +78,8 @@ void main() {
       publicKeys: d.publicKeys,
       nodeIds: d.nodeIds,
       send: d.send,
+      netVersion: d.netVersion,
+      mnetVersion: d.mnetVersion,
     );
   };
 

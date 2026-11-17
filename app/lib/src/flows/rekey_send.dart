@@ -36,7 +36,7 @@ const unfinishedLine = '[REQ_FAIL] 沒有送出：節點還有沒完成的變更
 /// R17's result: [line] is what the page shows (Rust's text, or the old console's sentence); [member] is null when it
 /// never got as far as knowing the network.
 class RekeySent {
-  const RekeySent(this.end, this.line, {this.member, this.netId = '', this.notReached});
+  const RekeySent(this.end, this.line, {this.member, this.netId = '', this.notReached, this.version});
   final RekeyEnd end;
   final String line;
   final bool? member;
@@ -44,6 +44,19 @@ class RekeySent {
 
   /// a session that never reached its requests (busy, login, gone, lease lost): the page shows opLine of it
   final OpReply? notReached;
+
+  /// R19 (AD-m2): the member's version, read from the very record step 3 handed to Rust (null: not read, a leader)
+  final VersionRead? version;
+}
+
+/// R19: a version number as read from a record now (never from NetIndex): [n] null = not readable; [name] the network's
+/// name shown beside a member's number (AB-m1); [reading] = not read yet.
+class VersionRead {
+  const VersionRead(this.n, {this.name = '', this.reading = false});
+  static const pending = VersionRead(null, reading: true);
+  final int? n;
+  final String name;
+  final bool reading;
 }
 
 /// The old console's sentences when there is nothing to send (nodes.dart:1551-1562).
@@ -55,12 +68,15 @@ const cancelledLine = '沒有送出';
 
 /// What sendNewKey needs besides the session: reading a record, and the leader's confirmation (outside the lease).
 class SendDeps {
-  const SendDeps({required this.op, required this.readRecord, required this.confirm});
+  const SendDeps({required this.op, required this.readRecord, required this.confirm, this.version});
   final OpDeps op;
   final Future<(BigInt, Object?)> Function(String rel) readRecord;
 
   /// nodes.dart:1568-1572: 「把新密碼送給這台節點？」 for the leader; null = the page is gone (= no)
   final Future<bool?> Function() confirm;
+
+  /// R19: a member record's version, read under the step-3 session right before it goes to Rust
+  final Future<VersionRead> Function(String rel)? version;
 }
 
 /// R17: the only flow that sends the new secrets from a page.
@@ -117,15 +133,18 @@ Future<RekeySent> sendNewKey(SendDeps d, String deviceId,
 
   // step 3
   ConsoleReply? sent;
+  VersionRead? version;
   final second = await OpSession.once(d.op, deviceId, name, (c, g) async {
     failLine = await check(c);
     if (failLine != null) return ConsoleReply(ReplyKind.answer, failLine!);
+    final v = d.version;
+    if (member! && v != null) version = await v(rel!); // the same record sendUpdateFor reads, under this lease
     return sent = await c.sendUpdateFor(rel!, member: member!);
   }, gone: gone);
   if (second.end != OpEnd.done) return RekeySent(RekeyEnd.failed, '', member: member, netId: netId, notReached: second);
   if (failLine != null) return RekeySent(RekeyEnd.failed, failLine!, member: member, netId: netId);
   final s = sent!;
   // step 4
-  return RekeySent(rekeyEnd(s.text, s.kind, deviceId), s.text, member: member, netId: netId);
+  return RekeySent(rekeyEnd(s.text, s.kind, deviceId), s.text, member: member, netId: netId, version: version);
 }
 

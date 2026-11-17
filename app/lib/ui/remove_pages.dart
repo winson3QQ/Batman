@@ -210,6 +210,7 @@ class RekeyPage extends StatefulWidget {
 }
 
 class _RekeyPageState extends State<RekeyPage> {
+  VersionRead _ver = VersionRead.pending; // R19
   List<RecipientView> _people = const [];
   List<PersonNode> _own = const [];
   List<String> _phone = const [];
@@ -225,18 +226,28 @@ class _RekeyPageState extends State<RekeyPage> {
   void initState() {
     super.initState();
     a.ticks.addListener(_redraw);
+    a.nets.addListener(_reread); // R19: NetIndex only as the trigger; the number is read from the record
     _load();
   }
 
   @override
   void dispose() {
     a.ticks.removeListener(_redraw);
+    a.nets.removeListener(_reread);
     super.dispose();
   }
 
   void _redraw() => setState(() {});
 
+  Future<void> _reread() async {
+    if (!mounted) return;
+    setState(() => _ver = VersionRead.pending);
+    final v = await teamDeps(a).netVersion(widget.netId);
+    if (mounted) setState(() => _ver = v);
+  }
+
   Future<void> _load() async {
+    unawaited(_reread());
     final (_, plain) = await teamDeps(a).readRecord(rel);
     final keys = await teamDeps(a).publicKeys();
     final phone = await teamDeps(a).nodeIds();
@@ -300,6 +311,7 @@ class _RekeyPageState extends State<RekeyPage> {
     return PopScope(
       canPop: !_running,
       child: BatPage(title: '換新的網路密碼', body: [
+        Text(leaderVersionLine(_ver), key: const Key('net-version')),
         if (_line.isNotEmpty) Text(_line, key: const Key('rekey-page-line')),
         const BatLabel('1　先把更新包交給每位隊員'),
         Text('這些勾只是幫你記，app 不知道對方換好了沒', style: note),

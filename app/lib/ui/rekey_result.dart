@@ -20,6 +20,16 @@ const kRekeyOthersRule = 'app 看不到其他隊員有沒有把新密碼送到�
 const kMemberRekeyRule = '這只代表節點換成了這支手機有的版本。請把上面的版本號唸給隊長聽，和他手機上的「目前是第 N 版」比對；'
     '不一樣的話，請他重新產生你的更新包。';
 
+/// R19: the leader's 「目前是第 N 版」 (8.1, 8.4); while reading no number, unreadable said so.
+String leaderVersionLine(VersionRead v) => v.reading ? '正在讀取版本' : v.n == null ? '版本讀不到' : '目前是第 ${v.n} 版';
+
+/// R19 / AB-m1: the member's 「這支手機是第 N 版」 with the network's name beside it.
+String memberVersionLine(VersionRead v) => v.reading
+    ? '正在讀取版本'
+    : v.n == null
+        ? '這支手機的版本讀不到'
+        : '這支手機是第 ${v.n} 版${v.name.isEmpty ? '' : '（網路「${v.name}」）'}';
+
 /// R14 + the member's two checks (Z-M1): the version line is always there; the 「換好了」 line only on current.
 class RekeyResult extends StatelessWidget {
   const RekeyResult({super.key, required this.end, required this.line, required this.member, this.version});
@@ -27,8 +37,8 @@ class RekeyResult extends StatelessWidget {
   final String line;
   final bool member;
 
-  /// the member's mnet version (R19), null = not read
-  final int? version;
+  /// the member's version (R19), read from the record this send or import used; null = not read
+  final VersionRead? version;
 
   @override
   Widget build(BuildContext context) {
@@ -44,7 +54,7 @@ class RekeyResult extends StatelessWidget {
       ]),
       if (end == RekeyEnd.applying) Text('狀態頁就是那台的節點頁', style: note),
       if (member) ...[
-        Text(version == null ? '這支手機的版本讀不到' : '這支手機是第 $version 版', key: const Key('rekey-version'), style: note),
+        Text(memberVersionLine(version ?? const VersionRead(null)), key: const Key('rekey-version'), style: note),
         Text(ok ? '這台節點已換成這支手機的版本' : '這台還沒換好，先不要跟隊長說換好了', key: const Key('rekey-node'), style: note),
         Text(kMemberRekeyRule, style: note),
       ] else ...[

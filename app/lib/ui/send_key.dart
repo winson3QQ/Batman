@@ -54,7 +54,7 @@ class _SendKeyButtonState extends State<SendKeyButton> {
               ? Text(opLine(s.notReached!), key: const Key('send-key-line'))
               : s.member == null
                   ? Text(screenText(s.line), key: const Key('send-key-line'))
-                  : RekeyResult(end: s.end, line: s.line, member: s.member!),
+                  : RekeyResult(end: s.end, line: s.line, member: s.member!, version: s.version),
         ),
     ]);
   }

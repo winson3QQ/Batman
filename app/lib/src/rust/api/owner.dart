@@ -310,6 +310,9 @@ class NetView {
   final bool applied;
   final String country;
   final List<MemberView> members;
+  /// #329 PR 5 R19 (V-M1): the version; null = not readable. TEMPORARY hand edit until the codegen runs (WSL):
+  /// the bridge does not carry it yet, so it is always null in the app
+  final int? version;
 
   const NetView({
     required this.netId,
@@ -318,6 +321,7 @@ class NetView {
     required this.applied,
     required this.country,
     required this.members,
+    this.version,
   });
 
   @override

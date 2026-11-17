@@ -1,6 +1,8 @@
 // #329 PR 5 plan v16 §2.8 / §2.9 / §6 steps 8-9: the member's pages (7.8-7.10, 8.5) and RekeyResult (R14), on fake
 // sessions (a console per login), the real lease registry and RecordWriter, and Rust's pure functions faked.
 
+import 'dart:async';
+
 import 'package:batman_app/secure_screen.dart' show secureChannel;
 import 'package:batman_app/src/flows/offline_op.dart';
 import 'package:batman_app/src/flows/op_session.dart';
@@ -188,6 +190,16 @@ class World {
   final log = <String>[];
   final records = <String, Uint8List>{'mpend/nn': Uint8List(3), 'mnet/nn': Uint8List(4)};
   final dacs = <String, String>{}; // each node's dac hash (sendNewKey's expectDac)
+  /// R19: the version each record holds (rel -> version); missing = not readable
+  final versions = <String, VersionRead>{};
+  final versionReads = <String>[];
+  Completer<void>? versionGate; // holds every version read while not completed
+  Future<VersionRead> version(String rel) async {
+    versionReads.add(rel);
+    await versionGate?.future;
+    return versions[rel] ?? const VersionRead(null);
+  }
+
   final ecdh = <Uint8List>[];
   late final LeaseRegistry reg;
   late final Clock clock;
@@ -227,7 +239,12 @@ class World {
         publicKeys: () async => {'ownerEnc': Uint8List(1), 'owner': Uint8List(1), 'admin': Uint8List(1)},
         nodeIds: () async => ids,
         send: (c) => SendDeps(
-            op: op, readRecord: (rel) async => (BigInt.one, records[rel] as Object?), confirm: () async => true),
+            op: op,
+            readRecord: (rel) async => (BigInt.one, records[rel] as Object?),
+            confirm: () async => true,
+            version: version),
+        netVersion: (id) => version('net/$id'),
+        mnetVersion: version,
       );
 }
 
@@ -477,7 +494,7 @@ void main() {
   });
 
   group('R14 RekeyResult', () {
-    Future<void> show(WidgetTester t, RekeyEnd end, bool member, {int? version}) => t.pumpWidget(host(Scaffold(
+    Future<void> show(WidgetTester t, RekeyEnd end, bool member, {VersionRead? version}) => t.pumpWidget(host(Scaffold(
         body: RekeyResult(end: end, line: '[UPDATED] 節點 …01 已換成新密碼', member: member, version: version))));
 
     testWidgets('leader: the tick only on current', (t) async {
@@ -490,9 +507,9 @@ void main() {
     });
 
     testWidgets('T-M1 member: never a tick; the version line; 換好 only on current', (t) async {
-      await show(t, RekeyEnd.current, true, version: 3);
+      await show(t, RekeyEnd.current, true, version: const VersionRead(3, name: '山隊'));
       expect(find.byKey(const Key('rekey-tick')), findsNothing);
-      expect(find.text('這支手機是第 3 版'), findsOneWidget);
+      expect(find.text('這支手機是第 3 版（網路「山隊」）'), findsOneWidget);
       expect(find.text('這台節點已換成這支手機的版本'), findsOneWidget);
       expect(find.text(kMemberRekeyRule), findsOneWidget);
       await show(t, RekeyEnd.applying, true);

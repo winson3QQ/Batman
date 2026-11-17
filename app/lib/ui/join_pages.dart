@@ -2,6 +2,7 @@
 // _requestJoin, _showPendingBody, _takeApproval / _importApproval, _takeUpdate; nodes.dart:867-1037, :1503-1542)
 // unchanged; every record write is an OfflineOp (R10, re-read under the lease R11), ECDH's z is the page's own copy and
 // zeroed in `finally`. The member's join itself (R16) runs on the join wait page (net_pages.dart, member mode).
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -471,12 +472,26 @@ class UpdateImportPage extends StatefulWidget {
 }
 
 class _UpdateImportPageState extends State<UpdateImportPage> {
+  VersionRead? _ver; // R19: null = which network is not known yet
   String _line = '', _netId = '';
   bool _running = false, _imported = false, _listing = false;
   final _nodes = <String, UpdateNode>{};
   final _sent = <String, RekeySent>{};
 
   AppLink get a => widget.app;
+
+  @override
+  void initState() {
+    super.initState();
+    final ids = a.nets.now.mnetIds;
+    if (ids.length == 1) _readVersion('mnet/${ids.single}');
+  }
+
+  Future<void> _readVersion(String rel) async {
+    setState(() => _ver = VersionRead.pending);
+    final v = await teamDeps(a).mnetVersion(rel);
+    if (mounted) setState(() => _ver = v);
+  }
 
   /// _takeUpdate (nodes.dart:1503-1542): ECDH only on Advance; the second part checks the generation the first saw.
   Future<void> _got(String hex) async {
@@ -535,6 +550,7 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
         _line = r is OfflineUnknown ? '結果不明，請重新貼上更新包確認' : '[REQ_FAIL] 沒有匯入：${offlineLine(r)}';
       }
     });
+    if (_imported) unawaited(_readVersion('mnet/$_netId')); // Z-m4: read again after the import
     if (_imported) await _list();
   }
 
@@ -578,6 +594,7 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
     child: BatPage(
       title: '收到新密碼',
       body: [
+        if (_ver case final v?) Text(memberVersionLine(v), key: const Key('update-version')),
         if (!_imported) ...[
           const Text('貼上隊長給你的更新包。'),
           CodeInput(devTrust: a.devTrust, scan: false, onText: _got, onError: (w) => setState(() => _line = w)),
@@ -604,7 +621,7 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
                     padding: const EdgeInsets.all(12),
                     child: s.notReached != null
                         ? Text(opLine(s.notReached!))
-                        : RekeyResult(end: s.end, line: s.line, member: true),
+                        : RekeyResult(end: s.end, line: s.line, member: true, version: s.version ?? _ver),
                   ),
               ],
             ),

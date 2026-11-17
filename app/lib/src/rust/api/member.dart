@@ -257,12 +257,16 @@ class MnetView {
   /// "" = no own-node entry (a new invite is needed), else joining / applied
   final String entryState;
   final String deviceLast4;
+  /// #329 PR 5 R19 (V-M1): the version; null = not readable. TEMPORARY hand edit until the codegen runs (WSL):
+  /// the bridge does not carry it yet, so it is always null in the app
+  final int? version;
 
   const MnetView({
     required this.netId,
     required this.netName,
     required this.entryState,
     required this.deviceLast4,
+    this.version,
   });
 
   @override

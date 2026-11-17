@@ -16,6 +16,8 @@ import '../src/rust/api/rekey.dart' show PersonView, netPeople;
 import 'code_view.dart';
 import 'net_pages.dart' show askYesNo;
 import 'remove_pages.dart';
+import 'rekey_result.dart' show leaderVersionLine;
+import '../src/flows/rekey_send.dart' show VersionRead;
 import 'team_deps.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -48,6 +50,7 @@ class MembersPage extends StatefulWidget {
 }
 
 class _MembersPageState extends State<MembersPage> {
+  VersionRead _ver = VersionRead.pending; // R19
   List<PersonView>? _people;
   String _line = '';
 
@@ -58,19 +61,29 @@ class _MembersPageState extends State<MembersPage> {
   void initState() {
     super.initState();
     a.ticks.addListener(_redraw);
+    a.nets.addListener(_reread); // R19: NetIndex only as the trigger; the number is read from the record
     _load();
   }
 
   @override
   void dispose() {
     a.ticks.removeListener(_redraw);
+    a.nets.removeListener(_reread);
     super.dispose();
   }
 
   void _redraw() => setState(() {});
 
+  Future<void> _reread() async {
+    if (!mounted) return;
+    setState(() => _ver = VersionRead.pending);
+    final v = await teamDeps(a).netVersion(widget.netId);
+    if (mounted) setState(() => _ver = v);
+  }
+
   /// R19: read the record now (on open and after returning from a page above, AC-M1).
   Future<void> _load() async {
+    unawaited(_reread());
     final (_, plain) = await teamDeps(a).readRecord(rel);
     final keys = await teamDeps(a).publicKeys();
     if (!mounted) return;
@@ -95,6 +108,7 @@ class _MembersPageState extends State<MembersPage> {
     final people = _people;
     final left = people == null ? 0 : people.where((p) => !p.isSelf && !a.ticks.handed(widget.netId, p.owner)).length;
     return BatPage(title: '隊員名單', body: [
+      Text(leaderVersionLine(_ver), key: const Key('net-version'), style: TextStyle(fontSize: Fs.body, color: t.ink)),
       if (a.ticks.removedThisRun(widget.netId) && left > 0)
         BatBanner(look: Look.warn, title: '還有 $left 位隊員沒交更新包'),
       Text('移除隊員之後，要用「產生更新包」把新密碼交給每位留下的隊員，並把新密碼送到你的每台節點。', key: const Key('members-rule'), style: note),

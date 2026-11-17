@@ -6,6 +6,8 @@ import 'package:batman_app/src/nodelink/lease.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/ui/net_pages.dart';
 import 'package:batman_app/ui/rekey_result.dart';
+import 'package:batman_app/ui/team_deps.dart' show teamDepsOverride;
+import 'package:batman_app/src/flows/rekey_send.dart' show VersionRead;
 import 'package:batman_app/ui/ui_state.dart';
 import 'package:batman_app/ui/widgets.dart' show Btn;
 import 'package:flutter/material.dart';
@@ -15,6 +17,7 @@ import '../flows/net_run_test.dart' show World, ans;
 import 'net_pages_test.dart' show deps;
 import 'pages_test.dart' show FakeRust, app, host, id;
 import 'ui_state_test.dart' show MemStore;
+import 'join_pages_test.dart' as jp;
 
 const l4 = '7d2c'; // the last four of pages_test's id
 
@@ -86,8 +89,13 @@ void main() {
     final w = World()
       ..script('mjoin', [ans('[JOINED] 已套用：節點 …$l4 已加入網路 bm-a', send: true)])
       ..script('send', [ans('[UPDATED] 節點 …$l4 已換成新密碼')]);
+    final v = jp.World(const [], const {})..versions['mnet/m1'] = const VersionRead(6, name: '山隊');
+    teamDepsOverride = v.deps; // R19: the version of the record this join used
+    addTearDown(() => teamDepsOverride = null);
     final a = await run(t, w, member: true);
     expect(w.joinRels, ['mnet/m1']);
+    expect(v.versionReads, ['mnet/m1']);
+    expect(find.text('這支手機是第 6 版（網路「山隊」）'), findsOneWidget);
     expect(w.sends, ['mnet/m1 member=true']);
     expect(find.byKey(const Key('rekey-tick')), findsNothing);
     expect(find.text('這台節點已換成這支手機的版本'), findsOneWidget);

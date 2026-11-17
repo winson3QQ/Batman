@@ -8,6 +8,8 @@ import '../src/flows/offline_op.dart';
 import '../src/flows/rekey_send.dart';
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/lease.dart';
+import '../src/rust/api/member.dart' show mnetSummary;
+import '../src/rust/api/owner.dart' show netSummary;
 import 'net_pages.dart' show askYesNo;
 import '../src/flows/op_session.dart' show OpDeps;
 import 'settings_pages.dart' show opDeps;
@@ -43,7 +45,30 @@ SendDeps sendDeps(BuildContext context, AppLink a) => SendDeps(
     if (!context.mounted) return null;
     return askYesNo(context, '把新密碼送給這台節點？', '包都交給隊員了嗎？你的節點一換，就和還沒換的人斷線，之後很難再把包傳出去。', '送出', '取消');
   },
+  version: (rel) => readMnetVersion(a.console.readRecord, rel),
 );
+
+/// R19: the version in a net record read now (no lease needed to read; AC-m6). Unreadable -> no number.
+Future<VersionRead> readNetVersion(Future<(BigInt, Uint8List?)> Function(String rel) read, String rel) async {
+  try {
+    final (_, p) = await read(rel);
+    return VersionRead(p == null ? null : netSummary(recordPlain: p).version);
+  } catch (_) {
+    return const VersionRead(null);
+  }
+}
+
+/// R19: a member's version and network name in an mnet record read now (MnetView.version = MNet.version).
+Future<VersionRead> readMnetVersion(Future<(BigInt, Uint8List?)> Function(String rel) read, String rel) async {
+  try {
+    final (_, p) = await read(rel);
+    if (p == null) return const VersionRead(null);
+    final v = mnetSummary(mnetPlain: p);
+    return VersionRead(v.version, name: v.netName);
+  } catch (_) {
+    return const VersionRead(null);
+  }
+}
 
 /// The ECDH result as the page's own copy (the platform's buffer may be read-only: the old _ownCopy, R10).
 Uint8List ownCopy(Uint8List b) => Uint8List.fromList(b);
@@ -61,6 +86,8 @@ class TeamDeps {
     required this.publicKeys,
     required this.nodeIds,
     required this.send,
+    required this.netVersion,
+    required this.mnetVersion,
   });
   final OfflineDeps offline;
   final OfflinePlatform platform;
@@ -71,6 +98,10 @@ class TeamDeps {
   final Future<List<String>> Function() nodeIds;
   final SendDeps Function(BuildContext context) send;
 
+  /// R19: a leader's version (net/<netId>) and a member's (an mnet rel), read from the record now
+  final Future<VersionRead> Function(String netId) netVersion;
+  final Future<VersionRead> Function(String rel) mnetVersion;
+
   Future<(BigInt, Uint8List?)> readRecord(String rel) => platform.readRecord(rel);
 
   factory TeamDeps.real(AppLink a) => TeamDeps(
@@ -80,6 +111,8 @@ class TeamDeps {
     publicKeys: a.console.publicKeys,
     nodeIds: a.nets.src.nodeIds,
     send: (c) => sendDeps(c, a),
+    netVersion: (id) => readNetVersion(a.console.readRecord, 'net/$id'),
+    mnetVersion: (rel) => readMnetVersion(a.console.readRecord, rel),
   );
 }
 

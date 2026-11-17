@@ -19,7 +19,7 @@ import '../say.dart' show screenText;
 import '../src/flows/net_index.dart';
 import '../src/flows/net_run.dart';
 import '../src/flows/owner_console.dart';
-import '../src/flows/rekey_send.dart' show RekeyEnd, rustLast4, sameLast4;
+import '../src/flows/rekey_send.dart' show RekeyEnd, VersionRead, rustLast4, sameLast4;
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl show Page;
 import '../src/nodelink/handoff.dart';
@@ -30,6 +30,7 @@ import 'home_page.dart' show nodeInfo;
 import 'join_choice.dart';
 import 'join_pages.dart' show JoinTeamPage, MyRequestPage;
 import 'rekey_result.dart';
+import 'team_deps.dart' show teamDeps;
 import 'theme.dart';
 import 'ui_state.dart';
 import 'widgets.dart';
@@ -608,6 +609,7 @@ NetRun runFor(NetRunPage p, FlowDeps d, Future<bool> Function(RunRow) go) => Net
     ids: p.ids, makes: p.makes, joinRel: p.joinRel, name: p.name, channel: p.channel, member: p.member, askGoOn: go);
 
 class _NetRunPageState extends State<NetRunPage> {
+  VersionRead? _ver; // R19: the member's version, from the record this join used
   AppLink get a => widget.app;
   late final NetRun run;
   Cancel? _hold;
@@ -627,6 +629,11 @@ class _NetRunPageState extends State<NetRunPage> {
 
   void _changed() {
     if (mounted) setState(() {});
+    final rel = widget.joinRel;
+    if (widget.member && rel != null && _ver == null && run.rows.any((r) => r.sendEnd != null)) {
+      _ver = VersionRead.pending;
+      teamDeps(a).mnetVersion(rel).then((v) => mounted ? setState(() => _ver = v) : null);
+    }
   }
 
   /// Work under this page's lease: a hold (the lease is 「進行中」), PopScope, keepScreenOn; given back when it ends.
@@ -791,7 +798,7 @@ class _NetRunPageState extends State<NetRunPage> {
                   if (r.line.isNotEmpty && r.line != r.sendLine && r.state != RowState.waiting && r.state != RowState.notDone)
                     Text(plain(r.line), style: TextStyle(fontSize: Fs.body, height: 1.5, color: t.ink)),
                   if (r.note.isNotEmpty) Text(r.note, style: TextStyle(fontSize: Fs.meta, color: t.sub)),
-                  if (r.sendEnd case final e?) RekeyResult(end: e, line: r.sendLine, member: widget.member), // R14
+                  if (r.sendEnd case final e?) RekeyResult(end: e, line: r.sendLine, member: widget.member, version: _ver), // R14
                   if (!working && r.state == RowState.failed && needsNewInvite(r.line) && a.devTrust)
                     BatButton('收隊長的邀請', // S-m2
                         kind: BtnKind.secondary,

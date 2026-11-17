@@ -99,6 +99,8 @@ void main() {
             op: d.op,
             publicKeys: d.publicKeys,
             nodeIds: d.nodeIds,
+            netVersion: d.netVersion,
+            mnetVersion: d.mnetVersion,
             send: (c) => SendDeps(op: d.op, readRecord: d.send(c).readRecord, confirm: sendDeps(c, a).confirm));
       };
       addTearDown(() => teamDepsOverride = null);
