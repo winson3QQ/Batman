@@ -114,7 +114,14 @@ hole. A dedicated USB-C is only needed for the attended "dongle-to-unlock" model
 
 ### Hardware tiers × security models (decision 2026-09-11)
 
-The fleet has two boards — **Pi 4 / CM4** and **Pi 3A+** (civil SKU; replaced the Zero 2 W when
+> **2026-11-17 decision (user): the Pi 3A+ variant is excluded.** The product line is **Pi 4 only**
+> (a CM4 carrier for production is drafted in the HAT v2 spec, PR #303 — not merged). Every model
+> below (Base, Secure-attended, Secure-unattended) now maps to the Pi 4 / CM4. The table and the
+> mapping that follow are kept as the 2026-09-11 reasoning; the **Pi 3A+ column no longer applies**.
+> The build tree still produces a `bcm2710` image (`docs/boards-and-builds.md`); removing it is a
+> separate decision. Closed with this decision: #203, #208.
+
+The fleet had two boards — **Pi 4 / CM4** and **Pi 3A+** (civil SKU; replaced the Zero 2 W when
 #102 was closed not-planned over the global shortage — decision in #195) — and they do **not**
 support the same security chain. Neither has a secure element on board: Pi 4's OTP can hold a
 signed-boot key *hash* but is readable by root (`vcgencmd otp_dump`) — it is not a key vault.
@@ -131,7 +138,7 @@ A real SE (ATECC608 on I2C-1, or a TPM on a spare SPI CS — SPI0 is the HaLow r
 | SE-held key, released only to a trusted OS | ✅ with add-on SE | ⚠️ SE without signed boot: a swapped kernel can ask the SE for the key | measured boot (TPM PCR) does not exist on Pi bootloaders at all — the reachable form is *signed boot + SE authenticates the node* |
 | OTS / docker payload host | ✅ | ❌ 512 MB RAM | relay-class node. Enforced in code: `batman-payload-host` is gated `DEPENDS:=@TARGET_bcm27xx_bcm2711` |
 
-**Mapping to the models above:**
+**Mapping to the models above** (2026-09-11; superseded 2026-11-17 — all three models are now Pi 4 / CM4):
 - **Base** → the natural level of the Pi 3A+. Cheap, light, expendable **relay**: carries no
   certificates, is not a payload host; losing one loses a board, not the network.
 - **Secure — attended** → the **highest honest level for the Pi 3A+**: LUKS key on the operator's
@@ -144,6 +151,10 @@ Pi 3A+ = relay / expendable; Pi 4 = identity-bearing node. Pi 5 would be stronge
 ext, signed boot) but the HaLow SPI bring-up on RP1 is unresolved (`pi5-rp1-bringup.md`).
 
 ### Image strategy — one recipe, N builds, runtime profile (decision 2026-09-11)
+
+> **2026-11-17:** with the Pi 3A+ excluded, the only product artifact is `ekh-bcm2711` (Pi 4). The
+> one-recipe / per-subtarget rule below still describes how the tree builds (it still emits a
+> `bcm2710` image), but only the Pi 4 image is released to users.
 
 OpenWrt (and therefore OpenMANET) builds Pi 4 and Pi 3A+ as **separate subtargets** —
 `bcm2711` (cortex-a72) and `bcm2710` (cortex-a53) — each with its own kernel config and package

@@ -44,6 +44,7 @@ this rule (`docs/design/254-p3-impl.md` §3.7.1; code `feed/batman-prov/src/rele
 ### One tree, every board (#209 S5, 2026-10-02)
 
 - Since 1.5.0, every board (`ekh-bcm2711` Pi 4, `ekh-bcm2710` Pi 3A+) is built from the **same firmware-fork commit** (`build-3aplus`). One version number = one pair of source commits, whatever the board.
+- 2026-11-17: the Pi 3A+ variant is excluded from the product; only the `ekh-bcm2711` image is released. The tree still builds `ekh-bcm2710` until that is removed separately.
 - The board is a separate field: `BATMAN_BOARD` in the stamp, and the board name in every artifact file name.
 - `/etc/batman-build` is **generated at build time** by the firmware fork's `scripts/stamp-batman-build.sh`, never hand-edited.
   - The script reads the real `feeds/batman` HEAD and asserts it equals the feeds.conf pin.
@@ -59,12 +60,14 @@ this rule (`docs/design/254-p3-impl.md` §3.7.1; code `feed/batman-prov/src/rele
 
 | MAJOR | #75 milestone | meaning |
 | --- | --- | --- |
-| 1.x | v1.1 DEV golden | adopt the prebuilt OpenMANET image + our files/packages; self-forming, observable; **no self-build** |
-| 2.x | v2.0 Build gate | **we build the image ourselves** (own OpenMANET build, both boards, CI-reproduced) |
-| 3.x | v3.0 PROD | verified boot, immutable rootfs, OTA domains, lockable |
-| 4.x | v4.0 Fleet | fleet EMS |
+| 1.x | v1.1 DEV golden *(closed 2026-11-17)* | the 1.x line; started as the prebuilt OpenMANET image + our files, self-built since 1.3 |
+| 2.x | v2.0 內部試用 — 自編映像(Pi 4)+ 階段 1/2 | **we build the Pi 4 image ourselves, CI-reproduced**; App provisioning (#254) and the 608B (#255) in internal trial |
+| 3.x | v3.0 第一個對外版本 — 新 HAT、外殼、PTT、可鎖 | first release handed to others (#219 stage 3, #256): new HAT, enclosure, PTT; verified boot, immutable rootfs, lockable |
+| 4.x | v4.0 全隊管理與進階安全 | fleet management, fleet OTA, advanced security, TAK/ICS interop |
 
-- **+1 to MAJOR only when that milestone's full #75 gate checklist is met** and cut via CI — not when work on it merely starts. E.g. `2.0.0` waits for #108 (CI reproduce build, both boards) + #109 (kernel-config) + #110 + #113 (HIL) + the #73 gates.
+Milestones renamed and regrouped on 2026-11-17 (`docs/roadmap.md` § Roadmap v4); the Pi 3A+ variant was excluded the same day. The old names were `v2.0 Build gate — own image, both boards`, `v3.0 PROD — trusted, OTA, lockable` and `v4.0 Fleet & HW security`.
+
+- **+1 to MAJOR only when that milestone's full #75 gate checklist is met** and cut via CI — not when work on it merely starts. E.g. `2.0.0` waits for #108 (CI reproduce build, Pi 4) + #109 (kernel-config) + #110 + #113 (HIL) + the #73 gates, and the rest of the v2.0 milestone.
 - **MINOR** — a significant capability added within the current MAJOR line. **PATCH** — fixes/rebuilds.
 - A build's **target** milestone (what it is working toward) is recorded in `/etc/batman-build`'s `BATMAN_MILESTONE` field, so aspiration is captured without claiming the number early. Example: `1.3.0` carries `targets v2.0 Build-gate` because docker-in-image (#159) is build-gated, but the v2.0 gate is not yet met, so it stays on the 1.x line.
 
@@ -80,7 +83,8 @@ Existing GitHub release tags were named ad-hoc (by content/date) and do **not** 
 | 1.3.0 | **docker-in-image A/B card (#159)** | *(WSL dev; stored in Batman-P release `batman-1.3.0-wsl`, Batman-P#1)* | OpenMANET 1.8.0 |
 | 1.4.14 | flash-and-go rework (#216), Pi 4 only | *(WSL dev, Batman-P)* — stamp names wrong commits, real = feed `8685c5a` fw `397e313` | OpenMANET 1.8.0 |
 | 1.5.0 | **Pi 3A+ A/B (#209) + one tree for both boards**; Pi 4 gets the #209 shared A/B hardening + gpu-fw 1.20250915 | *(in validation, S5)* | OpenMANET 1.8.0 |
-| 2.0.0 | *(reserved)* v2.0 Build-gate reached | — | — |
+| 1.5.11 | OTS EUD gateway (#289) + one validation set (#290) + guardian/A-B/provisioning fixes; validated on Pi 4 only | [`v1.5.11`](https://github.com/winson3QQ/Batman/releases/tag/v1.5.11) | OpenMANET 1.8.0 |
+| 2.0.0 | *(reserved)* v2.0 內部試用 milestone reached | — | — |
 
 Refs #75 (SoT), #160 (provenance), #73 (dev-infra).
 
