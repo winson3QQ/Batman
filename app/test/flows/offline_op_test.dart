@@ -146,6 +146,11 @@ void main() {
       expect(reg.unsavedTodos, isEmpty);
     });
 
+    test('review B m2 / C m4: a judgement\'s todo names no page that does not exist', () {
+      expect(offlineTodoText(kJudgeName), isNot(contains('「$kJudgeName」')));
+      expect(offlineTodoText('移除隊員'), contains('「移除隊員」'));
+    });
+
     test('Lease.revoke without a sentence keeps the node todo (PR 1 behaviour)', () {
       final (reg, _, _, _, _) = setup();
       reg.acquire('建立網路', LeaseKind.session)!.revoke();

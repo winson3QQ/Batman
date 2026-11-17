@@ -267,8 +267,16 @@ class _CodeInputState extends State<CodeInput> {
       widget.onError('只有開發版可以貼上');
       return;
     }
-    final text = await _p.read() ?? '';
-    final cleared = await _p.clear();
+    // R4 (review B m4): cleared after every paste, also when reading it threw
+    String text;
+    String? cleared;
+    try {
+      text = await _p.read() ?? '';
+    } catch (_) {
+      text = '';
+    } finally {
+      cleared = await _p.clear();
+    }
     if (!mounted) return;
     if (cleared != null) widget.onError('清除剪貼簿失敗，請自己清掉');
     if (text.trim().isEmpty) return widget.onError('剪貼簿是空的');

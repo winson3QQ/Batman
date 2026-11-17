@@ -112,6 +112,24 @@ void main() {
       return w;
     }
 
+    testWidgets('review C m1: at the cap 7.10 is released at once (Back works)', (t) async {
+      final w = await start(t);
+      w.clock.advance(offlineCap);
+      await settle(t);
+      expect(find.text(kUnknownWait), findsOneWidget);
+      expect(t.widget<PopScope>(find.byType(PopScope).first).canPop, isTrue);
+      expect(find.byKey(const Key('judge-again')), findsOneWidget);
+    });
+
+    testWidgets('review B m3 / C m6: judged 結果不明 -> the approval can be pasted again, not a dead end', (t) async {
+      final w = await start(t);
+      rust.importState = ImportState.ready; // not imported, not a new invite
+      await capThenEnd(t, w);
+      expect(find.text('結果不明'), findsOneWidget);
+      expect(find.byKey(const Key('code-paste')), findsOneWidget);
+      expect(find.byKey(const Key('import-invite')), findsNothing);
+    });
+
     testWidgets('W-m1: prepared again WITHOUT the request; AlreadyImported -> 已經匯入, the leftover mpend removed',
         (t) async {
       final w = await start(t);
@@ -128,6 +146,7 @@ void main() {
       rust.importState = ImportState.needsNewInvite;
       await capThenEnd(t, w);
       expect(find.text('結果不明\n$kNeedNewInvite'), findsOneWidget);
+      expect(find.byKey(const Key('import-invite')), findsOneWidget, reason: 'review B m3: the way on');
       expect(w.disk, isNot(contains('rm mpend/nn')));
     });
   });
@@ -180,10 +199,60 @@ void main() {
     w.clock.advance(offlineCap);
     await settle(t);
     expect(find.text(kUnknownWait), findsOneWidget);
+    expect(t.widget<PopScope>(find.byType(PopScope).first).canPop, isTrue, reason: 'review C m1: 7.9 released too');
     // the write was already in flight before the cap: the store removes it once released (the lease check came first)
     gate.complete();
     await settle(t);
     expect(removed, ['mpend/nn']);
     expect(find.text('已經放棄'), findsOneWidget);
+  });
+
+  testWidgets('review C m1 / m2: 8.5 is released at the cap; not imported after all -> 結果不明, nothing listed', (t) async {
+    final w = World(['0000aa01'], {'0000aa01': 'nn'})..sealGate = Completer<void>();
+    await open(t, w, (a) => UpdateImportPage(app: a, ui: UiState(MemStore())));
+    await paste(t, 'UPDATE');
+    w.clock.advance(offlineCap);
+    await settle(t);
+    expect(t.widget<PopScope>(find.byType(PopScope).first).canPop, isTrue);
+    w.sealGate!.complete();
+    await settle(t);
+    expect(find.text('結果不明'), findsOneWidget);
+    expect(find.byKey(const Key('update-node-0000aa01')), findsNothing);
+  });
+
+  testWidgets('review C m2: 7.9 mpend still there after the revoke -> 結果不明, the page stays', (t) async {
+    final w = World([], {})..sealGate = Completer<void>();
+    final gate = Completer<void>();
+    final writer = RecordWriter(
+        w.reg,
+        RecordStore(
+          writeCas: (rel, g, s) async => g,
+          writeSealed: (rel, g, s) async {},
+          remove: (rel) async => gate.future, // hangs, then lands nothing
+          keepCopy: (rel) async => true,
+        ));
+    await open(t, w, (a) => MyRequestPage(app: a, ui: UiState(MemStore()), netId: 'nn'));
+    teamDepsOverride = (a) {
+      final d = w.deps(a);
+      return TeamDeps(
+          offline: OfflineDeps(acquire: d.offline.acquire, busyName: d.offline.busyName, writer: writer, after: w.clock.after),
+          platform: d.platform,
+          op: d.op,
+          publicKeys: d.publicKeys,
+          nodeIds: d.nodeIds,
+          send: d.send,
+          netVersion: d.netVersion,
+          mnetVersion: d.mnetVersion);
+    };
+    await t.tap(find.text('放棄申請'));
+    await settle(t);
+    await t.tap(find.text('放棄申請').last);
+    await settle(t);
+    w.clock.advance(offlineCap);
+    await settle(t);
+    gate.complete();
+    await settle(t);
+    expect(find.text('結果不明'), findsOneWidget);
+    expect(find.byType(MyRequestPage), findsOneWidget);
   });
 }

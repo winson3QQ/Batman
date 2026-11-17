@@ -117,9 +117,11 @@ class _RemoveConfirmPageState extends State<RemoveConfirmPage> {
   }
 
   Future<void> _commit() async {
+    if (_running) return; // review B m1: busy before the first await (a double tap starts nothing)
+    setState(() => _running = true);
     final p = teamDeps(a).platform;
     final keys = await teamDeps(a).publicKeys();
-    setState(() => _running = true);
+    if (!mounted) return;
     final r = await OfflineOp.run(teamDeps(a).offline, '移除隊員', (l, w) async {
       final (gen, plain) = await p.readRecord(rel); // R11: the commit is a CAS from what is on disk now
       if (plain == null) throw '[REQ_FAIL] 手機裡的網路紀錄打不開';
@@ -156,7 +158,7 @@ class _RemoveConfirmPageState extends State<RemoveConfirmPage> {
     a.ticks.removed(widget.netId);
     if (mounted) {
       await Navigator.of(context)
-          .pushReplacement(MaterialPageRoute(builder: (_) => RekeyPage(app: a, netId: widget.netId, removal: true)));
+          .pushReplacement(MaterialPageRoute(builder: (_) => RekeyPage(app: a, netId: widget.netId, removal: true)), result: true);
     }
   }
 
@@ -294,9 +296,11 @@ class _RekeyPageState extends State<RekeyPage> {
   }
 
   Future<void> _bundle(String owner) async {
+    if (_running) return; // review B m1: busy before the first await (a double tap starts nothing)
+    setState(() => _running = true);
     final p = teamDeps(a).platform;
     final keys = await teamDeps(a).publicKeys();
-    setState(() => _running = true);
+    if (!mounted) return;
     final r = await OfflineOp.run(teamDeps(a).offline, '產生更新包', (l, w) async {
       final (_, plain) = await p.readRecord(rel); // the record at the press (old _updates; R11)
       if (plain == null) throw '[REQ_FAIL] 手機裡的網路紀錄打不開';

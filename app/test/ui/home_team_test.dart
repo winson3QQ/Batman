@@ -73,6 +73,15 @@ void main() {
     await finish(t, a);
   });
 
+  testWidgets('review B m5: the field build does not open 7.9 from row 6', (t) async {
+    final a = await home(t, pend, nodeState: 1, dev: false);
+    await t.tap(find.widgetWithText(FilledButton, Btn.seeRequest));
+    await t.pumpAndSettle();
+    expect(find.byType(PickPendPage), findsNothing);
+    expect(find.byType(MyRequestPage), findsNothing);
+    await finish(t, a);
+  });
+
   testWidgets('row 6 with nothing: 加入隊長的網路 -> 7.8', (t) async {
     final a = await home(t, const NetSnapshot(), nodeState: 1);
     await t.tap(find.text(Btn.joinTeam));

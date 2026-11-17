@@ -98,7 +98,7 @@ class TeamDeps {
   final Future<List<String>> Function() nodeIds;
   final SendDeps Function(BuildContext context) send;
 
-  /// R19: a leader's version (net/<netId>) and a member's (an mnet rel), read from the record now
+  /// R19: a leader's version (`net/<netId>`) and a member's (an mnet rel), read from the record now
   final Future<VersionRead> Function(String netId) netVersion;
   final Future<VersionRead> Function(String rel) mnetVersion;
 

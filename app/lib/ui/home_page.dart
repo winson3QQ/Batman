@@ -186,7 +186,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _form(makes: true, node: h.node);
       case HomeAction.joinNetwork:
         _form(makes: false, node: h.node);
-      case HomeAction.seeRequest:
+      case HomeAction.seeRequest when widget.devTrust: // review B m5: 7.9 only in the dev build (F14)
         _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => PickPendPage(app: a, ui: widget.ui))));
       case HomeAction.joinTeam:
         _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => JoinTeamPage(app: a, ui: widget.ui))));
@@ -194,7 +194,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         a.link.refresh();
       case HomeAction.openBluetooth:
         _settings('bluetoothSettings', '請到手機的設定打開藍牙'); // §5.1 row 1: the system page; the status stream follows
-      case HomeAction.showList || HomeAction.none:
+      case HomeAction.showList || HomeAction.none || HomeAction.seeRequest:
         break;
     }
   }

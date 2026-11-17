@@ -360,6 +360,7 @@ class ImportApprovalPage extends StatefulWidget {
 }
 
 class _ImportApprovalPageState extends State<ImportApprovalPage> {
+  bool _needInvite = false; // R12 Y-m9: the judgement says a new invite is needed
   Future<void>? _settled; // R12: a revoked import
   bool _judging = false;
   void _join(BuildContext c, String id) => Navigator.of(c).pushReplacement(MaterialPageRoute(
@@ -490,10 +491,13 @@ class _ImportApprovalPageState extends State<ImportApprovalPage> {
           _line = '已經匯入';
         case OfflineDone(value: ImportState.needsNewInvite):
           _line = '結果不明\n$kNeedNewInvite';
+          _needInvite = true;
+          _prep = null; // review B m3 / C m6: not a dead end: paste again or get a new invite
         case OfflineBusy():
           _line = kUnknownWait;
         default:
           _line = '結果不明';
+          _prep = null; // the approval can be pasted again (the judgement re-runs the old checks)
       }
     });
   }
@@ -522,6 +526,14 @@ class _ImportApprovalPageState extends State<ImportApprovalPage> {
         foot: [
           if (_settled != null && !_imported)
             BatButton(kJudgeAgain, key: const Key('judge-again'), onPressed: _judging ? null : _judgeImport),
+          if (_needInvite && !_imported)
+            BatButton(
+              '收隊長的邀請',
+              key: const Key('import-invite'),
+              kind: BtnKind.secondary,
+              onPressed: () => Navigator.of(context)
+                  .pushReplacement(MaterialPageRoute(builder: (_) => JoinTeamPage(app: a, ui: widget.ui))),
+            ),
           if (_imported)
             BatButton(
               '讓這台加入隊長的網路',
@@ -590,6 +602,8 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
     } catch (e) {
       return setState(() => _line = '[REQ_FAIL] 更新包不能用：${e is String ? e : e.runtimeType}');
     }
+    if (_running) return; // review B m1: busy before the first await
+    setState(() => _running = true);
     final d = teamDeps(a);
     final keys = await d.publicKeys();
     final nodes = <Uint8List>[]; // rule 4: the own nodes = every node record of this phone (A-m12)
@@ -598,7 +612,7 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
       if (p != null) nodes.add(p);
     }
     final p = d.platform;
-    setState(() => _running = true);
+    if (!mounted) return;
     final r = await OfflineOp.run(d.offline, '匯入新密碼', (l, w) async {
       Uint8List? z;
       try {

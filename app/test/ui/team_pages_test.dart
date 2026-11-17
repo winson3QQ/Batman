@@ -14,6 +14,7 @@ import 'package:batman_app/ui/team_pages.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'dart:async' show Completer;
 
 import 'join_pages_test.dart' show TeamRust, World, open, paste, platformCalls, settle, step;
 import 'pages_test.dart' show app, host;
@@ -162,7 +163,7 @@ void main() {
       await open(t, leader([], {}), (a) => MembersPage(app: a, netId: 'nn'));
       final rows = t.widgetList(
         find.byWidgetPredicate(
-          (w) => w.key is ValueKey<String> && '${(w.key as ValueKey<String>).value}'.startsWith('person-'),
+          (w) => w.key is ValueKey<String> && (w.key as ValueKey<String>).value.startsWith('person-'),
         ),
       );
       expect(rows.map((w) => (w.key as ValueKey<String>).value), ['person-$me', 'person-$bob', 'person-$bob2']);
@@ -380,6 +381,40 @@ void main() {
       w.readGate!.complete();
       await settle(t);
       expect(t.takeException(), isNull);
+    });
+
+    testWidgets('review B m1: a double tap on 移除並換密碼 starts one removal, no false busy line', (t) async {
+      rust.people = [person(me, '隊長', 'f0', self: true), person(bob, '小明', 'a1')];
+      final w = leader([], {})..sealGate = Completer<void>();
+      await open(t, w, (a) => RemoveConfirmPage(app: a, netId: 'nn', person: rust.people[1], owner: bob, node: ''));
+      await t.tap(find.byKey(const Key('remove-tick')));
+      await settle(t);
+      await t.tap(find.byKey(const Key('remove-go')));
+      await t.tap(find.byKey(const Key('remove-go')), warnIfMissed: false);
+      await settle(t);
+      expect(rust.ops.where((o) => o.startsWith('remove')), hasLength(1));
+      expect(find.textContaining('另一個操作還在進行'), findsNothing);
+      w.sealGate!.complete();
+      await settle(t);
+    });
+
+    testWidgets('review C m7: after a removal, back goes to the list, not to the removed person', (t) async {
+      rust.people = [person(me, '隊長', 'f0', self: true), person(bob, '小明', 'a1')];
+      final w = leader([], {});
+      await open(t, w, (a) => MembersPage(app: a, netId: 'nn'));
+      await t.tap(find.byKey(const Key('person-$bob')));
+      await settle(t);
+      await t.tap(find.text('移除小明，全隊換密碼'));
+      await settle(t);
+      await t.tap(find.byKey(const Key('remove-tick')));
+      await settle(t);
+      await t.tap(find.byKey(const Key('remove-go')));
+      await settle(t);
+      expect(find.byType(RekeyPage), findsOneWidget);
+      await t.state<NavigatorState>(find.byType(Navigator)).maybePop();
+      await settle(t);
+      expect(find.byType(PersonPage), findsNothing);
+      expect(find.byType(MembersPage), findsOneWidget);
     });
   });
 }

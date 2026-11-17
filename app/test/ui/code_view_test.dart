@@ -235,6 +235,19 @@ void main() {
       return (got, errs);
     }
 
+    testWidgets('review B m4: reading the clipboard throws -> still cleared (R4), nothing taken', (t) async {
+      tall(t);
+      final f = FakeCode();
+      final texts = <String>[];
+      final p = CodePlatform(
+          qrMatrix: f.p.qrMatrix, copy: f.p.copy, clear: f.p.clear, read: () async => throw StateError('no clipboard'), scan: f.p.scan);
+      await t.pumpWidget(host(CodeInput(devTrust: true, onText: texts.add, onError: (_) {}, platform: p)));
+      await t.tap(find.byKey(const Key('code-paste')));
+      await t.pumpAndSettle();
+      expect(f.clears, 1);
+      expect(texts, isEmpty);
+    });
+
     testWidgets('paste: text through, clipboard cleared', (t) async {
       final f = FakeCode()..clip = 'A2 01 ff';
       final (got, errs) = await run(t, f, dev: true, tap: Btn.pasteText);

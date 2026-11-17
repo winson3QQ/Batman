@@ -76,7 +76,10 @@ class OfflineUnknown<T> extends OfflineReply<T> {
 const offlineCap = Duration(seconds: 60);
 
 /// R12: the home todo of a revoked offline operation (a whole sentence; it touches no node).
-String offlineTodoText(String name) => '這個操作沒有在時間內結束，app 已經停止它。請重新打開「$name」那一頁看結果，需要的話再做一次。';
+/// A judgement (R12) has no page of its own (review B m2 / C m4): it names the page it came from instead.
+String offlineTodoText(String name) => name == kJudgeName
+    ? '確認上一個操作的結果沒有在時間內結束，app 已經停止它。請重新打開剛才那一頁看結果，需要的話再做一次。'
+    : '這個操作沒有在時間內結束，app 已經停止它。請重新打開「$name」那一頁看結果，需要的話再做一次。';
 
 /// The text a failure shows: Rust's refusal verbatim, the old console's lines for the rest (R10).
 String offlineFailLine(Object e) => switch (e) {

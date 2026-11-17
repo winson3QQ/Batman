@@ -1188,6 +1188,7 @@ AC：APPROVE-WITH-CHANGES，0 BLOCKER / 2 MAJOR / 8 MINOR。AD：APPROVE-WITH-CH
 | B12 | 2.7 第 1 項：同名且指紋也相同時加「請用加入時間分辨」 | 改成「指紋也相同：兩組都移除，再重新邀請要留的那位」 | app 沒有任何地方顯示加入時間，原句叫隊長做做不到的事（審查 A m8）；改成畫面上做得到的動作，不加新機制 |
 | B13 | R12：判斷時「拿新的佔用」 | 判斷用一個名為「確認結果」的 `OfflineOp`（`judgeAfterRevoke`），等被收回的 `work` 真的結束才開始 | 新佔用要有名字（會進紀錄與待辦，R10 要常數）；用同一套 `OfflineOp` 就有 busy／失敗／收回的同樣處理 |
 | B14 | m6：舊程式的 `staleRecordLine` | `offline_op.dart` 另訂 `kStaleRecordLine`（同一句，owner.rs:65） | nodes.dart 會在 PR 6 刪除，新頁面不 import 它 |
+| B15 | R2：每個模組是整數個實體像素 | 模組大小是整數像素、原點對齊 QR 自己的框（`LayoutBuilder` 內），沒有對齊整個畫面的實體像素網格（審查 C m8） | 原點偏半個像素時，邊緣可能糊一點。R-8 是把碼顯示在電腦螢幕上量的，不是用 app 這套畫法，所以**沒有證據**；**真機場次要在 S20 上用 app 畫的 QR 實測**（含 v31 / v35 / v40 的大碼），有影響才改成用全域座標對齊 |
 
 另外發現、已照計畫修正的實作錯誤（不是偏差）：
 - 8.4 的更新包原本畫了 QR，違反 T10（更新包只有文字）→ `CodeView(qr: false)`。

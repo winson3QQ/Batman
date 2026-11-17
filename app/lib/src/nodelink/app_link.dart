@@ -24,6 +24,15 @@ import 'node_link.dart';
 import 'prober.dart';
 import 'record_writer.dart';
 
+/// #329 PR 5 R6–R8: a sealed record opened for the hint: none on disk -> null; a key error is thrown on (review A m1 /
+/// R8: the hint keeps its last value), never read as 「no record」.
+@visibleForTesting
+Future<Uint8List?> openSealedRecord(MethodChannel platform, String records, String rel) async {
+  final sealed = await storeReadSealed(dir: records, rel: rel);
+  if (sealed == null) return null;
+  return platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad});
+}
+
 class AppLink {
   AppLink._(this.ble, this.reg, this.gate, this.link, this.prober, this.writer, this.records, this.nets, this.console);
 
@@ -97,12 +106,7 @@ class AppLink {
     // X26: the key gate refused a key use -> 2.4 until the app is opened again (review pr1 B-M5)
     void keyError(Object e) => keyErrorToRadio(e, _one?.link);
     // #329 PR 5 R6–R8: the remove-member §3.5 hint, worked out on the read of the open node page (dev builds only)
-    Future<Uint8List?> openNet(String rel) async {
-      final sealed = await storeReadSealed(dir: records, rel: rel);
-      if (sealed == null) return null;
-      // review A m1 / R8: a key error is thrown on (the hint keeps its last value), never read as 「no record」
-      return platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad});
-    }
+    Future<Uint8List?> openNet(String rel) => openSealedRecord(platform, records, rel);
 
     final hint = HintSource(
       wanted: (id) {

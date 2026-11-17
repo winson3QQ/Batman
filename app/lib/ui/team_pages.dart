@@ -150,8 +150,14 @@ class PersonPage extends StatelessWidget {
     final t = BatTheme.of(context);
     final note = TextStyle(fontSize: Fs.note, height: 1.55, color: t.sub);
     final same = sameNameLines(person, all);
-    void go(String p, String n) => Navigator.of(context)
-        .push(MaterialPageRoute(builder: (_) => RemoveConfirmPage(app: app, netId: netId, person: person, node: n, owner: p, same: same)));
+    // review C m7: once 8.3 has removed (it hands over to 8.4 with `true`), this page is taken out from under 8.4: back
+    // goes to the list, never to a person or node that is gone
+    Future<void> go(String p, String n) async {
+      final route = ModalRoute.of(context);
+      final removed = await Navigator.of(context).push<Object?>(MaterialPageRoute(
+          builder: (_) => RemoveConfirmPage(app: app, netId: netId, person: person, node: n, owner: p, same: same)));
+      if (removed == true && route != null && route.isActive && context.mounted) Navigator.of(context).removeRoute(route);
+    }
     return BatPage(title: person.isSelf ? '我（隊長）' : person.name, body: [
       Text('指紋 ${person.fpr}', style: note),
       for (final s in same) Text(s, key: const Key('same-name'), style: note),
@@ -272,6 +278,7 @@ class _RequestPageState extends State<RequestPage> {
     var previousOk = false;
     if (jr.previous.isNotEmpty) {
       previousOk = await askYesNo(context, '這台或這個人之前被移出過', jr.previous, '確定，繼續核對', '取消');
+      if (!mounted) return; // review B m1
       if (!previousOk) return setState(() => _line = '[REQ_FAIL] 沒有同意（之前被移出過）');
     }
     if (!mounted) return;
