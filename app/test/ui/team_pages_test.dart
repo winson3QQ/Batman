@@ -175,6 +175,10 @@ void main() {
 
     testWidgets('after a removal in this run: 還有 N 位隊員沒交更新包 until each is ticked', (t) async {
       rust.people = [person(me, '隊長', 'f0', self: true), person(bob, '小明', 'a1'), person(bob2, '小華', 'b2')];
+      rust.recipients = [
+        const RecipientView(owner: bob, fpr: 'a1', name: '小明', nodes: [], note: ''),
+        const RecipientView(owner: bob2, fpr: 'b2', name: '小華', nodes: [], note: ''),
+      ];
       final a = await open(t, leader([], {}), (a) => MembersPage(app: a, netId: 'nn'));
       expect(find.textContaining('沒交更新包'), findsNothing);
       a.ticks.removed('nn');
@@ -184,6 +188,41 @@ void main() {
       a.ticks.tick('nn', bob2, true);
       await settle(t);
       expect(find.textContaining('沒交更新包'), findsNothing);
+    });
+
+    testWidgets('device session 2026-11-17: a member 8.4 does not list (admitted after the removal) is not counted',
+        (t) async {
+      rust.people = [person(me, '隊長', 'f0', self: true), person(bob, '小明', 'a1'), person(bob2, '小華', 'b2')];
+      rust.recipients = [const RecipientView(owner: bob, fpr: 'a1', name: '小明', nodes: [], note: '')];
+      final a = await open(t, leader([], {}), (a) => MembersPage(app: a, netId: 'nn'));
+      a.ticks.removed('nn');
+      await settle(t);
+      expect(find.text('還有 1 位隊員沒交更新包'), findsOneWidget, reason: 'bob2 needs no bundle: 8.4 says so too');
+      rust.recipients = [];
+      await t.tap(find.text('產生更新包'));
+      await settle(t);
+      await t.pageBack();
+      await settle(t);
+      expect(find.textContaining('沒交更新包'), findsNothing, reason: 'nobody 8.4 lists -> no line');
+    });
+
+    testWidgets('device session 2026-11-17: 邀請 -> 下一步：收隊員的申請 -> back: 8.1 re-reads the record then', (t) async {
+      rust.people = [person(me, '隊長', 'f0', self: true)];
+      await open(t, leader([], {}), (a) => MembersPage(app: a, netId: 'nn'));
+      await t.tap(find.text('邀請隊員'));
+      await settle(t);
+      await t.tap(find.text('不在旁邊'));
+      await settle(t);
+      expect(find.byType(InviteCodePage), findsOneWidget);
+      await t.tap(find.text('下一步：收隊員的申請'));
+      await settle(t);
+      expect(find.byType(RequestPage), findsOneWidget);
+      rust.people = [person(me, '隊長', 'f0', self: true), person(bob, 'member2', 'ceb661cd')]; // approved meanwhile
+      await t.pageBack();
+      await settle(t);
+      expect(find.byType(MembersPage), findsOneWidget);
+      expect(find.byType(InviteCodePage), findsNothing);
+      expect(find.byKey(const Key('person-$bob')), findsOneWidget, reason: 'the page above ended: 8.1 reads again');
     });
   });
 
