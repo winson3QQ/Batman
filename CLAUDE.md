@@ -27,6 +27,13 @@
 - Pi 3 沒有 EEPROM:firmware 缺檔或 `autoboot.txt` 壞掉都會卡死。p7 只能經由 `batman-slot` 寫入。
 - 新功能的回歸測試加進 `scripts/daily-validation.sh`;因 SoC 本來就不適用的 suite 用 `na`,不要用 SKIP。
 
+## 驗證(#290,使用者 2026-10-14 / 10-15)
+- **驗證的東西只有一套,只在 main**:`scripts/daily-validation.sh`、`scripts/dv/*`、節點端測試工具、CI lint(`check-*.sh`、`test-*.sh`)及其資料(allowlist、`rundir-paths.txt`、known-failures)只能經由**先進 main 的 harness PR** 修改。產品 PR 不碰它們;唯一例外是刪掉產品 PR 自己移除的檔案在 allowlist / 路徑表裡的條目,兩邊 PR body 都要寫明。
+- **新增或修改的測項要先證明自己**:PR 附「舊版 FAIL(負對照)」與「新版 PASS」兩個結果。
+- **小修正**用它自己的回歸測項(含負對照)加 OTA / A-B 基本測項驗證,PR body 寫明跑了哪些、為什麼夠;**全套**每次出貨跑一次(幾個 issue 合併 → pin-bump build → OTA → 從 main 跑全套)。出貨判定只認從 main(或即將成為 main 的 harness PR head)跑的結果,報告要寫 harness commit。
+- `scripts/dv-preflight.sh` 不過就不跑;`DV_PREFLIGHT=off` 只給 harness 自測,不能當結果。
+- `scripts/validation-known-failures.txt` 每條要有 issue 與到期日;延期要寫理由,移除要附該測項在新版 PASS。
+
 ## 流程
 - 動手前先給計畫;設計(feat 與 fix 皆同)要先過對抗式 review,必寫擁有權/介面契約/生命週期矩陣/依賴證據/安全(威脅模型),reviewer 審整份——見 `docs/design/REVIEW.md`(交給每位獨立 reviewer);PR 附實測結果(哪台、做什麼、原始輸出;沒測到的要寫出來);PR 由使用者 merge。
 - 回覆使用繁體中文。
