@@ -1,5 +1,14 @@
 name: ci
-on: [push, pull_request]
+# push: main only (a branch is checked once, by its pull_request run, not twice).
+# paths-ignore: a change that touches only markdown or docs/images skips these jobs. Not all of
+# docs/: vectors-219 reads docs/design/219-protocol.cddl. leak-canary and gitleaks still run on
+# every push. main has no required status checks, so a skipped run does not leave a PR waiting.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md', 'docs/images/**']
+  pull_request:
+    paths-ignore: ['**/*.md', 'docs/images/**']
 permissions:
   contents: read
 jobs:
