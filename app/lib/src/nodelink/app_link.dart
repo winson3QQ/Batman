@@ -33,6 +33,21 @@ Future<Uint8List?> openSealedRecord(MethodChannel platform, String records, Stri
   return platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad});
 }
 
+/// A23 (design §10, §4.3.3-6): the node records under [records] with their file's last write time, which orders them
+/// (newest first). The store writes a temp file and renames it (store.rs:106-127), so each write is a new file with a
+/// new time; an unreadable time counts as the oldest (0).
+@visibleForTesting
+List<Rec> recordsByWrite(String records, List<String> ids) => [
+      for (final id in ids)
+        Rec(id, () {
+          try {
+            return File('$records/node/$id').lastModifiedSync().millisecondsSinceEpoch;
+          } catch (_) {
+            return 0;
+          }
+        }())
+    ];
+
 class AppLink {
   AppLink._(this.ble, this.reg, this.gate, this.link, this.prober, this.writer, this.records, this.nets, this.console);
 
@@ -125,20 +140,7 @@ class AppLink {
     // #329 PR 3 §2.1: a flow's login under its lease, same keys and rules, handing the session over
     final handoff =
         HandoffProber(openRecord: openRecord, ownerPub: ownerPub, signOwner: signOwner, log: log, keyError: keyError);
-    Future<List<Rec>> readRecords() async {
-      final ids = await listNodes(dir: records);
-      // A23: the record file's last write orders the records (newest first); unreadable time = oldest
-      return [
-        for (final id in ids)
-          Rec(id, () {
-            try {
-              return File('$records/node/$id').lastModifiedSync().millisecondsSinceEpoch;
-            } catch (_) {
-              return 0;
-            }
-          }())
-      ];
-    }
+    Future<List<Rec>> readRecords() async => recordsByWrite(records, await listNodes(dir: records));
 
     final link = NodeLink(
       core: NodeLinkCore(const []),

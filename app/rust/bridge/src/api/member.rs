@@ -25,7 +25,13 @@ pub(crate) fn dev_gate() -> Result<(), String> {
 /// Why something of a remote invite stopped, in words (codes / reasons only, never a secret).
 pub(crate) fn invite_err(e: &Error) -> String {
     match e {
-        Error::Format(w) => format!("這不是正確的碼（{w}）"),
+        // device session 2026-11-17: the reason was shown in English (「another kind of qr-object」 when an invite was
+        // pasted into 7.4); the known reasons in words, anything else without the internal word
+        Error::Format(w) => match *w {
+            "another kind of qr-object" => "這不是正確的碼（這是另一種碼，例如把邀請碼貼到了收申請）".into(),
+            "not hex" | "not a qr-object" => "這不是正確的碼（內容不完整或不是 App 產生的碼，請重新複製）".into(),
+            _ => "這不是正確的碼".into(),
+        },
         Error::Invalid(w) => format!("內容驗證沒有通過（{w}）"),
         Error::NotApplied => "這個網路還沒確認建立完成，請先在建立網路的節點按「檢查網路」".into(),
         Error::NotAdmin => "這個網路不是這支手機建立的（手機不是它的隊長）".into(),
@@ -391,6 +397,20 @@ mod tests {
         assert_eq!(invite_err(&Error::TooOld), "這支手機的網路資料太舊");
         assert!(invite_err(&Error::SameVersionDifferent).starts_with("同編號的不同網路"));
         assert_eq!(invite_err(&Error::PreviousNode), "先完成或忘記前一台");
+    }
+
+    // device session 2026-11-17: a code of another kind (an invite pasted into 7.4) says so in words, no English
+    #[test]
+    fn format_reasons_are_words() {
+        let other = invite::qr_hex(invite::QR_INVITE, b"x");
+        let e = invite::qr_object(&other, invite::QR_JOINREQ).unwrap_err();
+        let t = invite_err(&e);
+        assert_eq!(t, "這不是正確的碼（這是另一種碼，例如把邀請碼貼到了收申請）");
+        for w in ["not hex", "not a qr-object", "approval keys", "x"] {
+            let t = invite_err(&Error::Format(w));
+            assert!(t.starts_with("這不是正確的碼"), "{t}");
+            assert!(!t.contains(w) && !t.contains("qr-object") && !t.contains("hex"), "the internal word in [{t}]");
+        }
     }
 
     // #329 PR 5 V-M1 / R19: the member's 「這支手機是第 N 版」 is MNet key 2 (what an import sets to the update's `to`)
