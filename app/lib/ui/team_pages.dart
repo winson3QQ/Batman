@@ -52,7 +52,7 @@ class MembersPage extends StatefulWidget {
 class _MembersPageState extends State<MembersPage> {
   VersionRead _ver = VersionRead.pending; // R19
   List<PersonView>? _people;
-  Set<String> _need = const {}; // the owners 8.4 lists (netRecipients): the 8.1 count is theirs, never every member
+  Set<String>? _need; // the owners 8.4 lists (netRecipients): the 8.1 count is theirs; null = unreadable, count all
   String _line = '';
 
   AppLink get a => widget.app;
@@ -91,8 +91,12 @@ class _MembersPageState extends State<MembersPage> {
     if (plain == null) return setState(() => _line = '手機裡的網路紀錄打不開');
     try {
       final p = netPeople(recordPlain: plain, ownerPub: keys['owner']!);
-      // device session 2026-11-17: a member admitted after the removal (at the new version) needs no bundle, as 8.4 says
-      final need = {for (final r in netRecipients(recordPlain: plain, ownerPub: keys['owner']!)) r.owner};
+      // device session 2026-11-17: a member admitted after the removal (at the new version) needs no bundle, as 8.4 says.
+      // review c15a92d G-3 / H-1: recipients unreadable -> the list still shows, every unticked member is counted
+      Set<String>? need;
+      try {
+        need = {for (final r in netRecipients(recordPlain: plain, ownerPub: keys['owner']!)) r.owner};
+      } catch (_) {}
       setState(() {
         _people = [...p.where((x) => x.isSelf), ...p.where((x) => !x.isSelf)];
         _need = need;
@@ -112,7 +116,7 @@ class _MembersPageState extends State<MembersPage> {
     final t = BatTheme.of(context);
     final note = TextStyle(fontSize: Fs.note, height: 1.55, color: t.sub);
     final people = _people;
-    final left = people == null ? 0 : people.where((p) => !p.isSelf && _need.contains(p.owner) && !a.ticks.handed(widget.netId, p.owner)).length;
+    final left = people == null ? 0 : people.where((p) => !p.isSelf && (_need?.contains(p.owner) ?? true) && !a.ticks.handed(widget.netId, p.owner)).length;
     return BatPage(title: '隊員名單', body: [
       Text(leaderVersionLine(_ver), key: const Key('net-version'), style: TextStyle(fontSize: Fs.body, color: t.ink)),
       if (a.ticks.removedThisRun(widget.netId) && left > 0)
@@ -216,11 +220,16 @@ class _InvitePageState extends State<InvitePage> {
     if (!mounted) return;
     setState(() => _running = false);
     if (r case OfflineDone(:final value) when value.hex.isNotEmpty) {
-      // push, not pushReplacement (as add_pages.dart): a replaced route ends at once and 8.1 would re-read before the
-      // member is approved (device session 2026-11-17: member2 missing from 8.1 after 7.6)
-      await Navigator.of(context)
-          .push(MaterialPageRoute(builder: (_) => InviteCodePage(app: a, netId: widget.netId, hex: value.hex, inPerson: inPerson)));
-      if (mounted) Navigator.of(context).pop();
+      // 7.1 owns the chain 7.3 -> 7.4 (device session 2026-11-17: with pushReplacement 8.1's push ended at once and it
+      // re-read before the member was approved). 7.3 closes itself before 7.4 opens (R4's reminder and its secure
+      // screen end there, as before); this page leaves last, by its own route (review c15a92d G-1 / H-2 / H-3)
+      final route = ModalRoute.of(context);
+      final next = await Navigator.of(context)
+          .push<bool>(MaterialPageRoute(builder: (_) => InviteCodePage(app: a, netId: widget.netId, hex: value.hex, inPerson: inPerson)));
+      if (next == true && mounted) {
+        await Navigator.of(context).push(MaterialPageRoute(builder: (_) => RequestPage(app: a, netId: widget.netId)));
+      }
+      if (route != null && route.isActive && mounted) Navigator.of(context).removeRoute(route);
       return;
     }
     setState(() => _line = r is OfflineDone<NetOpEnd> ? screenText(r.value.detail) : offlineLine(r));
@@ -253,10 +262,9 @@ class InviteCodePage extends StatelessWidget {
         Text(inPerson ? '請隊員掃這個畫面' : '用訊息把文字傳給隊員，再用電話核對確認碼'),
         CodeView(hex: hex),
       ], foot: [
-        BatButton('下一步：收隊員的申請', onPressed: () async {
-          // push, not pushReplacement: 8.1 re-reads only when the whole invite -> request chain is over
-          await Navigator.of(context).push(MaterialPageRoute(builder: (_) => RequestPage(app: app, netId: netId)));
-          if (context.mounted) Navigator.of(context).pop();
+        BatButton('下一步：收隊員的申請', onPressed: () {
+          // 7.1 opens 7.4 once this page is gone; a second tap while it closes pops nothing more
+          if (ModalRoute.of(context)?.isCurrent ?? false) Navigator.of(context).pop(true);
         }),
       ]);
 }

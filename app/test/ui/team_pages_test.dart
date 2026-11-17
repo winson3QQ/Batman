@@ -45,6 +45,7 @@ class FakeNetOp implements NetOp, RemoveOp {
 class LeadRust extends TeamRust {
   List<PersonView> people = [];
   List<RecipientView> recipients = [];
+  bool recipientsThrow = false;
   List<OwnNodeView> own = [];
   String previous = '';
   List<NodeInfo>? reads;
@@ -54,7 +55,7 @@ class LeadRust extends TeamRust {
   List<PersonView> crateApiRekeyNetPeople({required List<int> recordPlain, required List<int> ownerPub}) => people;
   @override
   List<RecipientView> crateApiRekeyNetRecipients({required List<int> recordPlain, required List<int> ownerPub}) =>
-      recipients;
+      recipientsThrow ? throw '紀錄壞了' : recipients;
   @override
   List<OwnNodeView> crateApiRekeyRemoveOwnNodes({
     required List<int> recordPlain,
@@ -147,6 +148,7 @@ void main() {
     rust
       ..people = []
       ..recipients = []
+      ..recipientsThrow = false
       ..own = []
       ..previous = ''
       ..reads = null
@@ -223,6 +225,51 @@ void main() {
       expect(find.byType(MembersPage), findsOneWidget);
       expect(find.byType(InviteCodePage), findsNothing);
       expect(find.byKey(const Key('person-$bob')), findsOneWidget, reason: 'the page above ended: 8.1 reads again');
+    });
+
+    testWidgets('review c15a92d H-4: back on 7.3 -> 8.1, read again', (t) async {
+      rust.people = [person(me, '隊長', 'f0', self: true)];
+      await open(t, leader([], {}), (a) => MembersPage(app: a, netId: 'nn'));
+      await t.tap(find.text('邀請隊員'));
+      await settle(t);
+      await t.tap(find.text('在旁邊'));
+      await settle(t);
+      rust.people = [person(me, '隊長', 'f0', self: true), person(bob, 'member2', 'ceb661cd')];
+      await t.pageBack();
+      await settle(t);
+      expect(find.byType(InvitePage), findsNothing);
+      expect(find.byKey(const Key('person-$bob')), findsOneWidget);
+    });
+
+    testWidgets('review c15a92d G-1 / H-2: R4 reminds when 7.3 is left for 7.4, not later on 8.1', (t) async {
+      rust.people = [person(me, '隊長', 'f0', self: true)];
+      await open(t, leader([], {}), (a) => MembersPage(app: a, netId: 'nn'));
+      await t.tap(find.text('邀請隊員'));
+      await settle(t);
+      await t.tap(find.text('不在旁邊'));
+      await settle(t);
+      await t.tap(find.text('複製文字'));
+      await settle(t);
+      await t.tap(find.text('下一步：收隊員的申請'));
+      await t.tap(find.text('下一步：收隊員的申請'), warnIfMissed: false); // a second tap while 7.3 closes
+      await settle(t);
+      expect(find.byType(RequestPage), findsOneWidget);
+      expect(find.byType(InviteCodePage), findsNothing, reason: '7.3 is closed, its secure screen with it');
+      expect(find.text('剛才複製的碼還在剪貼簿'), findsOneWidget);
+      await t.pageBack();
+      await settle(t);
+      expect(find.byType(MembersPage), findsOneWidget, reason: 'the second tap popped nothing more');
+    });
+
+    testWidgets('review c15a92d G-3 / H-1: recipients unreadable -> the list still shows, every unticked one counted',
+        (t) async {
+      rust.people = [person(me, '隊長', 'f0', self: true), person(bob, '小明', 'a1')];
+      rust.recipientsThrow = true;
+      final a = await open(t, leader([], {}), (a) => MembersPage(app: a, netId: 'nn'));
+      a.ticks.removed('nn');
+      await settle(t);
+      expect(find.byKey(const Key('person-$bob')), findsOneWidget);
+      expect(find.text('還有 1 位隊員沒交更新包'), findsOneWidget);
     });
   });
 
