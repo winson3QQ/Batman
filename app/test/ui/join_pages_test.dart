@@ -60,6 +60,7 @@ class TeamRust extends FakeRust {
   ImportState importState = ImportState.ready;
   UpdateState updateState = UpdateState.advance;
   final seen = <String>[];
+  final preparePend = <bool>[]; // R12 W-m1: whether each prepare had the request
   List<int>? z; // the z handed to Rust (the page's own copy: zeroed after, B-m5)
   Object? approveThrows; // T-P5-L: Rust refuses the approval with this
 
@@ -76,6 +77,7 @@ class TeamRust extends FakeRust {
   ImportPrep crateApiMemberMemberImportPrepare(
       {required String hex, required BigInt pendGen, Uint8List? pendPlain, Uint8List? mnetPlain, required bool replace}) {
     seen.add('prepare replace=$replace');
+    preparePend.add(pendPlain != null);
     return ImportPrep(
         state: replace ? ImportState.ready : importState,
         sas: '4821',
@@ -193,6 +195,9 @@ class World {
   /// R19: the version each record holds (rel -> version); missing = not readable
   final versions = <String, VersionRead>{};
   final versionReads = <String>[];
+  final leaseNames = <String>[]; // every session lease the pages asked for (by name)
+  Completer<void>? readGate;
+  Completer<void>? sealGate; // holds every seal while not completed
   Completer<void>? versionGate; // holds every version read while not completed
   Future<VersionRead> version(String rel) async {
     versionReads.add(rel);
@@ -207,7 +212,7 @@ class World {
   late final List<String> disk;
 
   late final OpDeps op = OpDeps(
-    acquire: (name) async => reg.acquire(name, LeaseKind.session),
+    acquire: (name) async => (leaseNames..add(name), reg.acquire(name, LeaseKind.session)).$2,
     busyName: () => reg.current?.name ?? '',
     login: (lease, id) async {
       log.add('login $id');
@@ -225,14 +230,20 @@ class World {
             writer: writer,
             after: clock.after),
         platform: OfflinePlatform(
-          seal: (plain, aad) async => Uint8List.fromList([9, ...plain]),
+          seal: (plain, aad) async {
+            await sealGate?.future; // R12 tests: a seal that hangs past the 60 s cap
+            return Uint8List.fromList([9, ...plain]);
+          },
           signAdmin: (input) async => Uint8List(1),
           ecdh: (peer) async {
             final z = Uint8List.fromList(List.filled(32, 7));
             ecdh.add(z);
             return z;
           },
-          readRecord: (rel) async => (BigInt.one, records[rel]),
+          readRecord: (rel) async {
+            await readGate?.future; // holds every record read while not completed
+            return (BigInt.one, records[rel]);
+          },
           keyError: (e) {},
         ),
         op: op,

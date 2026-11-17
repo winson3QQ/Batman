@@ -1,5 +1,7 @@
 // #329 PR 5 plan v16 §2.7 / §6 step 7: the leader's pages (8.1, 7.1, 7.3-7.7, 8.2-8.4) on join_pages_test's fakes
 // (a console per login, the real lease registry and RecordWriter, Rust's pure functions and opaque ops faked).
+import 'dart:async';
+
 import 'package:batman_app/src/flows/rekey_send.dart' show notThisNodeLine;
 import 'package:batman_app/src/nodelink/lease.dart' show LeaseKind;
 import 'package:batman_app/src/rust/api/member.dart';
@@ -14,6 +16,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'join_pages_test.dart' show TeamRust, World, open, paste, platformCalls, settle, step;
+import 'pages_test.dart' show app, host;
+import 'package:batman_app/ui/team_deps.dart' show teamDepsOverride;
 
 const me = 'OWNERME', bob = 'OWNERBOB', bob2 = 'OWNERBOB2';
 
@@ -164,7 +168,7 @@ void main() {
       expect(rows.map((w) => (w.key as ValueKey<String>).value), ['person-$me', 'person-$bob', 'person-$bob2']);
       expect(find.textContaining('我（隊長）'), findsOneWidget);
       expect(find.textContaining('…BB02（加入中）'), findsOneWidget);
-      expect(find.textContaining('另有同名的一組：aaaa1111（要一起移除得各按一次）。指紋也相同，請用加入時間分辨'), findsNWidgets(2));
+      expect(find.textContaining('另有同名的一組：aaaa1111（要一起移除得各按一次）。指紋也相同：兩組都移除，再重新邀請要留的那位'), findsNWidgets(2));
       expect(find.byKey(const Key('members-rule')), findsOneWidget);
     });
 
@@ -301,6 +305,7 @@ void main() {
         (a) => RemoveConfirmPage(app: a, netId: 'nn', person: p, owner: bob, node: '', same: const ['另有同名的一組：x']),
       );
       expect(w.log.where((l) => l.startsWith('login')), ['login 0000aa01', 'login 0000bb02']);
+      expect(w.leaseNames.take(2), ['讀節點網路', '讀節點網路'], reason: 'review A m9: a read is not named as the removal');
       expect(find.textContaining('節點 …aa01 讀不到（不檢查這台）'), findsOneWidget);
       expect(rust.reads!.map((r) => '${r.dacHash}:${r.info.length}'), ['d1:0', 'd2:2', 'd3:0'], reason: 'AA-m4');
       expect(find.byKey(const Key('remove-same')), findsOneWidget, reason: '8.3 step 4');
@@ -351,6 +356,30 @@ void main() {
       expect(find.byType(RekeyResult), findsOneWidget);
       expect(find.byKey(const Key('rekey-tick')), findsOneWidget);
       expect(notThisNodeLine, isNotEmpty);
+    });
+
+    testWidgets('review A m3 / X-m1: the first candidate out of range -> the next one is still tried', (t) async {
+      rust.people = [
+        person(me, '隊長', 'f0', self: true, nodes: [pnode('AA01', 'dA')]),
+      ];
+      final w = leader(['0000aa01', '9999aa01'], {'9999aa01': 'nn'}) // 0000aa01: its login fails
+        ..dacs['9999aa01'] = 'dA';
+      await open(t, w, (a) => RekeyPage(app: a, netId: 'nn'));
+      await t.tap(find.descendant(of: find.byKey(const Key('own-dA')), matching: find.text('送出')));
+      await settle(t);
+      expect(w.log.where((l) => l.startsWith('send')), ['send 9999aa01 net/nn member=false']);
+    });
+
+    testWidgets('review A m2: 8.3 closed before its record read returns -> no setState on a page that is gone', (t) async {
+      final w = World([], {})..readGate = Completer<void>(); // no net/nn; the read waits
+      teamDepsOverride = w.deps;
+      addTearDown(() => teamDepsOverride = null);
+      final a = app();
+      await t.pumpWidget(host(RemoveConfirmPage(app: a, netId: 'nn', person: person(bob, '小明', 'a1'), owner: bob, node: '')));
+      await t.pumpWidget(const SizedBox()); // gone before the read came back
+      w.readGate!.complete();
+      await settle(t);
+      expect(t.takeException(), isNull);
     });
   });
 }

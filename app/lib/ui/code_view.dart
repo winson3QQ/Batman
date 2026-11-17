@@ -220,6 +220,8 @@ class _CodeViewState extends State<CodeView> {
       const SizedBox(height: 12),
       BatButton(Btn.copyText, key: const Key('code-copy'), kind: BtnKind.secondary, onPressed: _copy),
       if (_copied) BatButton(Btn.clearClip, key: const Key('code-clear'), kind: BtnKind.text, onPressed: _clear),
+      // §5 / T-m8 (review A m5): after any copy (Android 12's sensitive flag is not verified), the warning is shown
+      if (_copied && widget.qr) Text('剪貼簿裡的東西，手機上別的 app 也讀得到；傳完請按「清除剪貼簿」', key: const Key('code-clipwarn-copied'), style: note),
       Text('鍵盤 app 自己的剪貼簿紀錄，這裡清不到', style: note),
       if (_line.isNotEmpty) Text(_line, key: const Key('code-line'), style: note),
     ]);

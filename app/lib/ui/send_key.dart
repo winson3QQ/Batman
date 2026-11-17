@@ -37,6 +37,7 @@ class _SendKeyButtonState extends State<SendKeyButton> {
       _running = false;
       _sent = r;
     });
+    widget.app.link.refresh(); // R17 step 5 (review A m4): the node read again, the card follows
   }
 
   @override

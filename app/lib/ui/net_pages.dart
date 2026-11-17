@@ -275,7 +275,7 @@ class _NetFormPageState extends State<NetFormPage> {
         if (_makes) _maker != null && ticked.contains(_maker) ? _maker! : ticked.first,
         ...ticked.where((id) => !_makes || id != (_maker != null && ticked.contains(_maker) ? _maker : ticked.first)),
       ];
-      final still = m == null ? null : now.mnets.where((x) => x.id == m.id && x.opens && x.entryLast4 == m.entryLast4).firstOrNull;
+      final still = m == null ? null : now.mnets.where((x) => x.id == m.id && x.opens && sameLast4(x.entryLast4, m.entryLast4)).firstOrNull;
       final rel = m != null ? still?.rel : (_makes ? null : _picked(now)?.rel);
       if (!_makes && rel == null) {
         _pending = null;

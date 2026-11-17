@@ -1185,6 +1185,9 @@ AC：APPROVE-WITH-CHANGES，0 BLOCKER / 2 MAJOR / 8 MINOR。AD：APPROVE-WITH-CH
 | B9 | 8.3：「再顯示一次名字、指紋與同名提示」 | 同名提示由 8.2 算好帶進 8.3 | 8.3 不再讀一次 `netPeople` |
 | B10 | 2.10：提示卡的 gate | 卡片本身也只在 devTrust 版本顯示（不只按鈕） | 提示只在 devTrust 版本收集（`HintSource.wanted`），卡片跟著 gate，T-S5 一起測 |
 | B11 | — | 新增 `TeamDeps`：team 頁面讀寫的唯一注入點 | 讓 widget 測試能換掉平台與 Rust 呼叫；不改行為 |
+| B12 | 2.7 第 1 項：同名且指紋也相同時加「請用加入時間分辨」 | 改成「指紋也相同：兩組都移除，再重新邀請要留的那位」 | app 沒有任何地方顯示加入時間，原句叫隊長做做不到的事（審查 A m8）；改成畫面上做得到的動作，不加新機制 |
+| B13 | R12：判斷時「拿新的佔用」 | 判斷用一個名為「確認結果」的 `OfflineOp`（`judgeAfterRevoke`），等被收回的 `work` 真的結束才開始 | 新佔用要有名字（會進紀錄與待辦，R10 要常數）；用同一套 `OfflineOp` 就有 busy／失敗／收回的同樣處理 |
+| B14 | m6：舊程式的 `staleRecordLine` | `offline_op.dart` 另訂 `kStaleRecordLine`（同一句，owner.rs:65） | nodes.dart 會在 PR 6 刪除，新頁面不 import 它 |
 
 另外發現、已照計畫修正的實作錯誤（不是偏差）：
 - 8.4 的更新包原本畫了 QR，違反 T10（更新包只有文字）→ `CodeView(qr: false)`。

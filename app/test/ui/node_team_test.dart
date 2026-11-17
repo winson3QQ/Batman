@@ -104,7 +104,7 @@ void main() {
             send: (c) => SendDeps(op: d.op, readRecord: d.send(c).readRecord, confirm: sendDeps(c, a).confirm));
       };
       addTearDown(() => teamDepsOverride = null);
-      await open(t, hint: const UpdateHint(line: hintLine, button: true));
+      final a = await open(t, hint: const UpdateHint(line: hintLine, button: true));
       await t.tap(find.byKey(Key('send-key-$id')));
       await settle(t);
       expect(find.text('把新密碼送給這台節點？'), findsOneWidget);
@@ -112,11 +112,13 @@ void main() {
       await settle(t);
       expect(w.log.where((l) => l.startsWith('send')), isEmpty);
       expect(find.text(cancelledLine), findsOneWidget);
+      a.link.core.notY['x'] = {'y'}; // a memo NodeLink.refresh clears (R17 step 5)
       await t.tap(find.byKey(Key('send-key-$id')));
       await settle(t);
       await t.tap(find.text('送出'));
       await settle(t);
       expect(w.log.where((l) => l.startsWith('send')), ['send $id net/aa11 member=false']);
+      expect(a.link.core.notY, isEmpty, reason: 'review A m4: the node read again after the send');
     });
 
     testWidgets('no button when Rust says none; no card without a hint', (t) async {

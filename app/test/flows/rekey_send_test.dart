@@ -156,6 +156,46 @@ void main() {
       expect(rust.sends, isEmpty);
     });
 
+    // #329 PR 5 R18 (review A M3): a last four from Rust (`.last4`, `entryLast4`, `deviceLast4`) is never compared with
+    // == / != or through last4(); only sameLast4 (case-insensitive). The old console nodes.dart is the stated exception.
+    test('source check R18: Rust last-four fields compared only through sameLast4', () {
+      final bad = RegExp(r'(\.last4|entryLast4|deviceLast4)\b\s*[=!]=|[=!]=\s*[\w.!?]*(\.last4|entryLast4|deviceLast4)\b|\blast4\([^)]*\)\s*[=!]=');
+      final hits = <String>[];
+      var uses = 0;
+      for (final f in Directory('lib').listSync(recursive: true).whereType<File>().where((f) => f.path.endsWith('.dart'))) {
+        final p = f.path.replaceAll(r'\', '/');
+        if (p.endsWith('lib/nodes.dart') || p.contains('/src/rust/')) continue;
+        final lines = f.readAsLinesSync();
+        for (var i = 0; i < lines.length; i++) {
+          if (lines[i].trimLeft().startsWith('//')) continue;
+          if (bad.hasMatch(lines[i])) hits.add('$p:${i + 1}: ${lines[i].trim()}');
+          if (lines[i].contains('sameLast4(')) uses++;
+        }
+      }
+      expect(uses, greaterThan(3), reason: 'found the compares to check (nothing to check is not a pass)');
+      expect(hits, isEmpty);
+    });
+
+    // #329 PR 5 R14 (review A M3): a send's result (RekeySent.line, RunRow.sendLine) reaches the screen only through
+    // RekeyResult. The one exception is B8: a stop before the record was known (nothing sent) shows its own line.
+    test('source check R14: send results shown only through RekeyResult', () {
+      final hits = <String>[];
+      var results = 0;
+      for (final name in ['send_key.dart', 'join_pages.dart', 'remove_pages.dart', 'net_pages.dart']) {
+        final lines = File('lib/ui/$name').readAsLinesSync();
+        for (var i = 0; i < lines.length; i++) {
+          final l = lines[i];
+          if (l.trimLeft().startsWith('//')) continue;
+          if (l.contains('RekeyResult(')) results++;
+          final shows = RegExp(r'Text\(.*\.sendLine\b').hasMatch(l) ||
+              (name != 'net_pages.dart' && RegExp(r'Text\(.*\b(s|sent|res)\.line\b').hasMatch(l));
+          if (shows && !l.contains("Key('send-key-line')")) hits.add('$name:${i + 1}: ${l.trim()}');
+        }
+      }
+      expect(results, greaterThanOrEqualTo(4), reason: 'every send result place found');
+      expect(hits, isEmpty);
+    });
+
     test('source check: sendUpdateFor only in its definition, sendNewKey and NetRun; nobody passes confirm:', () {
       final hits = <String>[], confirms = <String>[];
       for (final f in Directory('lib').listSync(recursive: true).whereType<File>().where((f) => f.path.endsWith('.dart'))) {

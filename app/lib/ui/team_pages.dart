@@ -35,7 +35,7 @@ String offlineLine(OfflineReply r) => switch (r) {
 List<String> sameNameLines(PersonView p, List<PersonView> all) => [
       for (final o in all)
         if (o.owner != p.owner && o.name == p.name)
-          '另有同名的一組：${o.fpr}（要一起移除得各按一次）${o.fpr == p.fpr ? '。指紋也相同，請用加入時間分辨' : ''}'
+          '另有同名的一組：${o.fpr}（要一起移除得各按一次）${o.fpr == p.fpr ? '。指紋也相同：兩組都移除，再重新邀請要留的那位' : ''}'
     ];
 
 // ---- 8.1 隊員名單 ---------------------------------------------------------------------------------------------------

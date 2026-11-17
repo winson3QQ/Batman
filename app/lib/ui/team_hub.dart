@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../src/flows/net_index.dart';
 import '../src/flows/rekey_send.dart' show rustLast4;
 import '../src/nodelink/app_link.dart';
+import '../src/nodelink/core.dart' as nl show Page;
 import 'join_choice.dart' show NetMode;
 import 'join_pages.dart';
 import 'net_pages.dart' show NetFormPage;
@@ -36,7 +37,7 @@ class TeamHubPage extends StatelessWidget {
       (kHubMemberRows[0], Icons.mail_outline, () => go(JoinTeamPage(app: app, ui: ui))),
       (kHubMemberRows[1], Icons.hourglass_empty, () => go(PickPendPage(app: app, ui: ui))),
       (kHubMemberRows[2], Icons.verified_outlined, () => go(ImportApprovalPage(app: app, ui: ui))),
-      (kHubMemberRows[3], Icons.hub_outlined, () => go(NetFormPage(app: app, ui: ui, mode: NetMode.member))),
+      (kHubMemberRows[3], Icons.hub_outlined, () => go(NetFormPage(app: app, ui: ui, mode: NetMode.member, back: nl.Page.other))),
       (kHubMemberRows[4], Icons.vpn_key_outlined, () => go(UpdateImportPage(app: app, ui: ui))),
     ];
     return BatPage(title: '隊伍與邀請', body: [

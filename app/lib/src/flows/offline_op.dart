@@ -86,6 +86,26 @@ String offlineFailLine(Object e) => switch (e) {
       _ => '沒有完成，請再試一次',
     };
 
+/// The text of store_write_cas for a generation that moved (owner.rs:65; nodes.dart:58 staleRecordLine).
+const kStaleRecordLine = '紀錄已被別處更新，請重新開啟再試';
+
+/// R12 (W-m12): what a page shows while a revoked operation is judged; it can be left meanwhile.
+const kUnknownWait = '結果不明，等一下再查';
+
+/// R12 (U-m / V-m6): judge again when the new lease could not be had.
+const kJudgeAgain = '再查一次';
+
+/// R12: the operation name of a judgement (a constant: it goes into the log and a todo).
+const kJudgeName = '確認結果';
+
+/// R12: after the revoked work has really ended ([settled], L-m2), [judge] reads the records again in a NEW lease and may
+/// tidy up under it (the leftover mpend). No queueing: another operation holding the radio -> [OfflineBusy].
+Future<OfflineReply<R>> judgeAfterRevoke<R>(
+    OfflineDeps d, Future<void> settled, Future<R> Function(Lease l, RecordWriter w) judge) async {
+  await settled;
+  return OfflineOp.run(d, kJudgeName, judge);
+}
+
 class OfflineOp {
   /// R10: take the session lease, run [work], release; a busy lease, a thrown error and the 60 s cap each end as
   /// their own reply. [name] is a constant (it goes into the log and the todo, R10).

@@ -100,11 +100,8 @@ class AppLink {
     Future<Uint8List?> openNet(String rel) async {
       final sealed = await storeReadSealed(dir: records, rel: rel);
       if (sealed == null) return null;
-      try {
-        return await platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad});
-      } on PlatformException {
-        return null;
-      }
+      // review A m1 / R8: a key error is thrown on (the hint keeps its last value), never read as 「no record」
+      return platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad});
     }
 
     final hint = HintSource(

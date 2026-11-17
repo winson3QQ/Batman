@@ -24,7 +24,7 @@ import '../src/rust/api/rekey.dart' show UpdateState, infoNetId, memberUpdateImp
 import 'code_view.dart';
 import 'home_logic.dart' show last4;
 import 'home_page.dart' show nodeInfo;
-import 'join_choice.dart' show NetMode;
+import 'join_choice.dart' show NetMode, kNeedNewInvite;
 import 'net_pages.dart' show NetFormPage, askYesNo;
 import 'rekey_result.dart';
 import 'settings_pages.dart' show opLine;
@@ -230,6 +230,8 @@ class MyRequestPage extends StatefulWidget {
 }
 
 class _MyRequestPageState extends State<MyRequestPage> {
+  Future<void>? _settled; // R12: a revoked 放棄申請
+  bool _judging = false;
   String? _hex, _sas;
   String _line = '';
   bool _running = false;
@@ -267,9 +269,36 @@ class _MyRequestPageState extends State<MyRequestPage> {
     final r = await OfflineOp.run(teamDeps(a).offline, '放棄申請', (l, w) => w.remove(l, 'mpend/${widget.netId}'));
     if (!mounted) return;
     if (r is OfflineDone) return Navigator.of(context).pop();
+    if (r case OfflineUnknown(:final settled)) {
+      setState(() {
+        _running = false; // R12 (W-m12): the page can be left meanwhile
+        _settled = settled;
+        _line = kUnknownWait;
+      });
+      return _judgeDrop();
+    }
     setState(() {
       _running = false;
       _line = offlineLine(r);
+    });
+  }
+
+  /// R12: 放棄申請 is done when mpend is gone (read in a new lease after the work really ended).
+  Future<void> _judgeDrop() async {
+    final s = _settled;
+    if (s == null || _judging) return;
+    setState(() => _judging = true);
+    final p = teamDeps(a).platform;
+    final r = await judgeAfterRevoke(teamDeps(a).offline, s, (l, w) async => (await p.readRecord('mpend/${widget.netId}')).$2 == null);
+    if (!mounted) return;
+    setState(() {
+      _judging = false;
+      _line = switch (r) {
+        OfflineDone(value: true) => '已經放棄',
+        OfflineBusy() => kUnknownWait,
+        _ => '結果不明',
+      };
+      if (r is! OfflineBusy) _settled = null;
     });
   }
 
@@ -308,6 +337,8 @@ class _MyRequestPageState extends State<MyRequestPage> {
                           .pushReplacement(MaterialPageRoute(builder: (_) => ImportApprovalPage(app: a, ui: widget.ui))),
           ),
           BatButton('放棄申請', kind: BtnKind.text, onPressed: _running ? null : _drop), // T-C3: one primary
+          if (_settled != null)
+            BatButton(kJudgeAgain, key: const Key('judge-again'), kind: BtnKind.secondary, onPressed: _judging ? null : _judgeDrop),
         ],
       ),
     );
@@ -329,6 +360,8 @@ class ImportApprovalPage extends StatefulWidget {
 }
 
 class _ImportApprovalPageState extends State<ImportApprovalPage> {
+  Future<void>? _settled; // R12: a revoked import
+  bool _judging = false;
   void _join(BuildContext c, String id) => Navigator.of(c).pushReplacement(MaterialPageRoute(
       builder: (_) => NetFormPage(app: widget.app, ui: widget.ui, mode: NetMode.member, memberNet: id)));
 
@@ -349,12 +382,15 @@ class _ImportApprovalPageState extends State<ImportApprovalPage> {
     }
     final (pendGen, pend) = await teamDeps(a).readRecord('mpend/$id');
     final (_, mnet) = await teamDeps(a).readRecord('mnet/$id');
+    if (!mounted) return; // review A m2
     ImportPrep prep;
     var replace = false;
     try {
       prep = memberImportPrepare(hex: hex, pendGen: pendGen, pendPlain: pend, mnetPlain: mnet, replace: false);
       if (prep.state == ImportState.replace) {
-        if (!mounted || !await askYesNo(context, '要換成新的網路紀錄嗎？', prep.detail, '換成新的', '取消')) {
+        final yes = await askYesNo(context, '要換成新的網路紀錄嗎？', prep.detail, '換成新的', '取消');
+        if (!mounted) return;
+        if (!yes) {
           return setState(() => _line = '[REQ_FAIL] 沒有匯入：保留舊紀錄');
         }
         replace = true;
@@ -408,6 +444,14 @@ class _ImportApprovalPageState extends State<ImportApprovalPage> {
       }
     });
     if (!mounted) return;
+    if (r case OfflineUnknown(:final settled)) {
+      setState(() {
+        _running = false; // R12 (W-m12)
+        _settled = settled;
+        _line = kUnknownWait;
+      });
+      return _judgeImport();
+    }
     setState(() {
       _running = false;
       _tries++;
@@ -415,7 +459,41 @@ class _ImportApprovalPageState extends State<ImportApprovalPage> {
         _imported = true;
         _line = value;
       } else {
-        _line = r is OfflineUnknown ? '結果不明，請重新貼上同意碼確認' : '[REQ_FAIL] 沒有匯入：${offlineLine(r)}';
+        _line = '[REQ_FAIL] 沒有匯入：${offlineLine(r)}';
+      }
+    });
+  }
+
+  /// R12 (W-m1 / Y-m9): the same approval prepared again WITHOUT the request (with it, prepare would bind and say Ready):
+  /// AlreadyImported -> 「已經匯入」, and a leftover mpend is removed in the same new lease (or the home todo stays);
+  /// NeedsNewInvite -> 「結果不明」 and why; anything else -> 「結果不明」.
+  Future<void> _judgeImport() async {
+    final s = _settled;
+    if (s == null || _judging) return;
+    setState(() => _judging = true);
+    final p = teamDeps(a).platform;
+    final hex = _hex, id = _netId;
+    final r = await judgeAfterRevoke(teamDeps(a).offline, s, (l, w) async {
+      final (_, pend) = await p.readRecord('mpend/$id');
+      final (_, mnet) = await p.readRecord('mnet/$id');
+      final prep = memberImportPrepare(hex: hex, pendGen: BigInt.zero, pendPlain: null, mnetPlain: mnet, replace: false);
+      if (prep.state == ImportState.alreadyImported && pend != null) await w.remove(l, 'mpend/$id');
+      return prep.state;
+    });
+    if (!mounted) return;
+    setState(() {
+      _judging = false;
+      if (r is! OfflineBusy) _settled = null;
+      switch (r) {
+        case OfflineDone(value: ImportState.alreadyImported):
+          _imported = true;
+          _line = '已經匯入';
+        case OfflineDone(value: ImportState.needsNewInvite):
+          _line = '結果不明\n$kNeedNewInvite';
+        case OfflineBusy():
+          _line = kUnknownWait;
+        default:
+          _line = '結果不明';
       }
     });
   }
@@ -442,6 +520,8 @@ class _ImportApprovalPageState extends State<ImportApprovalPage> {
           if (_line.isNotEmpty) Text(screenText(_line), key: const Key('import-line')),
         ],
         foot: [
+          if (_settled != null && !_imported)
+            BatButton(kJudgeAgain, key: const Key('judge-again'), onPressed: _judging ? null : _judgeImport),
           if (_imported)
             BatButton(
               '讓這台加入隊長的網路',
@@ -455,6 +535,12 @@ class _ImportApprovalPageState extends State<ImportApprovalPage> {
 }
 
 // ---- 8.5 收到新密碼 -----------------------------------------------------------------------------------------------------
+
+/// m6 / S-m8: 8.5's failure line; a record changed elsewhere gets the old console's 「請隊長再複製一次」 (nodes.dart:1534).
+String updateFailLine(OfflineReply r) => switch (r) {
+      OfflineFailed(:final line) when line == kStaleRecordLine => '請隊長再複製一次你的包，再貼上',
+      _ => offlineLine(r),
+    };
 
 /// 8.5 (AA-m7): the member's own question before a send; only on this page (R17's `confirm` keeps the old behaviour).
 const kMemberSendAsk = '隊長說大家都拿到更新包了嗎？太早送，你的節點會和還沒換的人斷線';
@@ -472,6 +558,9 @@ class UpdateImportPage extends StatefulWidget {
 }
 
 class _UpdateImportPageState extends State<UpdateImportPage> {
+  Future<void>? _settled; // R12: a revoked import
+  bool _judging = false;
+  String _hex = '';
   VersionRead? _ver; // R19: null = which network is not known yet
   String _line = '', _netId = '';
   bool _running = false, _imported = false, _listing = false;
@@ -540,6 +629,16 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
       }
     });
     if (!mounted) return;
+    if (r case OfflineUnknown(:final settled)) {
+      setState(() {
+        _running = false; // R12 (W-m12)
+        _settled = settled;
+        _hex = hex;
+        _netId = id;
+        _line = kUnknownWait;
+      });
+      return _judgeUpdate();
+    }
     setState(() {
       _running = false;
       if (r case OfflineDone(:final value)) {
@@ -547,11 +646,45 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
         _netId = id;
         _line = value;
       } else {
-        _line = r is OfflineUnknown ? '結果不明，請重新貼上更新包確認' : '[REQ_FAIL] 沒有匯入：${offlineLine(r)}';
+        _line = '[REQ_FAIL] 沒有匯入：${updateFailLine(r)}';
       }
     });
     if (_imported) unawaited(_readVersion('mnet/$_netId')); // Z-m4: read again after the import
     if (_imported) await _list();
+  }
+
+  /// R12: the same bundle prepared again in a new lease: AlreadyImported -> 「已經匯入」 (then the nodes are listed);
+  /// otherwise 「結果不明」.
+  Future<void> _judgeUpdate() async {
+    final s = _settled;
+    if (s == null || _judging) return;
+    setState(() => _judging = true);
+    final d = teamDeps(a);
+    final keys = await d.publicKeys();
+    final nodes = <Uint8List>[];
+    for (final n in await d.nodeIds()) {
+      final (_, p) = await d.readRecord('node/$n');
+      if (p != null) nodes.add(p);
+    }
+    final p = d.platform;
+    final hex = _hex, id = _netId;
+    final r = await judgeAfterRevoke(d.offline, s, (l, w) async {
+      final (gen, mnet) = await p.readRecord('mnet/$id');
+      return memberUpdatePrepare(hex: hex, mnetPlain: mnet, mnetGen: gen, nodeRecords: nodes, ownerEncPub: keys['ownerEnc']!)
+          .state;
+    });
+    if (!mounted) return;
+    final done = r is OfflineDone<UpdateState> && r.value == UpdateState.alreadyImported;
+    setState(() {
+      _judging = false;
+      if (r is! OfflineBusy) _settled = null;
+      _imported = done;
+      _line = done ? '已經匯入' : (r is OfflineBusy ? kUnknownWait : '結果不明');
+    });
+    if (done) {
+      unawaited(_readVersion('mnet/$id'));
+      await _list();
+    }
   }
 
   /// V-m8: every node record of this phone, one info read each (in turn: one session at a time); this network's
@@ -600,6 +733,8 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
           CodeInput(devTrust: a.devTrust, scan: false, onText: _got, onError: (w) => setState(() => _line = w)),
         ],
         if (_line.isNotEmpty) Text(screenText(_line), key: const Key('update-line')),
+        if (_settled != null)
+          BatButton(kJudgeAgain, key: const Key('judge-again'), onPressed: _judging ? null : _judgeUpdate),
         if (_imported) ...[
           const BatLabel('把新密碼送到你的節點'),
           if (_listing) const Text('正在讀每台節點在哪個網路…'),

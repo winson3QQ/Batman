@@ -20,7 +20,7 @@ import 'code_view.dart';
 import 'rekey_result.dart';
 import 'settings_pages.dart' show opLine;
 import 'team_deps.dart';
-import 'team_pages.dart' show offlineLine;
+import 'team_pages.dart' show MembersPage, offlineLine;
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -53,6 +53,8 @@ class RemoveConfirmPage extends StatefulWidget {
 }
 
 class _RemoveConfirmPageState extends State<RemoveConfirmPage> {
+  Future<void>? _settled; // R12: a revoked removal; the page waits for it, then judges
+  bool _unknown = false, _judging = false; // R12: judged and still not known / a judgement running
   final _reads = <NodeInfo>[];
   RemovePlanView? _plan;
   String _progress = '', _line = '';
@@ -79,7 +81,8 @@ class _RemoveConfirmPageState extends State<RemoveConfirmPage> {
   Future<void> _check() async {
     final (_, plain) = await teamDeps(a).readRecord(rel);
     final keys = await teamDeps(a).publicKeys();
-    if (plain == null || !mounted) return setState(() => _line = '手機裡的網路紀錄打不開');
+    if (!mounted) return; // review A m2: never setState on a page that is gone
+    if (plain == null) return setState(() => _line = '手機裡的網路紀錄打不開');
     final List<OwnNodeView> own;
     try {
       own = removeOwnNodes(recordPlain: plain, ownerPub: keys['owner']!, person: widget.owner, node: widget.node);
@@ -93,7 +96,7 @@ class _RemoveConfirmPageState extends State<RemoveConfirmPage> {
       if (mine.contains(o.deviceId)) {
         final l4 = rustLast4(o.deviceId);
         if (mounted) setState(() => _progress = '正在讀第 ${i + 1} / ${own.length} 台：節點 …$l4 的網路版本（確認手機紀錄是最新的）…');
-        final r = await OpSession.once(teamDeps(a).op, o.deviceId, '移除隊員', (c, g) => c.info(), gone: () => _gone.isCompleted);
+        final r = await OpSession.once(teamDeps(a).op, o.deviceId, '讀節點網路', (c, g) => c.info(), gone: () => _gone.isCompleted);
         final v = r.reply?.value;
         if (v is Uint8List) info = v;
         if (info.isEmpty && mounted) setState(() => _line = '$_line\n節點 …$l4 讀不到（不檢查這台）'.trim());
@@ -132,40 +135,53 @@ class _RemoveConfirmPageState extends State<RemoveConfirmPage> {
       return runNetOp(st, removeCalls(op), l, w, p);
     });
     if (!mounted) return;
-    final done = switch (r) {
-      OfflineDone(:final value) => value.detail.startsWith('[REKEY]'),
-      OfflineUnknown(:final settled) => await _judge(settled), // R12
-      _ => false,
-    };
-    if (done) {
-      a.ticks.removed(widget.netId);
-      if (mounted) {
-        await Navigator.of(context)
-            .pushReplacement(MaterialPageRoute(builder: (_) => RekeyPage(app: a, netId: widget.netId, removal: true)));
-      }
+    if (r case OfflineUnknown(:final settled)) {
+      // R12 (W-m12): PopScope released at once; the judgement runs when the work has really ended
+      setState(() {
+        _running = false;
+        _settled = settled;
+        _line = kUnknownWait;
+      });
+      unawaited(_judge());
       return;
     }
-    if (!mounted) return;
+    if (r case OfflineDone(:final value) when value.detail.startsWith('[REKEY]')) return _removed();
     setState(() {
       _running = false;
-      _line = r is OfflineDone<NetOpEnd> ? screenText(r.value.detail) : (r is OfflineUnknown ? '結果不明，請到隊員名單確認' : offlineLine(r));
+      _line = r is OfflineDone<NetOpEnd> ? screenText(r.value.detail) : offlineLine(r);
     });
   }
 
-  /// R12 after a revoke: removed only when the target is gone from the record (the whole owner, AB-m3; an own node by
-  /// its dac hash, AA-m5). Read after the work really ended (L-m2).
-  Future<bool> _judge(Future<void> settled) async {
-    await settled;
-    final (_, plain) = await teamDeps(a).readRecord(rel);
-    final keys = await teamDeps(a).publicKeys();
-    if (plain == null) return false;
-    try {
-      final people = netPeople(recordPlain: plain, ownerPub: keys['owner']!);
-      if (widget.owner.isNotEmpty) return !people.any((p) => p.owner == widget.owner);
-      return !people.any((p) => p.isSelf && p.nodes.any((n) => n.dacHash == widget.node));
-    } catch (_) {
-      return false;
+  Future<void> _removed() async {
+    a.ticks.removed(widget.netId);
+    if (mounted) {
+      await Navigator.of(context)
+          .pushReplacement(MaterialPageRoute(builder: (_) => RekeyPage(app: a, netId: widget.netId, removal: true)));
     }
+  }
+
+  /// R12 after a revoke, in a new lease: removed only when the target is gone from the record (the whole owner, AB-m3;
+  /// an own node by its dac hash, AA-m5). Busy -> 「再查一次」; otherwise 「結果不明」 with the two ways on (T-m4).
+  Future<void> _judge() async {
+    final s = _settled;
+    if (s == null || _judging) return;
+    setState(() => _judging = true);
+    final keys = await teamDeps(a).publicKeys();
+    final p = teamDeps(a).platform;
+    final r = await judgeAfterRevoke(teamDeps(a).offline, s, (l, w) async {
+      final (_, plain) = await p.readRecord(rel);
+      if (plain == null) return false;
+      final people = netPeople(recordPlain: plain, ownerPub: keys['owner']!);
+      if (widget.owner.isNotEmpty) return !people.any((x) => x.owner == widget.owner);
+      return !people.any((x) => x.isSelf && x.nodes.any((n) => n.dacHash == widget.node));
+    });
+    if (!mounted) return;
+    if (r case OfflineDone(value: true)) return _removed();
+    setState(() {
+      _judging = false;
+      _unknown = r is! OfflineBusy;
+      _line = _unknown ? '結果不明' : kUnknownWait;
+    });
   }
 
   @override
@@ -187,8 +203,19 @@ class _RemoveConfirmPageState extends State<RemoveConfirmPage> {
               title: Text(removeTickText())),
         if (_line.isNotEmpty) Text(screenText(_line), key: const Key('remove-line')),
       ], foot: [
+        if (_settled != null && !_unknown)
+          BatButton(kJudgeAgain, key: const Key('remove-judge'), onPressed: _judging ? null : _judge)
+        else if (_unknown) ...[
+          BatButton('到換密碼檢查清單',
+              onPressed: () => Navigator.of(context)
+                  .pushReplacement(MaterialPageRoute(builder: (_) => RekeyPage(app: a, netId: widget.netId)))),
+          BatButton('到隊員名單確認',
+              kind: BtnKind.secondary,
+              onPressed: () => Navigator.of(context)
+                  .pushReplacement(MaterialPageRoute(builder: (_) => MembersPage(app: a, netId: widget.netId)))),
+        ],
         // F32: the tick before the button; Rust refuses without it. Not ok -> no button (the old 沒有開始).
-        if (plan != null && plan.ok)
+        if (plan != null && plan.ok && _settled == null)
           BatButton('移除並換密碼', key: const Key('remove-go'), kind: BtnKind.danger, onPressed: _ticked && !_running ? _commit : null),
       ]),
     );
@@ -294,8 +321,15 @@ class _RekeyPageState extends State<RekeyPage> {
     setState(() => _running = true);
     RekeySent? res;
     for (final id in cands) {
-      res = await sendNewKey(teamDeps(a).send(context), id, expectDac: n.dacHash, expectNet: widget.netId, gone: () => !mounted);
-      if (res.line != notThisNodeLine) break;
+      if (!mounted) break;
+      final r = await sendNewKey(teamDeps(a).send(context), id, expectDac: n.dacHash, expectNet: widget.netId, gone: () => !mounted);
+      // X-m1 / review A m3: the node itself answered -> done; a mismatch or an unreached one -> try the next; at the end
+      // an unreached one is shown over a mismatch (it may be the right node, out of range)
+      if (r.notReached == null && r.line != notThisNodeLine) {
+        res = r;
+        break;
+      }
+      if (res == null || r.notReached != null) res = r;
     }
     if (!mounted) return;
     setState(() {

@@ -7,6 +7,8 @@ import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/ui/settings_page.dart';
 import 'package:batman_app/ui/team_deps.dart' show teamDepsOverride;
 import 'package:batman_app/ui/team_hub.dart';
+import 'package:batman_app/ui/net_pages.dart' show NetFormPage;
+import 'package:batman_app/src/nodelink/core.dart' as nl show Page;
 import 'package:batman_app/ui/ui_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -55,6 +57,16 @@ void main() {
       await t.state<NavigatorState>(find.byType(Navigator)).maybePop();
       await settle(t);
     }
+  });
+
+  testWidgets('review A m7: the member join from the hub returns to the settings state (Page.other)', (t) async {
+    tall(t);
+    final a = app();
+    a.nets.setForTest(const NetSnapshot());
+    await t.pumpWidget(host(TeamHubPage(app: a, ui: UiState(MemStore()))));
+    await t.tap(find.byKey(const Key('hub-讓我的節點加入隊長的網路')));
+    await settle(t);
+    expect(t.widget<NetFormPage>(find.byType(NetFormPage)).back, nl.Page.other);
   });
 
   testWidgets('no network: the leader\'s pick says why', (t) async {

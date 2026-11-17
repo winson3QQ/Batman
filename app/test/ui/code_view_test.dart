@@ -146,6 +146,18 @@ void main() {
   });
 
   group('R4: clipboard', () {
+    testWidgets('review A m5 / T-m8: after a copy the clipboard warning shows even with a QR on a secure screen', (t) async {
+      tall(t);
+      secure(t, true);
+      final f = FakeCode()..qr = bitsOf(1);
+      await t.pumpWidget(host(CodeView(hex: 'ab', platform: f.p)));
+      await t.pumpAndSettle();
+      expect(find.byKey(const Key('code-clipwarn-copied')), findsNothing);
+      await t.tap(find.text(Btn.copyText));
+      await t.pumpAndSettle();
+      expect(find.byKey(const Key('code-clipwarn-copied')), findsOneWidget);
+    });
+
     testWidgets('T10: an update bundle (qr: false) never asks for a QR; copy and the warning still there', (t) async {
       tall(t);
       secure(t, true);
