@@ -306,6 +306,8 @@ pub struct MnetView {
     /// "" = no own-node entry (a new invite is needed), else joining / applied
     pub entry_state: String,
     pub device_last4: String,
+    /// #329 PR 5 V-M1 / R19: the version this phone holds (MNet key 2), read-only
+    pub version: Option<u32>,
 }
 
 #[flutter_rust_bridge::frb(sync)]
@@ -323,7 +325,7 @@ pub fn mnet_summary(mnet_plain: Vec<u8>) -> Result<MnetView, String> {
         ),
         None => ("", String::new()),
     };
-    Ok(MnetView { net_id: hex_lower(&m.net_id), net_name: invite::display_name(&name), entry_state: state.into(), device_last4: last4 })
+    Ok(MnetView { net_id: hex_lower(&m.net_id), net_name: invite::display_name(&name), entry_state: state.into(), device_last4: last4, version: Some(m.version) })
 }
 
 /// The member phone's pending join requests (file names under mpend/: the net ids; no record opened), for "show
@@ -389,6 +391,13 @@ mod tests {
         assert_eq!(invite_err(&Error::TooOld), "這支手機的網路資料太舊");
         assert!(invite_err(&Error::SameVersionDifferent).starts_with("同編號的不同網路"));
         assert_eq!(invite_err(&Error::PreviousNode), "先完成或忘記前一台");
+    }
+
+    // #329 PR 5 V-M1 / R19: the member's 「這支手機是第 N 版」 is MNet key 2 (what an import sets to the update's `to`)
+    #[test]
+    fn pr5_mnet_version_is_the_mnet_version() {
+        let m = MNet { net_id: [0xab; 16], version: 9, netcfg: vec![], members: vec![], secrets: vec![], net_root: [0; 32], me: None, invite_hash: [0; 32], versions: None, node_secrets: vec![] };
+        assert_eq!(mnet_summary(m.encode()).unwrap().version, Some(9));
     }
 
     #[test]

@@ -257,8 +257,8 @@ class MnetView {
   /// "" = no own-node entry (a new invite is needed), else joining / applied
   final String entryState;
   final String deviceLast4;
-  /// #329 PR 5 R19 (V-M1): the version; null = not readable. TEMPORARY hand edit until the codegen runs (WSL):
-  /// the bridge does not carry it yet, so it is always null in the app
+
+  /// #329 PR 5 V-M1 / R19: the version this phone holds (MNet key 2), read-only
   final int? version;
 
   const MnetView({
@@ -274,7 +274,8 @@ class MnetView {
       netId.hashCode ^
       netName.hashCode ^
       entryState.hashCode ^
-      deviceLast4.hashCode;
+      deviceLast4.hashCode ^
+      version.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -284,5 +285,6 @@ class MnetView {
           netId == other.netId &&
           netName == other.netName &&
           entryState == other.entryState &&
-          deviceLast4 == other.deviceLast4;
+          deviceLast4 == other.deviceLast4 &&
+          version == other.version;
 }

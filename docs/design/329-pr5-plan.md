@@ -1199,6 +1199,4 @@ AC：APPROVE-WITH-CHANGES，0 BLOCKER / 2 MAJOR / 8 MINOR。AD：APPROVE-WITH-CH
 待提給程式碼審查者：
 - 同名句「請用加入時間分辨」：app 沒有任何地方顯示加入時間。
 
-還沒做（等 WSL）：
-- Rust `NetView.version` / `MnetView.version` 與 R19 的版本號顯示（8.1、8.4「目前是第 N 版」；8.5 與隊員 `RekeyResult` 的「這支手機是第 N 版」）。
-- `rekey.rs` 的 R14 字面釘住測試（已寫，未跑）。
+Rust 部分（2026-11-17 WSL 恢復後完成）：`NetView.version`（netcfg 的版本，打不開為 None）、`MnetView.version`（`MNet.version`），codegen 重產的 Dart 欄位與 c548c4e 暫時手加的相同（`final int? version`）；`rekey.rs` 的 R14 字面釘住測試已跑。

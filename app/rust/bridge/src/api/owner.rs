@@ -102,13 +102,17 @@ pub struct NetView {
     pub applied: bool,
     pub country: String,
     pub members: Vec<MemberView>,
+    /// #329 PR 5 V-M1 / R19: the record's network version (netcfg key 2); None when its netcfg does not open
+    pub version: Option<u32>,
 }
 
 /// What an opened net record shows (choosing a network to join / confirm / forget in).
 #[flutter_rust_bridge::frb(sync)]
 pub fn net_summary(record_plain: Vec<u8>) -> Result<NetView, String> {
     let r = netrec::decode(&record_plain).map_err(|_| NET_DAMAGED.to_string())?;
-    let (country, net_name) = r.netcfg().map(|c| (c.country, c.name)).unwrap_or_default();
+    let cfg = r.netcfg().ok();
+    let version = cfg.as_ref().map(|c| c.version);
+    let (country, net_name) = cfg.map(|c| (c.country, c.name)).unwrap_or_default();
     // remove-member §2.1: the creator only while pending (key 8 may be empty / another node once applied)
     let creator = r.pending_creator().ok().flatten();
     let members = r
@@ -126,7 +130,15 @@ pub fn net_summary(record_plain: Vec<u8>) -> Result<NetView, String> {
             approved: m.state == MemberState::Approved,
         })
         .collect();
-    Ok(NetView { net_id: nodecert::hex_lower(&r.base.net_id), mesh_id: r.base.mesh_id, net_name, applied: r.state == netrec::APPLIED, country, members })
+    Ok(NetView {
+        net_id: nodecert::hex_lower(&r.base.net_id),
+        mesh_id: r.base.mesh_id,
+        net_name,
+        applied: r.state == netrec::APPLIED,
+        country,
+        members,
+        version,
+    })
 }
 
 /// "Forget joining" (join2 §3.4): the record without that joining member, as a PersistNet step (seal, write by CAS
@@ -1865,6 +1877,16 @@ mod tests {
         assert_eq!(join2_text(&E::PersistFailed { applied: false, error: Some("seal x".into()) }, "", ""), "[REQ_FAIL] 手機儲存失敗（seal x）");
         assert_eq!(country_question("JP", "US"), "[COUNTRY] 這台的國家是 JP，要改成 US 才能加入。要改嗎？");
         assert_eq!(link_text(&flow::LinkState::Connected { plinks: 3 }), "[CONNECTED] 已連上隊伍網路", "no station count (status page §3)");
+    }
+
+    // #329 PR 5 V-M1 / R19: the leader's 「目前是第 N 版」 is the record's netcfg version, read as is
+    #[test]
+    fn pr5_net_version_is_the_netcfg_version() {
+        let v = net_summary(netrec::encode(&NetRec::made(base()))).unwrap();
+        assert_eq!(v.version, None, "a netcfg that does not open: no number");
+        let mut b = base();
+        b.netcfg = batman_proto::cose::sign1(batman_proto::cose::CT_NETCFG, &batman_proto::cose::net_config_payload(&[0xab; 16], 7, None, "t", "US", "bm-abababababab", 40, 4, &[[4; 65]]), &[1; 64]);
+        assert_eq!(net_summary(netrec::encode(&NetRec::made(b))).unwrap().version, Some(7));
     }
 
     #[test]

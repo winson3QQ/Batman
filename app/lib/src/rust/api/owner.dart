@@ -310,8 +310,8 @@ class NetView {
   final bool applied;
   final String country;
   final List<MemberView> members;
-  /// #329 PR 5 R19 (V-M1): the version; null = not readable. TEMPORARY hand edit until the codegen runs (WSL):
-  /// the bridge does not carry it yet, so it is always null in the app
+
+  /// #329 PR 5 V-M1 / R19: the record's network version (netcfg key 2); None when its netcfg does not open
   final int? version;
 
   const NetView({
@@ -331,7 +331,8 @@ class NetView {
       netName.hashCode ^
       applied.hashCode ^
       country.hashCode ^
-      members.hashCode;
+      members.hashCode ^
+      version.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -343,7 +344,8 @@ class NetView {
           netName == other.netName &&
           applied == other.applied &&
           country == other.country &&
-          members == other.members;
+          members == other.members &&
+          version == other.version;
 }
 
 enum OwnerKind {
