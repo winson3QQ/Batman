@@ -11,6 +11,7 @@ import 'ble_gate.dart';
 import 'core.dart';
 import 'handoff.dart';
 import 'lease.dart';
+import '../rust/api/rekey.dart' show UpdateHint;
 
 /// One attempt's login + status read on an open link, for record [id]. [due] completes when the attempt's 8 s from
 /// the start of the connect to msg2 are over (§4.3.3-3): without msg2 by then it is `noResponse`. It must stop when
@@ -105,6 +106,23 @@ class NodeLink implements LeaseListener {
   /// The wall-clock time of each node's last status read.
   final Map<String, DateTime> readWall = {};
 
+  /// #329 PR 5 R8: the remove-member §3.5 line of the node whose page is open (memory only, never in UiState).
+  final Map<String, UpdateHint> hints = {};
+
+  /// R8: a read's hint for [id], kept only while [id]'s page is open (a late one after leaving is dropped); an empty
+  /// line removes it. Fires [changed] when it changes.
+  void setHint(String id, UpdateHint h) {
+    if (core.page != Page.node || core.pageNode != id) return;
+    final had = hints[id];
+    if (h.line.isEmpty) {
+      if (hints.remove(id) != null) _changed.add(null);
+      return;
+    }
+    if (had != null && had.line == h.line && had.button == h.button) return;
+    hints[id] = h;
+    _changed.add(null);
+  }
+
   GateScan? _scan;
   bool _scanStarting = false;
   Cancel? _scanWait;
@@ -133,6 +151,11 @@ class NodeLink implements LeaseListener {
   }
 
   void setPage(Page page, {String? node}) {
+    // R8: leaving a node page drops its hint (no stale card when it opens again, review K-m5 / L-m1)
+    if (hints.isNotEmpty && (page != Page.node || node != core.pageNode)) {
+      hints.clear();
+      _changed.add(null);
+    }
     core.setPage(now(), page, node: node);
     _pump();
   }

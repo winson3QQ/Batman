@@ -570,3 +570,22 @@ mod tests {
         assert_eq!(info_net_id(vec![]), "");
     }
 }
+
+// #329 PR 5 plan v16 R14: the Dart side (rekey_send.dart rekeyEnd) recognises these sentences word for word; this test
+// and rekey_send_test pin the same literals, so a change on either side fails one of them.
+#[cfg(test)]
+mod pr5_rekey_texts {
+    use super::update_text;
+    use batman_proto::updflow::End;
+
+    #[test]
+    fn rekey_texts_are_pinned() {
+        assert_eq!(update_text(&End::AlreadyCurrent, false, "ab12"), "[UPDATED] 節點 …ab12 已是新密碼");
+        assert_eq!(update_text(&End::Updated, true, "ab12"), "[UPDATED] 節點 …ab12 已換成新密碼");
+        assert_eq!(update_text(&End::Applying, false, "ab12"), "[UPDATED] 節點 …ab12 正在套用新密碼，稍後再看狀態頁");
+        assert_eq!(
+            update_text(&End::Unfinished, false, "ab12"),
+            "[REQ_FAIL] 沒有送出：節點還有沒完成的變更，等一下再按；超過 10 分鐘仍如此，重新開機一次"
+        );
+    }
+}

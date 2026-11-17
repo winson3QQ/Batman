@@ -71,13 +71,14 @@ void main() {
     await finish(t, a);
   });
 
-  testWidgets('row 6, only a team network (mnet): 加入網路 is the older console\'s member join (D3)', (t) async {
+  // #329 PR 5 R16: the older console's member join (D3) is replaced: 4.1 decides the mode from the records
+  testWidgets('row 6, only a team network (mnet): 加入網路 opens 4.1 with that node, no mode given (R16 decides)', (t) async {
     final a = await home(t, const NetSnapshot(anyMnet: true));
     await t.tap(find.widgetWithText(FilledButton, Btn.joinNetwork));
-    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
-    await t.pump();
-    expect(find.byType(NetFormPage), findsNothing);
-    expect(a.reg.current?.name, '我的節點', reason: 'the older console under its raw lease');
+    await t.pumpAndSettle();
+    final f = t.widget<NetFormPage>(find.byType(NetFormPage));
+    expect([f.makes, f.mode, f.ticked.contains(id)], [false, null, true]);
+    expect(a.reg.current, isNull, reason: 'no lease before 開始');
     await finish(t, a);
   });
 

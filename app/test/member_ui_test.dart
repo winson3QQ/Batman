@@ -1,7 +1,6 @@
 // 254-app-member-join v6.1 §7: M14 (paste refused in a field build), M17 (SAS screens), M18 (network name), and the
 // log interceptor; 254-app-status-page v8.1 §5: T8 (status page) and T9 (My nodes layout). The widgets get their actions passed in, so nothing here needs BLE, Rust or the platform channel.
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';

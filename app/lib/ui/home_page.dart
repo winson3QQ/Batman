@@ -7,7 +7,6 @@ import 'package:flutter/services.dart';
 
 import '../claim.dart';
 import '../key_abilities.dart';
-import '../nodes.dart';
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl;
 import '../src/nodelink/raw_use.dart';
@@ -16,7 +15,9 @@ import '../src/flows/net_index.dart' show JoinTodo;
 import 'add_pages.dart';
 import 'home_logic.dart';
 import 'intro_pages.dart';
+import 'join_pages.dart' show JoinTeamPage, MyRequestPage;
 import 'net_pages.dart' show NetFormPage;
+import 'team_hub.dart' show PickPendPage;
 import 'node_page.dart';
 import 'settings_page.dart';
 import 'theme.dart';
@@ -180,19 +181,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _addNode();
       case HomeAction.seeNode:
         if (h.node != null) _open(h.node!);
-      // #329 PR 3: 建立 / 加入網路 are the new pages (4.1); only a team network (mnet) or a request (mpend) still go
-      // to the older console, where the member's join is (D3, PR 5)
+      // #329 PR 5 §2.10: row 6 to the new pages; 4.1 decides leader or member by R16 (T-N2's split unchanged)
       case HomeAction.makeNetwork:
         _form(makes: true, node: h.node);
-      case HomeAction.joinNetwork when a.nets.now.records != NetRecords.mnet:
+      case HomeAction.joinNetwork:
         _form(makes: false, node: h.node);
-      case HomeAction.joinNetwork || HomeAction.seeRequest || HomeAction.joinTeam:
-        _back(openUnderLease(context, a, '我的節點', (u) => NodesPage(ble: a.ble, use: u)));
+      case HomeAction.seeRequest when widget.devTrust: // review B m5: 7.9 only in the dev build (F14)
+        _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => PickPendPage(app: a, ui: widget.ui))));
+      case HomeAction.joinTeam:
+        _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => JoinTeamPage(app: a, ui: widget.ui))));
       case HomeAction.refresh:
         a.link.refresh();
       case HomeAction.openBluetooth:
         _settings('bluetoothSettings', '請到手機的設定打開藍牙'); // §5.1 row 1: the system page; the status stream follows
-      case HomeAction.showList || HomeAction.none:
+      case HomeAction.showList || HomeAction.none || HomeAction.seeRequest:
         break;
     }
   }
@@ -200,7 +202,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   /// 4.1 (§2.4 / §2.5): make or join, [node] ticked; [todo]: 「節點加入網路沒有做完」 (its network, 「放棄這次加入」).
   void _form({required bool makes, String? node, JoinTodo? todo}) => _back(Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => NetFormPage(
-          app: a, ui: widget.ui, makes: makes, ticked: {?node}, todo: todo, devTrust: widget.devTrust))));
+          app: a, ui: widget.ui, makes: makes, ticked: {?node}, todo: todo))));
 
   /// Opens a system settings page; when the phone has none, says where to go instead (review r2 D-m8).
   Future<void> _settings(String method, String otherwise) async {
@@ -254,7 +256,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final ids = a.link.core.states.keys.toList()..sort();
     final infos = [for (final id in ids) nodeInfo(a, id, widget.ui)];
     final nets = a.nets.now;
-    final todos = _pending + a.reg.unsavedTodos.length + nets.todos.length + a.sw.unfinishedOf(a.link.core.states.containsKey).length;
+    // #329 PR 5 (design §5.1): a request waiting is a todo (dev builds only: F14)
+    final pends = widget.devTrust ? nets.mpendIds : const <String>[];
+    final todos = _pending +
+        a.reg.unsavedTodos.length +
+        nets.todos.length +
+        a.sw.unfinishedOf(a.link.core.states.containsKey).length +
+        pends.length;
     final firstRounds = a.link.core.roundsRun < 3;
     final h = decideHome(
         HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: nets.records));
@@ -282,7 +290,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           icon: Icon(Icons.settings_outlined, color: t.ink),
           onPressed: () {
             a.link.setPage(nl.Page.other); // §4.3.2: no reads while the settings are on screen (T-L8; review A-m3)
-            _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(app: a, devTrust: widget.devTrust, notes: widget.notes))));
+            _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(app: a, ui: widget.ui, devTrust: widget.devTrust, notes: widget.notes))));
           },
         ),
       ],
@@ -297,14 +305,22 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               ? null
               : [
                   BatButton(actionText, onPressed: () => _act(h)),
-                  if (h.second == HomeAction.joinTeam)
+                  if (h.second == HomeAction.joinTeam && widget.devTrust) // 7.8 (F14 / T-S5)
                     BatButton(Btn.joinTeam, kind: BtnKind.text, onPressed: () => _act(HomeHero(h.row, h.look, h.text, action: h.second))),
                 ],
         ),
         if (h.row == 14 && !widget.ui.homeTip) HomeTipCard(onDone: () => widget.ui.setHomeTip().then((_) => mounted ? setState(() {}) : null)),
         for (final m in a.reg.unsavedTodos)
-          BatBanner(look: Look.warn, title: m, text: '這個操作沒有在時間內結束，app 已經停止它。請到那台節點的頁面看目前的狀態，需要的話再做一次。',
-              action: Btn.gotIt, onAction: () => setState(() => a.reg.unsavedTodos.remove(m))),
+          BatBanner(
+              look: Look.warn,
+              title: m,
+              // #329 PR 5 R12: an offline operation's own sentence (it touches no node), else the node one
+              text: a.reg.unsavedText[m] ?? '這個操作沒有在時間內結束，app 已經停止它。請到那台節點的頁面看目前的狀態，需要的話再做一次。',
+              action: Btn.gotIt,
+              onAction: () => setState(() {
+                    a.reg.unsavedTodos.remove(m);
+                    a.reg.unsavedText.remove(m);
+                  })),
         if (_pending > 0)
           BatBanner(look: Look.warn, title: '上次新增節點沒有做完', action: Btn.finishIt, onAction: _addNode),
         // F41 (§2.7): the line of a claim that ended after its page was closed, once
@@ -323,6 +339,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               text: '${nodeInfo(a, j.deviceId, widget.ui).name} 加入「${j.net.view.netName.isEmpty ? j.net.view.meshId : j.net.view.netName}」還沒有完成。',
               action: Btn.finishIt,
               onAction: () => _form(makes: false, todo: j)),
+        // #329 PR 5 (design §5.1): a request waiting for the leader -> 7.9
+        for (final id in pends)
+          BatBanner(
+              key: Key('todo-pend-$id'),
+              look: Look.unk,
+              title: '你的加入申請還在等隊長同意',
+              action: Btn.seeRequest,
+              onAction: () => _back(Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => MyRequestPage(app: a, ui: widget.ui, netId: id))))),
         // #329 PR 4 §2.8 (design §4.8): an update prepared and not applied (memory only, as the update itself)
         for (final id in a.sw.unfinishedOf(a.link.core.states.containsKey))
           BatBanner(

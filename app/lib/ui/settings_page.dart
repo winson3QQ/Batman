@@ -8,14 +8,17 @@ import '../nodes.dart';
 import '../scan.dart';
 import '../src/nodelink/app_link.dart';
 import 'home_page.dart' show openUnderLease;
+import 'team_hub.dart';
 import 'theme.dart';
+import 'ui_state.dart';
 import 'widgets.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
 
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key, required this.app, required this.devTrust, this.notes = const []});
+  const SettingsPage({super.key, required this.app, required this.ui, required this.devTrust, this.notes = const []});
   final AppLink app;
+  final UiState ui;
   final bool devTrust;
   final List<String> notes;
 
@@ -47,6 +50,16 @@ class SettingsPage extends StatelessWidget {
         const BatLabel('啟動時的提醒'),
         BatCard(children: [for (final n in notes) BatRow(icon: Icons.warning_amber_outlined, title: n)]),
       ],
+      // R15: the team rows, dev builds only (T-S5)
+      if (devTrust)
+        BatCard(children: [
+          BatRow(
+              key: const Key('settings-team'),
+              icon: Icons.groups_outlined,
+              title: '隊伍與邀請',
+              sub: '邀請隊員、加入隊長的網路、移除隊員與換密碼',
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => TeamHubPage(app: app, ui: ui)))),
+        ]),
       if (devTrust) ...[
         const BatLabel(Btn.devOptions),
         BatCard(children: [

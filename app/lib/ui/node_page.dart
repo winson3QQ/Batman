@@ -10,6 +10,12 @@ import 'home_logic.dart';
 import 'home_page.dart' show nodeInfo;
 import '../src/flows/net_index.dart' show NetEntry;
 import 'more_pages.dart' show MorePage;
+import 'join_choice.dart' show NetMode;
+import 'send_key.dart';
+import 'team_hub.dart' show PickNetPage;
+import 'team_pages.dart' show MembersPage;
+import '../say.dart' show screenText;
+import '../src/flows/rekey_send.dart' show rustLast4, sameLast4;
 import 'net_pages.dart' show CheckNetPage, NetFormPage, goMake;
 import 'settings_pages.dart' show WifiPage;
 import 'update_route.dart' show openSwUpdate;
@@ -79,27 +85,75 @@ class _NodePageState extends State<NodePage> {
   List<Widget>? _network(AppLink a, NodeInfo n) {
     final nets = a.nets.now;
     final join = n.view != null && n.view!.nodeState.toInt() == 1 && nets.netFiles > 0;
+    // R16: the member's join where this node is the entry of a team network on the phone, whatever its nodeState
+    final entries = [
+      for (final m in nets.mnets)
+        if (a.devTrust && m.opens && m.entryLast4.isNotEmpty && sameLast4(rustLast4(widget.id), m.entryLast4)) m.id
+    ];
+    final member = entries.isNotEmpty;
     final me = 'node-${last4(widget.id).toLowerCase()}';
     final pending = [
       for (final e in nets.nets)
         if (!e.applied && e.view.members.any((m) => m.creator && m.name.toLowerCase() == me)) e
     ];
-    if (!join && pending.isEmpty) return null;
+    if (!join && !member && pending.isEmpty) return null;
     return [
       const BatLabel('網路'),
       BatCard(children: [
-        if (join)
+        if (join || member)
           BatRow(
+              key: const Key('node-join'),
               icon: Icons.hub_outlined,
               title: Btn.joinNetwork,
+              // both -> asked in 4.1 (joinChoice); one -> that mode
               onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => NetFormPage(app: a, ui: widget.ui, ticked: {widget.id}, back: nl.Page.node, backNode: widget.id)))),
+                  builder: (_) => NetFormPage(
+                      app: a,
+                      ui: widget.ui,
+                      mode: join && member ? null : (member ? NetMode.member : NetMode.leader),
+                      memberNet: entries.length == 1 ? entries.first : null,
+                      ticked: {widget.id},
+                      back: nl.Page.node,
+                      backNode: widget.id)))),
         if (pending.isNotEmpty)
           BatRow(
               icon: Icons.fact_check_outlined,
               title: Btn.checkNetwork,
               sub: '這台建立的網路還沒確認建立完成',
               onTap: () => _check(a, pending)),
+      ]),
+    ];
+  }
+
+  /// §2.10 (E-M1): the new-key hint of this node's read, right under the verdict and before every group, whatever
+  /// the node's state; its button sends through R17. Dev builds only (T-S5: the Rust entry has no dev gate, P9).
+  Widget? _hint(AppLink a) {
+    final h = a.link.hints[widget.id];
+    if (!a.devTrust || h == null) return null;
+    return StatusHero(
+        key: const Key('node-hint'),
+        look: Look.warn,
+        text: screenText(h.line),
+        extra: [if (h.button) SendKeyButton(app: a, id: widget.id)]);
+  }
+
+  /// §2.10: 「隊員」 when the phone holds a network it made: the node's own network when it is in an applied one, else
+  /// picked.
+  List<Widget>? _team(AppLink a, NodeInfo n) {
+    final nets = a.nets.now;
+    if (!a.devTrust || nets.netFiles == 0) return null;
+    final mine = nets.nets.where((e) => e.applied && n.view != null && e.view.netId == n.view!.netId).firstOrNull;
+    return [
+      const BatLabel('隊員'),
+      BatCard(children: [
+        BatRow(
+            key: const Key('node-team'),
+            icon: Icons.groups_outlined,
+            title: '隊員名單',
+            sub: '邀請、收申請、移除隊員與換密碼',
+            onTap: () => _open(mine != null
+                ? MembersPage(app: a, netId: mine.id)
+                : PickNetPage(app: a, title: '隊員名單', next: (id) => MembersPage(app: a, netId: id)))),
       ]),
     ];
   }
@@ -131,7 +185,9 @@ class _NodePageState extends State<NodePage> {
           time: n.readWall == null ? null : (n.fresh ? '讀取於 ${hhmmss(n.readWall!)}' : meta),
           onRefresh: a.link.refresh,
         ),
+        ?_hint(a),
         ...?_network(a, n),
+        ...?_team(a, n),
         // #329 PR 4 §2.3 (design §5.5): 手機 Wi-Fi, 軟體更新, 更多 (隊員: PR 5)
         const BatLabel('手機 Wi-Fi'),
         BatCard(children: [

@@ -311,6 +311,9 @@ class NetView {
   final String country;
   final List<MemberView> members;
 
+  /// #329 PR 5 V-M1 / R19: the record's network version (netcfg key 2); None when its netcfg does not open
+  final int? version;
+
   const NetView({
     required this.netId,
     required this.meshId,
@@ -318,6 +321,7 @@ class NetView {
     required this.applied,
     required this.country,
     required this.members,
+    this.version,
   });
 
   @override
@@ -327,7 +331,8 @@ class NetView {
       netName.hashCode ^
       applied.hashCode ^
       country.hashCode ^
-      members.hashCode;
+      members.hashCode ^
+      version.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -339,7 +344,8 @@ class NetView {
           netName == other.netName &&
           applied == other.applied &&
           country == other.country &&
-          members == other.members;
+          members == other.members &&
+          version == other.version;
 }
 
 enum OwnerKind {

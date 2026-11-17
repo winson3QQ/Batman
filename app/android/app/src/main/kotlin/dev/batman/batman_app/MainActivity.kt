@@ -4,6 +4,8 @@ import dev.batman.batman_app.keystore.KeyAnswer
 import dev.batman.batman_app.keystore.KeyHandlers
 import dev.batman.batman_app.keystore.KeyRole
 import dev.batman.batman_app.keystore.Keys
+import dev.batman.batman_app.qr.ClipSensitive
+import dev.batman.batman_app.qr.QrMatrix
 import dev.batman.batman_app.qr.QrScan
 import dev.batman.batman_app.qr.QrScanActivity
 import dev.batman.batman_app.swupd.SwUpload
@@ -139,6 +141,16 @@ class MainActivity : FlutterActivity() {
                     runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
                 }.start()
                 "seal" -> keyCall(result) { it.seal(call.argument<ByteArray>("plain"), call.argument<ByteArray>("aad")) }
+                // #329 PR 5 plan v16 §2.1 / R1: an app-made upper-case hex code -> {size, version, bits}; error `qr` (fixed
+                // message, never the text) when it is not one
+                "qrMatrix" -> {
+                    val q = QrMatrix.encode(call.argument<String>("text") ?: "")
+                    if (q == null) result.error("qr", "not a code", null)
+                    else result.success(mapOf("size" to q.size, "version" to q.version, "bits" to q.bits))
+                }
+                // R4: copy marked sensitive (no preview); clear = clearPrimaryClip, after a paste always. Fixed messages.
+                "copyCode" -> result.clipCall { copyCode(call.argument<String>("text") ?: "") }
+                "clearClip" -> result.clipCall { (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).clearPrimaryClip() }
                 // the claim QR from the camera (254-app-qr): the text, null when left without one, error `camera` / `busy`
                 "scanQr" -> scanQr(result)
                 // true when both BLE permissions are granted (asks once if not)
@@ -150,6 +162,24 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    // R4: the copied code as a plain-text clip with the sensitive extra (ClipSensitive)
+    private fun copyCode(text: String) {
+        val clip = android.content.ClipData.newPlainText("code", text)
+        ClipSensitive.key(android.os.Build.VERSION.SDK_INT)?.let { k ->
+            clip.description.extras = android.os.PersistableBundle().apply { putBoolean(k, true) }
+        }
+        (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(clip)
+    }
+
+    // a clipboard call: success(null), or a fixed error code (`clipTooLarge` / `clip`); the text is never in a message
+    private fun MethodChannel.Result.clipCall(f: () -> Unit) = try {
+        f(); success(null)
+    } catch (e: android.os.TransactionTooLargeException) {
+        error("clipTooLarge", "too large", null)
+    } catch (e: RuntimeException) {
+        error(if (e.cause is android.os.TransactionTooLargeException) "clipTooLarge" else "clip", "clipboard", null)
     }
 
     /// #329: start a system settings page; false when the phone has none for it

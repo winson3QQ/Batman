@@ -4636,6 +4636,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  int dco_decode_box_autoadd_u_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw as int;
+  }
+
+  @protected
   BuildInfo dco_decode_build_info(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -4844,13 +4850,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   MnetView dco_decode_mnet_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
     return MnetView(
       netId: dco_decode_String(arr[0]),
       netName: dco_decode_String(arr[1]),
       entryState: dco_decode_String(arr[2]),
       deviceLast4: dco_decode_String(arr[3]),
+      version: dco_decode_opt_box_autoadd_u_32(arr[4]),
     );
   }
 
@@ -4858,8 +4865,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   NetView dco_decode_net_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return NetView(
       netId: dco_decode_String(arr[0]),
       meshId: dco_decode_String(arr[1]),
@@ -4867,6 +4874,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       applied: dco_decode_bool(arr[3]),
       country: dco_decode_String(arr[4]),
       members: dco_decode_list_member_view(arr[5]),
+      version: dco_decode_opt_box_autoadd_u_32(arr[6]),
     );
   }
 
@@ -4916,6 +4924,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SettingsView? dco_decode_opt_box_autoadd_settings_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_settings_view(raw);
+  }
+
+  @protected
+  int? dco_decode_opt_box_autoadd_u_32(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_u_32(raw);
   }
 
   @protected
@@ -5702,6 +5716,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  int sse_decode_box_autoadd_u_32(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_u_32(deserializer));
+  }
+
+  @protected
   BuildInfo sse_decode_build_info(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_devTrust = sse_decode_bool(deserializer);
@@ -5990,11 +6010,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_netName = sse_decode_String(deserializer);
     var var_entryState = sse_decode_String(deserializer);
     var var_deviceLast4 = sse_decode_String(deserializer);
+    var var_version = sse_decode_opt_box_autoadd_u_32(deserializer);
     return MnetView(
       netId: var_netId,
       netName: var_netName,
       entryState: var_entryState,
       deviceLast4: var_deviceLast4,
+      version: var_version,
     );
   }
 
@@ -6007,6 +6029,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_applied = sse_decode_bool(deserializer);
     var var_country = sse_decode_String(deserializer);
     var var_members = sse_decode_list_member_view(deserializer);
+    var var_version = sse_decode_opt_box_autoadd_u_32(deserializer);
     return NetView(
       netId: var_netId,
       meshId: var_meshId,
@@ -6014,6 +6037,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       applied: var_applied,
       country: var_country,
       members: var_members,
+      version: var_version,
     );
   }
 
@@ -6096,6 +6120,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_settings_view(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_u_32(deserializer));
     } else {
       return null;
     }
@@ -6952,6 +6987,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self, serializer);
+  }
+
+  @protected
   void sse_encode_build_info(BuildInfo self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bool(self.devTrust, serializer);
@@ -7196,6 +7237,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.netName, serializer);
     sse_encode_String(self.entryState, serializer);
     sse_encode_String(self.deviceLast4, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.version, serializer);
   }
 
   @protected
@@ -7207,6 +7249,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.applied, serializer);
     sse_encode_String(self.country, serializer);
     sse_encode_list_member_view(self.members, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.version, serializer);
   }
 
   @protected
@@ -7288,6 +7331,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_settings_view(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_u_32(self, serializer);
     }
   }
 

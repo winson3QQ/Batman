@@ -3,10 +3,9 @@
 // network record -> 建立網路; any -> 加入網路; not computed yet -> the neutral 加入網路 (D-m9).
 import 'package:flutter/material.dart';
 
-import '../nodes.dart' show NodesPage;
 import '../src/nodelink/app_link.dart';
-import '../src/nodelink/raw_use.dart' show openRawPage;
 import 'home_logic.dart';
+import 'join_pages.dart' show JoinTeamPage;
 import 'net_pages.dart' show NetFormPage;
 import 'theme.dart';
 import 'ui_state.dart';
@@ -59,7 +58,7 @@ class _NickPageState extends State<NickPage> {
     // code review B M1: push, not pushReplacement (a replaced route ends at once with null and 再加一台 would be lost);
     // 3.5 / 3.6's answer goes back to the home page through this page
     final r = await Navigator.of(context).push<String>(MaterialPageRoute(
-        builder: (_) => AddedPage(app: widget.app, ui: widget.ui, id: widget.id, devTrust: widget.devTrust)));
+        builder: (_) => AddedPage(app: widget.app, ui: widget.ui, id: widget.id)));
     if (mounted) Navigator.of(context).pop(r);
   }
 
@@ -117,17 +116,13 @@ class _AddedPageState extends State<AddedPage> {
 
   Future<void> _form(bool makes) async {
     await Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => NetFormPage(app: a, ui: widget.ui, makes: makes, ticked: {widget.id}, devTrust: widget.devTrust)));
+        builder: (_) => NetFormPage(app: a, ui: widget.ui, makes: makes, ticked: {widget.id})));
     if (mounted) Navigator.of(context).pop();
   }
 
-  Future<void> _memberJoin() async {
-    // the member's join is the older console's until PR 5 (D3)
-    final busy = await openRawPage(Navigator.of(context), a.link, a.gate, '我的節點', (u) => NodesPage(ble: a.ble, use: u));
-    if (busy != null && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('另一個操作還在進行：$busy')));
-    }
-  }
+  /// #329 PR 5 K-m6: 「我是隊員，加入隊長的網路」 -> 7.8 (dev builds only, F14).
+  Future<void> _memberJoin() =>
+      Navigator.of(context).push(MaterialPageRoute(builder: (_) => JoinTeamPage(app: a, ui: widget.ui)));
 
   @override
   Widget build(BuildContext context) {
@@ -146,7 +141,7 @@ class _AddedPageState extends State<AddedPage> {
       ],
       foot: [
         BatButton(make ? Btn.makeNetwork : Btn.joinNetwork, onPressed: () => _form(make)),
-        if (make && only)
+        if (make && only && widget.devTrust)
           BatButton(Btn.memberJoin, kind: BtnKind.text, onPressed: _memberJoin)
         else
           BatButton(Btn.addAnother, kind: BtnKind.text, onPressed: () => Navigator.of(context).pop(addAgain)),

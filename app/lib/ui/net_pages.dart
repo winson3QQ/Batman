@@ -15,19 +15,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../member_ui.dart' show forgetNotice;
-import '../nodes.dart' show NodesPage;
 import '../say.dart' show screenText;
 import '../src/flows/net_index.dart';
 import '../src/flows/net_run.dart';
 import '../src/flows/owner_console.dart';
+import '../src/flows/rekey_send.dart' show RekeyEnd, VersionRead, rustLast4, sameLast4;
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl show Page;
 import '../src/nodelink/handoff.dart';
 import '../src/nodelink/lease.dart';
-import '../src/nodelink/raw_use.dart' show openRawPage;
 import '../swupdate.dart' show swChannel;
 import 'home_logic.dart';
 import 'home_page.dart' show nodeInfo;
+import 'join_choice.dart';
+import 'join_pages.dart' show JoinTeamPage, MyRequestPage;
+import 'rekey_result.dart';
+import 'team_deps.dart' show teamDeps;
 import 'theme.dart';
 import 'ui_state.dart';
 import 'widgets.dart';
@@ -119,22 +122,28 @@ class NetFormPage extends StatefulWidget {
       required this.app,
       required this.ui,
       this.makes = false,
+      this.mode,
+      this.memberNet,
       this.ticked = const {},
       this.todo,
       this.back = nl.Page.home,
       this.backNode,
-      this.devTrust = false,
       this.compute,
       this.runFlow,
       this.checkFlow});
   final AppLink app;
   final UiState ui;
   final bool makes;
+
+  /// R16 (AA-M1): the join's mode, given by the entry; null = joinChoice on the records in the page.
+  final NetMode? mode;
+
+  /// R16 (AC-m3): the team network to join (from 7.10), not picked again.
+  final String? memberNet;
   final Set<String> ticked;
   final JoinTodo? todo;
   final nl.Page back;
   final String? backNode;
-  final bool devTrust;
 
   /// Tests: the records as listed under the lease at 「開始」 (the app: NetIndex.compute).
   final Future<NetSnapshot> Function()? compute;
@@ -152,6 +161,9 @@ class NetFormPage extends StatefulWidget {
 class _NetFormPageState extends State<NetFormPage> {
   AppLink get a => widget.app;
   late bool _makes = widget.makes;
+  late NetMode? _mode = widget.mode;
+  late String? _mnetPick = widget.memberNet;
+  String? _entry; // member mode: the entry node picked when two share its last four (AC-m4)
   String? _pick; // the picked net record (join mode)
   final Set<String> _ticked = {};
   bool _tickedOnce = false;
@@ -226,10 +238,12 @@ class _NetFormPageState extends State<NetFormPage> {
     return s.nets.length == 1 ? s.nets.first : null;
   }
 
-  String _key(NetSnapshot s) => '${[for (final n in s.nets) '${n.rel}:${n.applied}'].join(',')}|${s.netFiles}';
+  String _key(NetSnapshot s) =>
+      '${[for (final n in s.nets) '${n.rel}:${n.applied}'].join(',')}|${s.netFiles}|${s.mnetIds.join(',')}|${s.mpendIds.join(',')}';
 
-  Future<void> _start(NetSnapshot s) async {
-    if (_busy || _ticked.isEmpty) return;
+  /// [m] / [entry]: R16's member join on the team network's entry node (the ticks are not looked at).
+  Future<void> _start(NetSnapshot s, {MnetEntry? m, String? entry}) async {
+    if (_busy || (m == null && _ticked.isEmpty)) return;
     setState(() {
       _busy = true;
       _note = null;
@@ -248,9 +262,9 @@ class _NetFormPageState extends State<NetFormPage> {
       // §2.4: the records again under the lease; another network or another state since the form was made -> no start
       final now = await (widget.compute ?? a.nets.compute)();
       // code review D M-1: the list's order (nicknames, as shown), so the node marked 「由這台建立網路」 is the one that makes
-      final ticked = _ids.where(_ticked.contains).toList();
+      final ticked = m != null ? [entry!] : _ids.where(_ticked.contains).toList();
       if (!mounted || _pending == null) return; // dispose released it
-      if (now.listFailed || _key(now) != _key(_seen ?? s) || ticked.length != _ticked.length) {
+      if (now.listFailed || _key(now) != _key(_seen ?? s) || (m == null && ticked.length != _ticked.length)) {
         _pending = null;
         await l.release();
         _seen = now;
@@ -261,7 +275,8 @@ class _NetFormPageState extends State<NetFormPage> {
         if (_makes) _maker != null && ticked.contains(_maker) ? _maker! : ticked.first,
         ...ticked.where((id) => !_makes || id != (_maker != null && ticked.contains(_maker) ? _maker : ticked.first)),
       ];
-      final rel = _makes ? null : _picked(now)?.rel;
+      final still = m == null ? null : now.mnets.where((x) => x.id == m.id && x.opens && sameLast4(x.entryLast4, m.entryLast4)).firstOrNull;
+      final rel = m != null ? still?.rel : (_makes ? null : _picked(now)?.rel);
       if (!_makes && rel == null) {
         _pending = null;
         await l.release();
@@ -276,6 +291,7 @@ class _NetFormPageState extends State<NetFormPage> {
               lease: l,
               ids: order,
               makes: _makes,
+              member: m != null,
               joinRel: rel,
               name: _name.text,
               channel: _channel,
@@ -328,9 +344,84 @@ class _NetFormPageState extends State<NetFormPage> {
     if (mounted) setState(() => _note = plain(line));
   }
 
-  Future<void> _oldConsole() async {
-    final busy = await openRawPage(Navigator.of(context), a.link, a.gate, '我的節點', (u) => NodesPage(ble: a.ble, use: u));
-    if (busy != null && mounted) setState(() => _note = '另一個操作還在進行：$busy');
+  /// R13: team networks with the same name told apart by the last four of their id.
+  String _mnetLabel(MnetEntry m, List<MnetEntry> all) {
+    final name = m.name.isEmpty ? '隊伍網路' : m.name;
+    final same = all.where((x) => x.name == m.name).length > 1;
+    return same ? '$name（代號 …${rustLast4(m.id)}）' : name;
+  }
+
+  /// R16: the member's join, always on the team network's entry node (P20 / D10), found by its last four (P21, R18).
+  /// A wrong one of two with the same last four: Rust says NotThisNode before any write; another one is tried.
+  Widget _member(NetSnapshot s, String title) {
+    final t = BatTheme.of(context);
+    final invite = BatButton('收隊長的邀請',
+        kind: BtnKind.secondary,
+        onPressed: () =>
+            Navigator.of(context).push(MaterialPageRoute(builder: (_) => JoinTeamPage(app: a, ui: widget.ui))));
+    if (s.mnets.isEmpty) {
+      return BatPage(title: title, body: const [StatusHero(look: Look.bad, text: '手機裡沒有匯入過的隊伍網路（先貼上同意碼）')]);
+    }
+    final pickId = _mnetPick ?? (s.mnets.length == 1 ? s.mnets.first.id : null);
+    final m = s.mnets.where((x) => x.id == pickId).firstOrNull;
+    final List<String> cands = m == null || !m.opens || m.entryLast4.isEmpty
+        ? const []
+        : [for (final id in _ids) if (sameLast4(rustLast4(id), m.entryLast4)) id];
+    final entry = cands.length == 1 ? cands.first : (cands.contains(_entry) ? _entry : null);
+    return BatPage(
+      title: title,
+      body: [
+        if (widget.memberNet == null && s.mnets.length > 1) ...[
+          const BatLabel('要加入哪個隊伍網路'),
+          RadioGroup<String>(
+            groupValue: m?.id,
+            onChanged: (v) => setState(() {
+              _mnetPick = v;
+              _entry = null;
+            }),
+            child: BatCard(children: [
+              for (final x in s.mnets)
+                RadioListTile<String>(
+                    key: Key('mnet-${x.id}'),
+                    value: x.id,
+                    title: Text(_mnetLabel(x, s.mnets), style: TextStyle(fontSize: Fs.body, color: t.ink))),
+            ]),
+          ),
+        ],
+        if (m == null && pickId != null) const Text('要加入的網路已經不在這支手機上，請重新選。'),
+        if (m != null && !m.opens)
+          StatusHero(
+              look: Look.bad,
+              text: '這筆隊伍網路的紀錄現在打不開', // AC-m8: never 「重新申請」
+              extra: [BatButton(Btn.tryAgain, onPressed: a.nets.recompute)])
+        else if (m != null && m.entryLast4.isEmpty)
+          StatusHero(look: Look.bad, text: kNeedNewInvite, extra: [invite])
+        else if (m != null && cands.isEmpty)
+          const StatusHero(look: Look.warn, text: kNotEntryNode)
+        else if (m != null) ...[
+          if (cands.length > 1) ...[
+            const BatLabel('有兩台節點的編號後四碼相同，選你加入隊伍時用的那一台'),
+            RadioGroup<String>(
+              groupValue: entry,
+              onChanged: (v) => setState(() => _entry = v),
+              child: BatCard(children: [
+                for (final id in cands)
+                  RadioListTile<String>(
+                      key: Key('entry-$id'),
+                      value: id,
+                      title: Text(_name4(id), style: TextStyle(fontSize: Fs.body, color: t.ink))),
+              ]),
+            ),
+          ],
+          if (entry != null) Text('用節點 …${rustLast4(entry)} 加入「${_mnetLabel(m, s.mnets)}」', key: const Key('member-entry')),
+        ],
+        if (_note != null) Text(_note!, style: TextStyle(fontSize: Fs.body, color: t.ink)),
+      ],
+      foot: [
+        BatButton(Btn.start,
+            onPressed: _busy || m == null || entry == null ? null : () => _start(s, m: m, entry: entry)),
+      ],
+    );
   }
 
   @override
@@ -344,6 +435,34 @@ class _NetFormPageState extends State<NetFormPage> {
         StatusHero(look: Look.bad, text: '讀不到手機裡的網路紀錄', extra: [BatButton(Btn.tryAgain, onPressed: a.nets.recompute)]),
       ]);
     }
+    if (!_makes && _mode == null) {
+      // R16: no mode from the entry -> joinChoice on the records; the member's join only in the dev build (F14 / T-S5)
+      switch (joinChoice(hasNet: s.netFiles > 0, hasMnet: s.anyMnet && a.devTrust)) {
+        case JoinChoice.own:
+          _mode = NetMode.leader;
+        case JoinChoice.member:
+          _mode = NetMode.member;
+        case JoinChoice.ask:
+          return BatPage(title: title, body: [
+            const BatLabel('要加入哪一個網路？'),
+            BatCard(children: [
+              BatRow(
+                  key: const Key('mode-leader'),
+                  icon: Icons.hub_outlined,
+                  title: '這支手機建立的網路',
+                  onTap: () => setState(() => _mode = NetMode.leader)),
+              BatRow(
+                  key: const Key('mode-member'),
+                  icon: Icons.groups_outlined,
+                  title: '隊長的網路（我是隊員）',
+                  onTap: () => setState(() => _mode = NetMode.member)),
+            ]),
+          ]);
+        case JoinChoice.none:
+          break;
+      }
+    }
+    if (!_makes && _mode == NetMode.member) return _member(s, title);
     if (!_makes && s.noneOpens) {
       // join2 T8 (nodes.dart:609-610)
       return BatPage(title: title, body: const [
@@ -351,15 +470,19 @@ class _NetFormPageState extends State<NetFormPage> {
       ]);
     }
     if (!_makes && s.netFiles == 0 && s.records != NetRecords.none) {
-      // D3: only a team network (mnet) or a request (mpend): the member's join is the older console's (PR 5)
+      // R16 / Y-M2: a request waiting (-> 7.9), or a team network in the field build: never 建立網路
+      final pend = s.records == NetRecords.mpend;
       return BatPage(title: title, body: [
-        StatusHero(
-            look: Look.unk,
-            text: s.records == NetRecords.mpend ? '還在等隊長同意你的申請' : '這支手機加入的是別人的隊伍網路',
-            extra: [if (widget.devTrust) BatButton(Btn.oldConsole, onPressed: _oldConsole)]),
+        StatusHero(look: Look.unk, text: pend ? '還在等隊長同意你的申請' : '這支手機加入的是別人的隊伍網路', extra: [
+          if (pend && a.devTrust)
+            for (final id in s.mpendIds)
+              BatButton(s.mpendIds.length > 1 ? '看我的申請（網路 ${id.length > 8 ? id.substring(0, 8) : id}…）' : '看我的申請',
+                  onPressed: () => Navigator.of(context)
+                      .push(MaterialPageRoute(builder: (_) => MyRequestPage(app: a, ui: widget.ui, netId: id)))),
+        ]),
       ]);
     }
-    if (!_makes && s.netFiles == 0) _makes = true; // no network at all: make (§5.1 row 6)
+    if (!_makes && s.netFiles == 0) _makes = true; // Y-M2: no net, mnet or mpend at all: make (§5.1 row 6)
     _seen ??= s;
     _tickOnce();
     final ids = _ids;
@@ -454,6 +577,7 @@ class NetRunPage extends StatefulWidget {
     this.joinRel,
     this.name = 'Batman',
     this.channel = 40,
+    this.member = false,
     this.flow,
     this.checkFlow,
   });
@@ -462,6 +586,9 @@ class NetRunPage extends StatefulWidget {
   final Lease lease;
   final List<String> ids;
   final bool makes;
+
+  /// #329 PR 5 R16: a member's own node joins the team network of [joinRel] (mnet)
+  final bool member;
   final String? joinRel;
   final String name;
   final int channel;
@@ -477,7 +604,12 @@ class NetRunPage extends StatefulWidget {
   State<NetRunPage> createState() => _NetRunPageState();
 }
 
+/// The run [p] asks for (the app's flow, on [d]); every parameter of the page goes in (R16: [NetRunPage.member]).
+NetRun runFor(NetRunPage p, FlowDeps d, Future<bool> Function(RunRow) go) => NetRun(d,
+    ids: p.ids, makes: p.makes, joinRel: p.joinRel, name: p.name, channel: p.channel, member: p.member, askGoOn: go);
+
 class _NetRunPageState extends State<NetRunPage> {
+  VersionRead? _ver; // R19: the member's version, from the record this join used
   AppLink get a => widget.app;
   late final NetRun run;
   Cancel? _hold;
@@ -492,18 +624,16 @@ class _NetRunPageState extends State<NetRunPage> {
     _work(run.run);
   }
 
-  NetRun _appFlow(Future<bool> Function(RunRow) go, AskUser country, AskUser removed, void Function() lost) => NetRun(
-        flowDeps(a, widget.lease, askCountry: country, askRemoved: removed, onLost: lost),
-        ids: widget.ids,
-        makes: widget.makes,
-        joinRel: widget.joinRel,
-        name: widget.name,
-        channel: widget.channel,
-        askGoOn: go,
-      );
+  NetRun _appFlow(Future<bool> Function(RunRow) go, AskUser country, AskUser removed, void Function() lost) =>
+      runFor(widget, flowDeps(a, widget.lease, askCountry: country, askRemoved: removed, onLost: lost), go);
 
   void _changed() {
     if (mounted) setState(() {});
+    final rel = widget.joinRel;
+    if (widget.member && rel != null && _ver == null && run.rows.any((r) => r.sendEnd != null)) {
+      _ver = VersionRead.pending;
+      teamDeps(a).mnetVersion(rel).then((v) => mounted ? setState(() => _ver = v) : null);
+    }
   }
 
   /// Work under this page's lease: a hold (the lease is 「進行中」), PopScope, keepScreenOn; given back when it ends.
@@ -640,8 +770,12 @@ class _NetRunPageState extends State<NetRunPage> {
             StatusHero(look: Look.busy, text: i >= 0 ? '${_name(run.rows[i].id)}：${run.rows[i].line}' : '正在進行', next: '請留在這個畫面')
           else
             StatusHero(
-                look: run.rows.every((r) => r.state == RowState.ok) ? Look.ok : Look.warn,
-                text: run.rows.every((r) => r.state == RowState.ok) ? '完成' : '有節點沒有完成',
+                look: run.rows.every((r) => r.state == RowState.ok && r.sendEnd != RekeyEnd.applying) ? Look.ok : Look.warn,
+                text: !run.rows.every((r) => r.state == RowState.ok)
+                    ? '有節點沒有完成'
+                    : run.rows.any((r) => r.sendEnd == RekeyEnd.applying)
+                        ? '已加入，有節點的新密碼還在套用'
+                        : '完成',
                 next: switch (run.stopped) {
                   StopWhy.blocked => '藍牙或權限現在不能用，已經停止。',
                   StopWhy.keys => '這支手機的金鑰現在不能用，已經停止。',
@@ -661,9 +795,15 @@ class _NetRunPageState extends State<NetRunPage> {
                     RowState.waiting => '等待中',
                     RowState.notDone => '還沒做',
                   }}', style: TextStyle(fontSize: Fs.body, fontWeight: FontWeight.w700, color: t.ink)),
-                  if (r.line.isNotEmpty && r.state != RowState.waiting && r.state != RowState.notDone)
+                  if (r.line.isNotEmpty && r.line != r.sendLine && r.state != RowState.waiting && r.state != RowState.notDone)
                     Text(plain(r.line), style: TextStyle(fontSize: Fs.body, height: 1.5, color: t.ink)),
                   if (r.note.isNotEmpty) Text(r.note, style: TextStyle(fontSize: Fs.meta, color: t.sub)),
+                  if (r.sendEnd case final e?) RekeyResult(end: e, line: r.sendLine, member: widget.member, version: _ver), // R14
+                  if (!working && r.state == RowState.failed && needsNewInvite(r.line) && a.devTrust)
+                    BatButton('收隊長的邀請', // S-m2
+                        kind: BtnKind.secondary,
+                        onPressed: () => Navigator.of(context)
+                            .push(MaterialPageRoute(builder: (_) => JoinTeamPage(app: a, ui: widget.ui)))),
                   if (!working && r.canRetry)
                     BatButton(Btn.retryNode, kind: BtnKind.secondary, onPressed: () => _work(() => run.retry(r))),
                   if (!working && r.canCheck) BatButton(Btn.checkNetwork, kind: BtnKind.secondary, onPressed: () => _check(r)),

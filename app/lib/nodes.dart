@@ -21,6 +21,7 @@ import 'src/rust/api/owner.dart';
 import 'src/rust/api/rekey.dart';
 import 'src/rust/api/swupdate.dart';
 import 'swupdate.dart';
+import 'ui/join_choice.dart' show JoinChoice, joinChoice;
 
 const _platform = MethodChannel('dev.batman/platform');
 final _rx = Uuid.parse('540aa38c-0086-4d59-a9c0-c7c9d1e1bd42');
@@ -1773,14 +1774,3 @@ class _NodesPageState extends State<NodesPage> with RawBusy<NodesPage> {
   }
 }
 
-enum JoinChoice { own, member, ask, none }
-
-/// #329 §3.4 S3 / T-N2: what the one 「加入網路」 does. Only a network this phone made -> join it; only an imported
-/// team network -> the member's join; both -> the user picks (PR 2 review B-M2: neither path may vanish); neither ->
-/// nothing to join: say how to start (B-M1), never the 「App 重裝過」 line meant for a lost record key.
-JoinChoice joinChoice({required bool hasNet, required bool hasMnet}) => switch ((hasNet, hasMnet)) {
-      (true, false) => JoinChoice.own,
-      (false, true) => JoinChoice.member,
-      (true, true) => JoinChoice.ask,
-      (false, false) => JoinChoice.none,
-    };

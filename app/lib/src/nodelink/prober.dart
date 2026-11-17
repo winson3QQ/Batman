@@ -8,6 +8,7 @@ import 'dart:typed_data';
 
 import '../rust/api/claim.dart' show frameLimit;
 import '../rust/api/owner.dart';
+import '../rust/api/rekey.dart' show UpdateHint;
 import 'ble_gate.dart';
 import 'core.dart';
 import 'handoff.dart';
@@ -25,6 +26,27 @@ Outcome loginOutcome(int loginEnd, int code, {required bool loggedIn}) => switch
       _ => loggedIn ? const Outcome(Res.broken) : const Outcome(Res.noResponse),
     };
 
+/// #329 PR 5 plan v16 §2.4 (R6–R8): what the read needs to work out the remove-member §3.5 line 「這台還在舊密碼」 on the
+/// session that just read the status page. All read-only; injected so tests can fake them.
+class HintSource {
+  const HintSource({required this.wanted, required this.netKnown, required this.openNet, required this.onHint});
+
+  /// R6: a dev build and this node's page is open
+  final bool Function(String id) wanted;
+
+  /// R6: the phone has a net or mnet record of this network (NetIndex, read-only)
+  final bool Function(String netId) netKnown;
+
+  /// `net/<id>` or `mnet/<id>` opened (store + Keystore), null when there is none or it does not open
+  final Future<Uint8List?> Function(String rel) openNet;
+
+  /// R8: the new hint of [id] (an empty line = none)
+  final void Function(String id, UpdateHint hint) onHint;
+}
+
+/// R7: the hint never holds a read longer than this.
+const hintMax = Duration(seconds: 2);
+
 class SessionProber implements Prober {
   SessionProber({
     required this.openRecord,
@@ -33,7 +55,11 @@ class SessionProber implements Prober {
     this.keyError,
     this.log,
     this.answerMax = const Duration(seconds: 20),
+    this.hint,
   }) : _handoff = false;
+
+  /// #329 PR 5 R6–R8: null = no hint (a flow's login, tests of reads).
+  final HintSource? hint;
 
   SessionProber._handoff({
     required this.openRecord,
@@ -42,7 +68,8 @@ class SessionProber implements Prober {
     this.keyError,
     this.log,
     this.answerMax = const Duration(seconds: 20),
-  }) : _handoff = true;
+  })  : _handoff = true,
+        hint = null; // a flow's login stops at loggedIn: no status page, no hint
 
   /// #329 PR 3 §2.2: a login for a flow (HandoffProber) stops at `loggedIn` and hands the session over instead of
   /// reading the status page.
@@ -80,7 +107,10 @@ class SessionProber implements Prober {
     unawaited(due.then((_) {
       if (!gotMsg2) done(const Outcome(Res.noResponse));
     }));
-    unawaited(cancelled.then((_) => done(const Outcome(Res.noResponse))));
+    // #329 PR 5 R7 (S-m5): a cancel while the hint is worked out keeps the status page already read
+    Outcome? read;
+    var cleaning = false;
+    unawaited(cancelled.then((_) => done(read ?? const Outcome(Res.noResponse))));
 
     OwnerSession? s;
     StreamSubscription<List<int>>? sub;
@@ -120,10 +150,21 @@ class SessionProber implements Prober {
               st = session.requestStatusPage();
             }
           case OwnerKind.answer:
+            answer?.cancel(); // #329 PR 5 R7 (K-m2): the hint's wait cannot turn a good read into a broken one
             final v = session.statusView(hasNet: false, hasMnet: false);
             // a status answer that is an error code (Rust row 2') is 不變, not a read (§4.3.3-4, round-5 B-M1);
             // E_UNSUPPORTED is row 1, a definite answer
-            done(v.row == "2'" ? Outcome(Res.errorCode, '', v) : Outcome(Res.body, v.color, v));
+            final o = v.row == "2'" ? Outcome(Res.errorCode, '', v) : Outcome(Res.body, v.color, v);
+            read = o;
+            // #329 PR 5 R7: the hint on this session, before done() (done lets the cleanup dispose the session)
+            final hs = hint;
+            if (hs != null && o.res == Res.body) {
+              await Future.any([
+                _hint(hs, session, id, v, () => cleaning || result.isCompleted).timeout(hintMax, onTimeout: () {}),
+                cancelled,
+              ]);
+            }
+            done(o);
             st = null;
           case OwnerKind.ended:
             log?.call('probe $id: login ended ${st.loginEnd} code ${st.loginCode} (logged in: $loggedIn)');
@@ -186,6 +227,7 @@ class SessionProber implements Prober {
       done(failed());
     }));
     final o = await result.future; // never completes with an error
+    cleaning = true; // #329 PR 5 R7: a hint still waiting on its record does not call into the session any more
     // the cleanup never changes the outcome: each step on its own, a failure only logged
     answer?.cancel();
     final h = handed;
@@ -202,6 +244,32 @@ class SessionProber implements Prober {
       log?.call('probe $id cleanup: dispose ${e.runtimeType} $e');
     }
     return o;
+  }
+
+  /// #329 PR 5 R6–R8: the hint of [id] from the status page [v] just read on [session]. Every failure is local: this
+  /// read's outcome never depends on it, and the log has the type only. [stop] is true once the cleanup started or the
+  /// read ended (then the session may be disposed: updateHint is synchronous, so the check right before it holds).
+  Future<void> _hint(HintSource hs, OwnerSession session, String id, StatusView v, bool Function() stop) async {
+    try {
+      if (!hs.wanted(id)) return;
+      if (v.netId.isEmpty) {
+        // the node says it is in no network: it really left -> no hint; otherwise (info not read) keep the last one
+        if (v.nodeState == 1) hs.onHint(id, const UpdateHint(line: '', button: false));
+        return;
+      }
+      if (!hs.netKnown(v.netId)) return;
+      // net first, then mnet; the first record that opens is used (the old loop's break, nodes.dart:1167-1175)
+      for (final (rel, member) in [('net/${v.netId}', false), ('mnet/${v.netId}', true)]) {
+        final p = await hs.openNet(rel);
+        if (stop()) return;
+        if (p == null) continue;
+        hs.onHint(id, session.updateHint(recordPlain: p, member: member));
+        return;
+      }
+      hs.onHint(id, const UpdateHint(line: '', button: false));
+    } catch (e) {
+      log?.call('probe $id hint: ${e.runtimeType}');
+    }
   }
 }
 

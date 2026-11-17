@@ -28,11 +28,11 @@
 // Section: imports
 
 use crate::api::rekey::*;
-use crate::api::owner::*;
-use crate::api::member::*;
-use crate::api::claim::*;
 use crate::api::replay::*;
-use crate::api::swupdate::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;
+use crate::api::swupdate::*;
+use crate::api::claim::*;
+use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -1939,7 +1939,8 @@ return crate::api::owner::MemberView{name: var_name, last4: var_last4, device_id
 let mut var_netName = <String>::sse_decode(deserializer);
 let mut var_entryState = <String>::sse_decode(deserializer);
 let mut var_deviceLast4 = <String>::sse_decode(deserializer);
-return crate::api::member::MnetView{net_id: var_netId, net_name: var_netName, entry_state: var_entryState, device_last4: var_deviceLast4};}
+let mut var_version = <Option<u32>>::sse_decode(deserializer);
+return crate::api::member::MnetView{net_id: var_netId, net_name: var_netName, entry_state: var_entryState, device_last4: var_deviceLast4, version: var_version};}
                 }
                 
                 impl SseDecode for crate::api::owner::NetView {
@@ -1950,7 +1951,8 @@ let mut var_netName = <String>::sse_decode(deserializer);
 let mut var_applied = <bool>::sse_decode(deserializer);
 let mut var_country = <String>::sse_decode(deserializer);
 let mut var_members = <Vec<crate::api::owner::MemberView>>::sse_decode(deserializer);
-return crate::api::owner::NetView{net_id: var_netId, mesh_id: var_meshId, net_name: var_netName, applied: var_applied, country: var_country, members: var_members};}
+let mut var_version = <Option<u32>>::sse_decode(deserializer);
+return crate::api::owner::NetView{net_id: var_netId, mesh_id: var_meshId, net_name: var_netName, applied: var_applied, country: var_country, members: var_members, version: var_version};}
                 }
                 
                 impl SseDecode for crate::api::rekey::NodeInfo {
@@ -2009,6 +2011,15 @@ return crate::api::rekey::NodeInfo{dac_hash: var_dacHash, info: var_info};}
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {if (<bool>::sse_decode(deserializer)) {
                 return Some(<crate::api::owner::SettingsView>::sse_decode(deserializer));
+            } else {
+                return None;
+            }}
+                }
+                
+                impl SseDecode for Option<u32> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {if (<bool>::sse_decode(deserializer)) {
+                return Some(<u32>::sse_decode(deserializer));
             } else {
                 return None;
             }}
@@ -2807,7 +2818,8 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::owner::MemberView> for crate:
                     self.net_id.into_into_dart().into_dart(),
 self.net_name.into_into_dart().into_dart(),
 self.entry_state.into_into_dart().into_dart(),
-self.device_last4.into_into_dart().into_dart()
+self.device_last4.into_into_dart().into_dart(),
+self.version.into_into_dart().into_dart()
                 ].into_dart()
                 }
             }
@@ -2826,7 +2838,8 @@ self.mesh_id.into_into_dart().into_dart(),
 self.net_name.into_into_dart().into_dart(),
 self.applied.into_into_dart().into_dart(),
 self.country.into_into_dart().into_dart(),
-self.members.into_into_dart().into_dart()
+self.members.into_into_dart().into_dart(),
+self.version.into_into_dart().into_dart()
                 ].into_dart()
                 }
             }
@@ -3611,7 +3624,8 @@ crate::api::member::ImportState::Replace => { 3 }
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<String>::sse_encode(self.net_id, serializer);
 <String>::sse_encode(self.net_name, serializer);
 <String>::sse_encode(self.entry_state, serializer);
-<String>::sse_encode(self.device_last4, serializer);}
+<String>::sse_encode(self.device_last4, serializer);
+<Option<u32>>::sse_encode(self.version, serializer);}
                 }
                 
                 impl SseEncode for crate::api::owner::NetView {
@@ -3621,7 +3635,8 @@ crate::api::member::ImportState::Replace => { 3 }
 <String>::sse_encode(self.net_name, serializer);
 <bool>::sse_encode(self.applied, serializer);
 <String>::sse_encode(self.country, serializer);
-<Vec<crate::api::owner::MemberView>>::sse_encode(self.members, serializer);}
+<Vec<crate::api::owner::MemberView>>::sse_encode(self.members, serializer);
+<Option<u32>>::sse_encode(self.version, serializer);}
                 }
                 
                 impl SseEncode for crate::api::rekey::NodeInfo {
@@ -3675,6 +3690,14 @@ crate::api::member::ImportState::Replace => { 3 }
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<bool>::sse_encode(self.is_some(), serializer);
                 if let Some(value) = self {
                     <crate::api::owner::SettingsView>::sse_encode(value, serializer);
+                }}
+                }
+                
+                impl SseEncode for Option<u32> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<bool>::sse_encode(self.is_some(), serializer);
+                if let Some(value) = self {
+                    <u32>::sse_encode(value, serializer);
                 }}
                 }
                 
@@ -4037,11 +4060,11 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 // Section: imports
 
 use crate::api::rekey::*;
-use crate::api::owner::*;
-use crate::api::member::*;
-use crate::api::claim::*;
 use crate::api::replay::*;
-use crate::api::swupdate::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;
+use crate::api::swupdate::*;
+use crate::api::claim::*;
+use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
@@ -4137,11 +4160,11 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 // Section: imports
 
 use crate::api::rekey::*;
-use crate::api::owner::*;
-use crate::api::member::*;
-use crate::api::claim::*;
 use crate::api::replay::*;
-use crate::api::swupdate::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;
+use crate::api::swupdate::*;
+use crate::api::claim::*;
+use crate::api::member::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;

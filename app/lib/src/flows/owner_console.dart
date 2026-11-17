@@ -16,7 +16,7 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart' show PlatformException;
 
 import '../../key_abilities.dart' show KeyAbilities;
-import '../../member_ui.dart' show SendTrack, askNoLink, endedLine, joinWait, notSentLine, stepFrames;
+import '../../member_ui.dart' show SendTrack, askNoLink, endedLine, joinWait, joinreqLostLine, notSentLine, stepFrames;
 import '../nodelink/ble_gate.dart' show Char;
 import '../nodelink/handoff.dart';
 import '../nodelink/lease.dart';
@@ -83,6 +83,14 @@ enum ReplyKind {
 
   /// The page's lease is gone.
   leaseLost,
+}
+
+/// #329 PR 5 §2.3: what a join request's answer carries (Rust's OwnerStep hex / sas / renewed), made on the session
+/// that answered.
+class JoinreqOut {
+  const JoinreqOut(this.hex, this.sas, this.renewed);
+  final String hex, sas;
+  final bool renewed;
 }
 
 class ConsoleReply {
@@ -206,6 +214,7 @@ class OwnerConsole {
   String? _unclear;
   var _track = SendTrack();
   String? _persistedRel;
+  bool _pendSaved = false; // #329 PR 5 §2.3: the join request's record landed in this request
   bool _keyError = false;
   String? _removedQ;
   int? _linkFrom; // set when a join was applied: the link checks count from here
@@ -288,6 +297,7 @@ class OwnerConsole {
               await writer.writeCas(lease, p.rel, p.expectedGen, sealed);
             });
             if (p.kind == OwnerKind.persistNet) _persistedRel ??= p.rel;
+            if (p.kind == OwnerKind.persistPend) _pendSaved = true; // #329 PR 5 §2.3: joinreqLostLine(saved:)
             log?.call('owner console: record saved (${p.rel.length > 12 ? p.rel.substring(0, 12) : p.rel}…)');
             st = s.netPersisted();
           } catch (e) {
@@ -511,6 +521,42 @@ class OwnerConsole {
     final keys = await platform.publicKeys();
     return _ask((s) => s.requestSendUpdate(recordPlain: plain, member: member, adminPub: keys['admin']!),
         wait: joinWait, unclear: sendUnclearLine);
+  }
+
+  // ---- #329 PR 5 §2.3: the member's join request, the member's join, info ---------------------------------------
+
+  /// member-join (nodes.dart:881-895): a join request for [inviteHex] on this node. [pendRel] (`mpend/<netId>`) is
+  /// read here, under the lease (R11). The answer's value is a [JoinreqOut]; a link lost on the way ends with
+  /// `joinreqLostLine(saved:)`, saved = the request's record landed (the old `_joinreqInFlight`, nodes.dart:887-892).
+  Future<ConsoleReply> joinreq({required String inviteHex, required String name, required String pendRel}) async {
+    _keyError = false;
+    _pendSaved = false;
+    final (gen, plain) = await platform.readRecord(pendRel);
+    final keys = await platform.publicKeys();
+    final r = await _ask(
+        (s) => s.requestJoinreq(inviteHex: inviteHex, name: name, pendGen: gen, pendPlain: plain, ownerEncPub: keys['ownerEnc']!),
+        derive: (s, st) => st.hex.isEmpty ? null : JoinreqOut(st.hex, st.sas, st.renewed));
+    if (r.kind == ReplyKind.answer || r.kind == ReplyKind.refused || r.sessionAlive) return r;
+    return _reply(r.kind, joinreqLostLine(saved: _pendSaved), alive: false);
+  }
+
+  /// member-join §4 step 8 (nodes.dart:1040-1062 without the pick, the send and the link check): this node joins the
+  /// team network of [mnetRel], read here under the lease (R11). [ConsoleReply.sendUpdate] / [ConsoleReply.pollLink]
+  /// say what comes next (R16).
+  Future<ConsoleReply> memberJoin(String mnetRel) async {
+    _persistedRel = null;
+    _keyError = false;
+    _linkFrom = null;
+    final (gen, plain) = await platform.readRecord(mnetRel);
+    if (plain == null) return _reply(ReplyKind.notSent, recordUnopenedLine);
+    return _ask((s) => s.requestMemberJoin(mnetPlain: plain, mnetGen: gen), wait: joinWait, unclear: joinUnclearLine);
+  }
+
+  /// `info` (nodes.dart:1363-1372, :1546-1563): the node's info bytes as the answer's value (a Uint8List; empty = not
+  /// read). 8.3 pairs them with the record's dac hash, as the old `_remove` did.
+  Future<ConsoleReply> info() {
+    _keyError = false;
+    return _ask((s) => s.requestInfo(), derive: (s, st) => st.info.isEmpty ? null : st.info);
   }
 
   // ---- #329 PR 4 §2.2: settings, leave, the status page, the software update ------------------------------------

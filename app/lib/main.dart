@@ -151,6 +151,7 @@ class _StartupCheckState extends State<StartupCheck> {
       // review pr1 A-m5: a NodeLink that cannot be built leaves the startup result on screen, never a spinner
       try {
         final a = make((await _platform.invokeMethod<String>('filesDir'))!);
+        a.devTrust = _devTrust; // #329 PR 5 §2.6: the one writer, right after the startup check agreed
         a.link.radio(keyOk: keys.login); // X26: the startup key check is the key precondition
         await a.link.start(nlcore.Page.home, life: WidgetsBinding.instance.lifecycleState);
         unawaited(a.nets.recompute()); // #329 PR 3 §2.6: once the startup check passed

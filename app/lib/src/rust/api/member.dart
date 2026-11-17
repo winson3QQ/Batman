@@ -258,11 +258,15 @@ class MnetView {
   final String entryState;
   final String deviceLast4;
 
+  /// #329 PR 5 V-M1 / R19: the version this phone holds (MNet key 2), read-only
+  final int? version;
+
   const MnetView({
     required this.netId,
     required this.netName,
     required this.entryState,
     required this.deviceLast4,
+    this.version,
   });
 
   @override
@@ -270,7 +274,8 @@ class MnetView {
       netId.hashCode ^
       netName.hashCode ^
       entryState.hashCode ^
-      deviceLast4.hashCode;
+      deviceLast4.hashCode ^
+      version.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -280,5 +285,6 @@ class MnetView {
           netId == other.netId &&
           netName == other.netName &&
           entryState == other.entryState &&
-          deviceLast4 == other.deviceLast4;
+          deviceLast4 == other.deviceLast4 &&
+          version == other.version;
 }

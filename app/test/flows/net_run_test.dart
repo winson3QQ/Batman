@@ -51,6 +51,12 @@ class FakeConsole implements OwnerConsole {
     return r;
   }
   @override
+  Future<ConsoleReply> memberJoin(String mnetRel) async {
+    w.joinRels.add(mnetRel);
+    return _next('mjoin');
+  }
+
+  @override
   Future<ConsoleReply> confirmNetwork(String rel) async {
     final r = _next('confirm');
     if (w.confirmApplies.contains(rel)) w.records[rel] = true;
@@ -60,6 +66,7 @@ class FakeConsole implements OwnerConsole {
 
   @override
   Future<ConsoleReply> sendUpdateFor(String rel, {bool member = false}) async {
+    w.sends.add('$rel member=$member');
     final t = w.sendThrows;
     if (t != null) throw t;
     return _next('send');
@@ -106,6 +113,7 @@ class World {
   final asks = <String>[];
   bool goOn = true;
   final reads = <String>[];
+  final joinRels = <String>[], sends = <String>[];
 
   void script(String what, List<ConsoleReply> rs) => (replies[what] ??= []).addAll(rs);
 
@@ -330,7 +338,8 @@ void main() {
       final w = World()
         ..goOn = false
         ..script('join', [ans('[REQ_FAIL] x'), ans('[JOINED] 已加入', send: true)])
-        ..script('send', [ans('[UPDATED] 節點 …0002 已換成新密碼')]);
+        // PR 5 R14: Rust prints the id's own last four (owner.rs:717); this id is '02'
+        ..script('send', [ans('[UPDATED] 節點 …02 已換成新密碼')]);
       final run = w.run(['02'], makes: false, joinRel: 'net/a');
       await run.run();
       await run.retry(run.rows[0]);
@@ -347,6 +356,25 @@ void main() {
       await run.run();
       await run.retry(run.rows[0]);
       expect((run.rows[0].state, run.rows[0].note), (RowState.failed, '已加入，新密碼沒有換成'));
+    });
+
+    test('PR 5 R14 / D12: the send answers 正在套用 -> joined with a note, not failed and not plainly done', () async {
+      final w = World()
+        ..script('join', [ans('[JOINED] 已加入', send: true)])
+        ..script('send', [ans('[UPDATED] 節點 …02 正在套用新密碼，稍後再看狀態頁')]);
+      final run = w.run(['02'], makes: false, joinRel: 'net/a');
+      await run.run();
+      expect((run.rows[0].state, run.rows[0].note), (RowState.ok, '已加入，新密碼正在套用，稍後到節點頁再送一次確認'));
+      expect(run.rows[0].canRetry, isFalse, reason: 'no 再試這一台 on a joined node');
+    });
+
+    test('PR 5 R14: an [UPDATED] sentence of another node is not a success', () async {
+      final w = World()
+        ..script('join', [ans('[JOINED] 已加入', send: true)])
+        ..script('send', [ans('[UPDATED] 節點 …0099 已換成新密碼')]);
+      final run = w.run(['02'], makes: false, joinRel: 'net/a');
+      await run.run();
+      expect(run.rows[0].state, RowState.failed);
     });
 
 
@@ -537,6 +565,44 @@ void main() {
       await b.run();
       expect((a.end, b.end), (CheckEnd.unreadable, CheckEnd.nothingToCheck));
       expect(w.logins, isEmpty);
+    });
+  });
+
+  group('#329 PR 5 R16: the member\'s join', () {
+    NetRun member(World w) => NetRun(w.deps,
+        ids: const ['02'], makes: false, member: true, joinRel: 'mnet/m1', askGoOn: (r) async => true);
+
+    test('memberJoin on the mnet record, then the new secrets sent as the member\'s; never joinNetwork', () async {
+      final w = World()
+        ..script('mjoin', [const ConsoleReply(ReplyKind.answer, '[JOINED] 已套用：節點 …02 已加入網路 bm-ab', sendUpdate: true)])
+        ..script('send', [const ConsoleReply(ReplyKind.answer, '[UPDATED] 節點 …02 已換成新密碼')]);
+      final run = member(w);
+      await run.run();
+      expect(w.joinRels, ['mnet/m1']);
+      expect(w.calls.where((c) => c.startsWith('join ')), isEmpty);
+      expect(w.sends, ['mnet/m1 member=true']);
+      expect(run.rows.single.state, RowState.ok);
+    });
+
+    test('a refusal asking for a new invite fails the row with Rust\'s line', () async {
+      final w = World()
+        ..script('mjoin', [const ConsoleReply(ReplyKind.answer, '[REQ_FAIL] 加入網路沒有成功：需要新的邀請（手機裡已沒有這台節點的加入資料）')]);
+      final run = member(w);
+      await run.run();
+      expect(run.rows.single.state, RowState.failed);
+      expect(needsNewInvite(run.rows.single.line), isTrue);
+      expect(w.sends, isEmpty);
+    });
+
+    test('a member never makes a network (Y-M2)', () {
+      expect(() => NetRun(World().deps, ids: const ['02'], makes: true, member: true, askGoOn: (r) async => true),
+          throwsArgumentError);
+    });
+
+    test('S-m2: contains, not ends with', () {
+      expect(needsNewInvite('[REQ_FAIL] 加入網路沒有成功：需要新的邀請（手機裡已沒有這台節點的加入資料）'), isTrue);
+      expect(needsNewInvite('[REQ_FAIL] 加入網路沒有成功：逾時；需要新的邀請'), isTrue);
+      expect(needsNewInvite('[REQ_FAIL] 加入網路沒有成功：這份網路資料是給另一台節點的'), isFalse);
     });
   });
 }

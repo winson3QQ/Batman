@@ -82,6 +82,11 @@ class Lease {
     });
   }
 
+  /// #329 PR 5 R12: OfflineOp's 60 s cap takes the lease back the way the 420 s cap does: RecordWriter refuses this
+  /// lease from now on and the home page shows a todo; [todo] is that todo's sentence (an offline operation touches
+  /// no node). Only OfflineOp calls this (a source check in offline_op_test holds it).
+  void revoke({String? todo}) => reg._revoke(this, todo: todo);
+
   Future<void> release() async {
     if (_ended) return;
     _ended = true;
@@ -108,6 +113,9 @@ class LeaseRegistry {
 
   /// Todo items for the home page (§5.1): 「上一個操作可能沒有存完：<名稱>」. Memory only; the page clears them.
   final List<String> unsavedTodos = [];
+
+  /// #329 PR 5 R12: the sentence under a todo of [unsavedTodos] when its revoker gave one (key: the todo itself).
+  final Map<String, String> unsavedText = {};
 
   Lease? get current => _lease;
   /// Tests only: during a lease this is the holder's credential (review pr1 r5 J-m5); the app uses [nodeLinkToken] and
@@ -137,11 +145,13 @@ class LeaseRegistry {
     }
   }
 
-  void _revoke(Lease l) {
+  void _revoke(Lease l, {String? todo}) {
     if (!identical(_lease, l)) return;
     l._ended = true;
     final t = l.token;
-    unsavedTodos.add('上一個操作可能沒有存完：${l.name}');
+    final title = '上一個操作可能沒有存完：${l.name}';
+    unsavedTodos.add(title);
+    if (todo != null) unsavedText[title] = todo;
     for (final x in listeners) {
       x.revoked(t);
     }
