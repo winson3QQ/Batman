@@ -9,7 +9,13 @@ name: app-tests
 # Each stage FAILs when it finds nothing to run, and each new check has its negative control as a step here.
 # Not here (needs a phone / an APK): the instrumented tests (src/androidTest), aapt2 on a built APK, the .so inside
 # an APK (cargokit builds every flavor with dev-trust until #255).
-on: [push, pull_request]
+# push: main only, and docs-only changes skip, for the same reasons as ci.yml.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**/*.md', 'docs/images/**']
+  pull_request:
+    paths-ignore: ['**/*.md', 'docs/images/**']
 permissions:
   contents: read
 concurrency:
