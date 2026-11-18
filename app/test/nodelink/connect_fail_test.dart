@@ -10,6 +10,7 @@ import 'package:batman_app/src/nodelink/lease.dart';
 import 'package:batman_app/src/nodelink/node_link.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'login_for_test.dart' show LoginProber;
 import 'node_link_test.dart' show Clock, FakeProber;
 
 const addr = 'AA:BB:CC:DD:EE:01';
@@ -23,6 +24,11 @@ class FailRadio implements BleBackend {
   final scanCtl = StreamController<String>.broadcast();
   final _states = StreamController<(String, bool, int?)>.broadcast(sync: true);
   final Map<String, int> failAt = {};
+  /// Addresses whose previous link's synthetic DISCONNECTED comes late: a connect to them within 200 ms of the last
+  /// close first gets a code-less false (the plugin, DeviceConnector.kt:68-75; review 3 I).
+  final Set<String> staleFalse = {};
+  final Map<String, int> closedAt = {};
+  int staleHits = 0;
   int code = 133;
   final List<int> connectTimes = [];
 
@@ -33,9 +39,16 @@ class FailRadio implements BleBackend {
   Stream<bool> connect(String address, Duration timeout) {
     connectTimes.add(clock.t);
     late StreamController<bool> c;
-    c = StreamController<bool>(onCancel: () {});
+    c = StreamController<bool>(onCancel: () {
+      closedAt[address] = clock.t;
+      _states.add((address, false, null)); // a cancel is seen as down (§4.2)
+    });
     final f = failAt[address];
-    if (f != null) {
+    final last = closedAt[address];
+    if (staleFalse.contains(address) && last != null && clock.t - last < 200) {
+      staleHits++;
+      scheduleMicrotask(() => c.add(false));
+    } else if (f != null) {
       clock.after(Duration(milliseconds: f), () {
         c.add(false);
         _states.add((address, false, null)); // the code-less one, same task as the connect stream's false
@@ -129,6 +142,7 @@ void main() {
     await clock.run(3000);
     await Future<void>.delayed(const Duration(milliseconds: 5));
     expect(gateLog, contains('link …01 down fail=?'));
+    expect(gateLog.any((l) => l.contains('AA:BB')), isFalse, reason: 'never the full address');
   });
 
   test('§6: after a failure the same address is tried again only ≥ 6 s later; no 「連不到」 from one failure', () async {
@@ -165,5 +179,80 @@ void main() {
     radio.scanCtl.add(addr);
     await clock.run(30000);
     expect(nl.core.states['Y1']!.kind, Kind.read, reason: nlLog.join('\n'));
+  });
+
+  test('§2.1 (review 4 I-M1): a flow login (loginFor) also ends a failing connect at once, then logs in elsewhere',
+      () async {
+    const other = 'AA:BB:CC:DD:EE:02';
+    final clock = Clock();
+    final reg = LeaseRegistry(after: clock.after);
+    final radio = FailRadio(clock)..failAt[addr] = 2000;
+    final gate = BleGate(radio, reg, now: () => clock.t, after: clock.after);
+    final log = <String>[];
+    final prober = LoginProber({other: 'ok'});
+    final nl = NodeLink(
+      core: NodeLinkCore(const [Rec('Y1', 1)]),
+      gate: gate,
+      reg: reg,
+      prober: FakeProber({}),
+      readRecords: () async => const [Rec('Y1', 1)],
+      now: () => clock.t,
+      after: clock.after,
+      loginProber: prober,
+      keysOk: () async => true,
+      trace: log.add,
+    );
+    await nl.start(Page.other);
+    final lease = (await nl.acquire('建立網路', LeaseKind.session))!;
+    LoginForResult? r;
+    unawaited(nl.loginFor(lease, 'Y1').then((x) => r = x));
+    await clock.run(300);
+    radio.scanCtl.add(addr);
+    for (var t = 0; t < 40000 && r == null; t += 500) {
+      if (t == 3000) radio.scanCtl.add(other);
+      await clock.run(500);
+    }
+    final first = log.firstWhere((l) => l.contains('loginFor') && l.contains('result=noResponse'), orElse: () => '');
+    final ms = int.tryParse(RegExp(r'after (\d+)ms').firstMatch(first)?.group(1) ?? '') ?? -1;
+    expect(ms, inInclusiveRange(1900, 2500), reason: log.join('\n'));
+    expect(r?.end, LoginForEnd.ok);
+    await r!.handoff!.close();
+  });
+
+  test('§6 (review 4 I-m1 / J m-2): the late code-less false only reaches a connect to the same address within ~200 ms; '
+      'NodeLink never retries that soon (≥ 6 s), so it is never hit and the next attempt reads', () async {
+    final (nl, clock, radio, _, nlLog) = setup();
+    radio.failAt[addr] = 2000;
+    await nl.start(Page.home);
+    await clock.run(500);
+    radio.scanCtl.add(addr);
+    await clock.run(3000); // failed and closed
+    radio
+      ..failAt.remove(addr)
+      ..staleFalse.add(addr); // the next connect first sees the previous link's late DISCONNECTED
+    for (var i = 0; i < 16; i++) {
+      radio.scanCtl.add(addr);
+      await clock.run(5000);
+    }
+    expect(radio.connectTimes.length, greaterThanOrEqualTo(2), reason: nlLog.join('\n'));
+    expect(radio.connectTimes[1] - (radio.connectTimes[0] + 2000), greaterThanOrEqualTo(6000));
+    expect(radio.staleHits, 0, reason: 'no retry within the 200 ms the late DISCONNECTED can reach');
+    expect(nl.core.states['Y1']!.kind, Kind.read, reason: nlLog.join('\n'));
+  });
+
+  test('§6 (the fake itself): a connect within 200 ms of the close does get the late false and ends as noResponse',
+      () async {
+    final clock = Clock();
+    final reg = LeaseRegistry(after: clock.after);
+    final radio = FailRadio(clock)..staleFalse.add(addr);
+    final gate = BleGate(radio, reg, now: () => clock.t, after: clock.after);
+    final t = reg.nodeLinkToken;
+    final l1 = gate.connect(t, addr);
+    await clock.run(100);
+    await l1.close();
+    final l2 = gate.connect(t, addr); // 0 ms later: the window the plugin's late DISCONNECTED reaches
+    final first = await l2.state.first.then((s) => s, onError: (Object _) => false);
+    expect((first, radio.staleHits), (false, 1));
+    await l2.close();
   });
 }

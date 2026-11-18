@@ -68,9 +68,6 @@ class GateLink {
   Completer<void>? _gone;
   bool get open => _open;
 
-  /// The failure status the stack reported for this link (failureCode; -1 = no number), null = none. For the trace only.
-  int? failure;
-
   /// true = connected, false = disconnected.
   Stream<bool> get state => _state.stream;
 
@@ -147,7 +144,6 @@ class BleGate implements LeaseListener {
         trace?.call('link …${a.length > 2 ? a.substring(a.length - 2) : a} down fail=${f < 0 ? '?' : f}');
       }
       for (final l in [..._links.where((l) => l.address == e.$1)]) {
-        l.failure ??= f; // the first failure code while this link is open
         l._downNow();
       }
     });
