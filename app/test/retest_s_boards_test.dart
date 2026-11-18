@@ -352,7 +352,7 @@ void main() {
     }),
     '4.1_make_mode': B((ui) => makeForm(World())),
     '4.x_working': B((ui) => makeForm(World()..script('make', [ans('[NET_MADE] 網路已建立', rel: 'net/n1')]), gate: gate),
-        act: start, check: (t) => expect(find.text(kRunWait), findsOneWidget)), // #329 PR 6 T6-11: 這一步最多 6 分鐘
+        act: start, check: (t) => expect(find.text('請留在這個畫面。這一步最多 6 分鐘。'), findsOneWidget)), // #329 PR 6 T6-11 (S5)
     '4.x_done': B((ui) => makeForm(World()..script('make', [ans('[NET_MADE] 網路已建立', rel: 'net/n1')])), act: (t) async {
       await start(t);
       await settle(t);
