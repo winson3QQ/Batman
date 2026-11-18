@@ -5,9 +5,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../src/nodelink/app_link.dart';
+import '../say.dart' show screenText;
 import '../src/nodelink/core.dart' as nl show Page;
+import '../src/nodelink/core.dart' show Why;
+import '../src/rust/api/owner.dart' show statusMembershipLine;
 import 'home_logic.dart';
-import 'home_page.dart' show nodeInfo;
+import 'home_page.dart' show askBlePermission, nodeInfo, openSystemSettings;
 import '../src/flows/net_index.dart' show NetEntry;
 import 'more_pages.dart' show MorePage;
 import 'join_choice.dart' show NetMode;
@@ -18,6 +21,7 @@ import 'team_pages.dart' show MembersPage;
 import '../src/flows/rekey_send.dart' show rustLast4, sameLast4;
 import 'net_pages.dart' show CheckNetPage, NetFormPage, goMake;
 import 'settings_pages.dart' show WifiPage;
+import 'theme.dart';
 import 'update_route.dart' show openSwUpdate;
 import 'ui_state.dart';
 import 'widgets.dart';
@@ -134,7 +138,7 @@ class _NodePageState extends State<NodePage> {
         key: const Key('node-hint'),
         look: Look.warn,
         text: h.line, // StatusHero shows the main part (#329 PR 6 D7)
-        extra: [if (h.button) SendKeyButton(app: a, id: widget.id)]);
+        extra: [if (h.button) SendKeyButton(app: a, id: widget.id, off: a.link.core.blocked != null)]);
   }
 
   /// §2.10: 「隊員」 when the phone holds a network it made: the node's own network when it is in an applied one, else
@@ -158,6 +162,42 @@ class _NodePageState extends State<NodePage> {
     ];
   }
 
+  /// #329 PR 7 T6 (review A-M4 / B-M5 / F m-7): the status area's one button when Bluetooth is off or the app has no
+  /// Bluetooth permission (the same as the home page's rows 1 / 2); 加入網路 stays the 「網路」 row, 建立網路 is never here
+  /// (PR 3 D8). Null = no button.
+  List<Widget>? _radioButton(AppLink a) => switch (a.link.core.blocked) {
+        Why.bluetoothOff => [
+            BatButton(Btn.openBluetooth,
+                key: const Key('node-open-bt'),
+                onPressed: () => openSystemSettings(context, 'bluetoothSettings', '請到手機的設定打開藍牙'))
+          ],
+        Why.noPermission => [
+            BatButton(Btn.allowBluetooth, key: const Key('node-allow-bt'), onPressed: () async {
+              await askBlePermission(context, a);
+              if (mounted) setState(() {});
+            })
+          ],
+        _ => null,
+      };
+
+  /// #329 PR 7 T9 (PR 2 review B-m12): 「網路：…」 under the status area, only for a fresh read of a node that is not
+  /// 「已認領，還沒加入網路」 (k1 = 1: the verdict already says it). The name is this phone's record of that network.
+  String? _membership(AppLink a, NodeInfo n) {
+    final v = n.view;
+    if (!n.fresh || v == null || v.nodeState.toInt() == 1) return null;
+    final nets = a.nets.now;
+    final name = v.netId.isEmpty
+        ? null
+        : nets.nets.where((e) => e.id == v.netId).firstOrNull?.view.netName ??
+            nets.mnets.where((m) => m.opens && m.id == v.netId).firstOrNull?.name;
+    try {
+      final l = statusMembershipLine(nodeState: v.nodeState, netId: v.netId, name: name);
+      return l.isEmpty ? null : l;
+    } catch (_) {
+      return null; // display only: no line rather than a broken page
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final a = widget.app;
@@ -165,7 +205,7 @@ class _NodePageState extends State<NodePage> {
       return const BatPage(title: '節點', body: [Text('這台節點已經不在這支手機上。')]);
     }
     final n = nodeInfo(a, widget.id, widget.ui);
-    final (look, line, meta) = nodeRowWords(n, firstRounds: a.link.core.roundsRun < 3);
+    final (look, line, meta) = nodeRowWords(n, firstRounds: a.link.core.firstRounds(widget.id));
     final v = n.view;
     final next = [
       // #329 PR 4 §2.3 (leave v4.1 §2): the unfinished-change line, right under the verdict when info key 10 is absent
@@ -184,7 +224,15 @@ class _NodePageState extends State<NodePage> {
           next: next.isEmpty ? null : next.join('\n'),
           time: n.readWall == null ? null : (n.fresh ? '讀取於 ${hhmmss(n.readWall!)}' : meta),
           onRefresh: a.link.refresh,
+          extra: _radioButton(a),
         ),
+        if (_membership(a, n) case final m?)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Text(screenText(m),
+                key: const Key('node-membership'),
+                style: TextStyle(fontSize: Fs.body, height: 1.5, color: BatTheme.of(context).ink)),
+          ),
         ?_hint(a),
         ...?_network(a, n),
         ...?_team(a, n),

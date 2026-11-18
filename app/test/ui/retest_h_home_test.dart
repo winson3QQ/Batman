@@ -59,7 +59,7 @@ void main() {
     await t.runAsync(() => ui.noteReads({id: ('ok', DateTime.now().toUtc().subtract(const Duration(hours: 2)))}));
     expect(ui.nodes[id]?.look, 'ok', reason: 'premise: the stored read was ok');
     final a = app();
-    a.link.core.roundsRun = 3; // after the first rounds: the stored read is what the row shows
+    a.link.core.states[id]!.roundsEnded = 2; // after this node's first rounds (#329 PR 7 T8): the stored read is shown
     await t.pumpWidget(host(HomePage(app: a, ui: ui, devTrust: false, keys: keys())));
     await t.pump();
     final row = t.widget<NodeRow>(find.byType(NodeRow));

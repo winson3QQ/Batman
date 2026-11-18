@@ -84,6 +84,24 @@ Future<T?> openUnderLeaseFor<T>(BuildContext context, AppLink a, String name, Wi
   return r;
 }
 
+/// Opens a system settings page; when the phone has none, says where to go instead (review r2 D-m8). The home page
+/// and the node page (#329 PR 7 T6) both use it.
+Future<void> openSystemSettings(BuildContext context, String method, String otherwise) async {
+  final m = ScaffoldMessenger.of(context);
+  final ok = await _platform.invokeMethod<bool>(method).catchError((Object _) => false);
+  if (ok != true) m.showSnackBar(SnackBar(content: Text(otherwise)));
+}
+
+/// Board 2.2 first, when the app has no Bluetooth permission (F28: asked only when the user presses a button); once
+/// granted NodeLink is told at once (the status does not wait for the Bluetooth stream). The home page and the node
+/// page (#329 PR 7 T6, review F m-7) both use it.
+Future<bool> askBlePermission(BuildContext context, AppLink a) async {
+  final ok = await Navigator.of(context).push<bool>(MaterialPageRoute(
+      builder: (_) => PermissionsPage(ask: () async => await _platform.invokeMethod<bool>('blePermissions') ?? false)));
+  if (ok == true) a.link.radio(permission: true);
+  return ok == true;
+}
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key, required this.app, required this.ui, required this.devTrust, required this.keys, this.notes = const []});
   final AppLink app;
@@ -102,7 +120,10 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with WidgetsBindingObserver implements LeaseListener {
   StreamSubscription<void>? _sub;
   Timer? _tick;
-  int _pending = 0;
+  // #329 PR 7 T11: the claim-pending ids as listed; whether each is still a todo is decided at build against the
+  // states of that moment (a node record that arrives after the list was read ends its todo at once)
+  List<String> _pendingIds = const [];
+  final _listKey = GlobalKey(); // T7: 「我的節點」
 
   AppLink get a => widget.app;
 
@@ -168,17 +189,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
   /// §5.1 todos this version knows: an unfinished claim (devTrust only, F48) and a lease taken back (§4.4).
   /// Row 6's records and the join todos come from NetIndex (#329 PR 3 §2.6).
   Future<void> _todos() async {
-    var n = 0;
+    var ids = const <String>[];
     if (widget.devTrust) {
       try {
-        final p = await listPending(dir: a.records);
-        n = p.where((id) => !a.link.core.states.containsKey(id)).length;
+        ids = await listPending(dir: a.records);
       } catch (_) {
         return; // review misc J m-2: the list unreadable -> keep the todos shown (never hide one on an error)
       }
     }
-    if (mounted) setState(() => _pending = n);
+    if (mounted) setState(() => _pendingIds = ids);
   }
+
+  /// T11: the unfinished claims that are still todos now (no node record for them).
+  int get _pending => _pendingIds.where((id) => !a.link.core.states.containsKey(id)).length;
 
   Future<void> _back(Future<void> f) async {
     await f;
@@ -187,7 +210,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
     if (mounted) setState(() {});
   }
 
-  void _act(HomeHero h) {
+  void _act(HomeHero h, [BuildContext? from]) {
     switch (h.action) {
       case HomeAction.allowBluetooth:
         _permission();
@@ -208,7 +231,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
         a.link.refresh();
       case HomeAction.openBluetooth:
         _settings('bluetoothSettings', '請到手機的設定打開藍牙'); // §5.1 row 1: the system page; the status stream follows
-      case HomeAction.showList || HomeAction.none || HomeAction.seeRequest:
+      case HomeAction.showList:
+        if (from != null) _showList(from);
+      case HomeAction.none || HomeAction.seeRequest:
         break;
     }
   }
@@ -218,18 +243,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
       builder: (_) => NetFormPage(
           app: a, ui: widget.ui, makes: makes, ticked: {?node}, todo: todo))));
 
-  /// Opens a system settings page; when the phone has none, says where to go instead (review r2 D-m8).
-  Future<void> _settings(String method, String otherwise) async {
-    final ok = await _platform.invokeMethod<bool>(method).catchError((Object _) => false);
-    if (ok != true && mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(otherwise)));
-  }
+  Future<void> _settings(String method, String otherwise) => openSystemSettings(context, method, otherwise);
 
-  /// Board 2.2 first, when the app has no Bluetooth permission (F28: asked only when the user presses a button).
-  Future<bool> _permission() async {
-    final ok = await Navigator.of(context).push<bool>(MaterialPageRoute(
-        builder: (_) => PermissionsPage(ask: () async => await _platform.invokeMethod<bool>('blePermissions') ?? false)));
-    if (ok == true) a.link.radio(permission: true);
-    return ok == true;
+  Future<bool> _permission() => askBlePermission(context, a);
+
+  /// #329 PR 7 T7 (rows 7 / 8 with several nodes): 「看節點清單」 brings 「我的節點」 into view. The page's list is built
+  /// lazily (ListView), so while its label is not built yet the page moves down one screen at a time first.
+  Future<void> _showList(BuildContext from) async {
+    for (var i = 0; i < 50; i++) {
+      if (!mounted || !from.mounted) return;
+      final c = _listKey.currentContext;
+      if (c != null) {
+        await Scrollable.ensureVisible(c, duration: const Duration(milliseconds: 300));
+        return;
+      }
+      final p = Scrollable.maybeOf(from)?.position;
+      if (p == null || p.pixels >= p.maxScrollExtent) return;
+      final to = p.pixels + p.viewportDimension;
+      p.jumpTo(to > p.maxScrollExtent ? p.maxScrollExtent : to);
+      await WidgetsBinding.instance.endOfFrame;
+    }
   }
 
   Future<void> _addNode() async {
@@ -277,7 +310,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
         nets.todos.length +
         a.sw.unfinishedOf(a.link.core.states.containsKey).length +
         pends.length;
-    final firstRounds = a.link.core.roundsRun < 3;
+    // #329 PR 7 T8 (F m-8): the status area is in its first rounds while any node is (each node counts its own rounds)
+    final firstRounds = ids.any(a.link.core.firstRounds);
     final h = decideHome(
         HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: nets.records));
     // #329 PR 6 D9: 「讀取於」 for a fresh read, 「上次讀取」 for an older one (review r2 C MINOR-8's rule); a row
@@ -292,6 +326,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
       HomeAction.joinNetwork => Btn.joinNetwork,
       HomeAction.makeNetwork => Btn.makeNetwork,
       HomeAction.seeRequest => Btn.seeRequest,
+      HomeAction.showList => Btn.showList, // #329 PR 7 T7
       _ => null,
     };
     return BatPage(
@@ -317,7 +352,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
           extra: actionText == null
               ? null
               : [
-                  BatButton(actionText, onPressed: () => _act(h)),
+                  Builder(builder: (b) => BatButton(actionText, key: const Key('home-action'), onPressed: () => _act(h, b))),
                   if (h.second == HomeAction.joinTeam && widget.devTrust) // 7.8 (F14 / T-S5)
                     BatButton(Btn.joinTeam, kind: BtnKind.text, onPressed: () => _act(HomeHero(h.row, h.look, h.text, action: h.second))),
                 ],
@@ -370,11 +405,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
               action: Btn.finishIt,
               onAction: () => _open(id, update: true)),
         if (infos.isNotEmpty) ...[
-          const BatLabel('我的節點'),
+          BatLabel('我的節點', key: _listKey),
           BatCard(children: [
             for (final n in infos)
               Builder(builder: (_) {
-                final (look, line, meta) = nodeRowWords(n, firstRounds: firstRounds);
+                final (look, line, meta) = nodeRowWords(n, firstRounds: a.link.core.firstRounds(n.id));
                 return NodeRow(look: look, name: n.name, line: line, meta: meta, onTap: () => _open(n.id));
               }),
           ]),
