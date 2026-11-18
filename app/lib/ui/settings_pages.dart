@@ -6,7 +6,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../say.dart' show screenText;
+import '../say.dart' show SayLine, logText, stripMarkers;
 import '../secure_screen.dart';
 import '../src/flows/net_run.dart' show loginLine;
 import '../src/flows/op_session.dart';
@@ -32,7 +32,7 @@ OpDeps opDeps(AppLink a) => OpDeps(
           askCountry: (_) async => false, // no settings request asks (a join's question)
           askRemoved: (_) async => false,
           keyError: (e) => keyErrorToRadio(e, a.link),
-          log: (l) => debugPrint('BMAPP $l')),
+          log: (l) => debugPrint('BMAPP ${logText(l)}')),
       keepScreen: keepScreen,
     );
 
@@ -41,8 +41,8 @@ String opLine(OpReply r) => switch (r.end) {
       OpEnd.busy => '另一個操作還在進行：${r.busyName}',
       OpEnd.login => '${loginLine(r.login!)}沒有送出任何東西。',
       OpEnd.gone => '',
-      OpEnd.leaseLost => r.reply == null ? '這個操作被中斷了，沒有送出。請再試一次。' : screenText(r.reply!.text),
-      OpEnd.done => screenText(r.reply!.text),
+      OpEnd.leaseLost => r.reply == null ? '這個操作被中斷了，沒有送出。請再試一次。' : stripMarkers(r.reply!.text),
+      OpEnd.done => stripMarkers(r.reply!.text), // technical parts kept: shown through SayLine
       OpEnd.failed => '操作出錯，結果不明。請重新讀取後再決定要不要再做一次。',
     };
 
@@ -217,7 +217,7 @@ class _WifiPageState extends State<WifiPage> {
             ),
             Text('改完之後，正連著這台 Wi-Fi 的手機（例如跑 TAK 的）會斷線，要用新的名稱和密碼重新連。',
                 style: TextStyle(fontSize: Fs.note, height: 1.55, color: t.ink)),
-            if (_line.isNotEmpty) Text(_line, key: const Key('wifi-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+            if (_line.isNotEmpty) SayLine(_line, key: const Key('wifi-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
           ],
           foot: [
             BatButton(_sending ? '正在送出…' : '送出', onPressed: can ? _send : null),
@@ -276,7 +276,7 @@ class _CountryPageState extends State<CountryPage> {
     setState(() {
       _reading = false;
       _cc = v != null && v.read && v.country.isNotEmpty ? v.country : null;
-      if (_cc == null) _line = v != null ? '讀不到目前的國家。' : '讀不到目前的國家：${opLine(r)}';
+      if (_cc == null) _line = v != null ? '讀不到目前的國家。' : '讀不到目前的國家（${opLine(r)}）'; // #329 PR 6: no two colons
     });
   }
 
@@ -354,7 +354,7 @@ class _CountryPageState extends State<CountryPage> {
             ),
         ]),
         if (no != null && no.isNotEmpty) Text(no, key: const Key('country-why'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.sub)),
-        if (_line.isNotEmpty) Text(_line, key: const Key('country-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+        if (_line.isNotEmpty) SayLine(_line, key: const Key('country-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
       ], foot: [
         if ((cur == null || _again) && !_reading) BatButton('重新讀取', kind: BtnKind.secondary, onPressed: _sending ? null : _read),
         Text('後四碼 ${last4(widget.id)}', textAlign: TextAlign.center, style: TextStyle(fontSize: Fs.meta, color: t.sub)),

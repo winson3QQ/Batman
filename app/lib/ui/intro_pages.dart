@@ -208,7 +208,7 @@ class HomeTipCard extends StatelessWidget {
         const SizedBox(height: 8),
         line(Icons.settings_outlined, '右上角齒輪', '設定、關於。'),
         const SizedBox(height: 10),
-        BatButton(Btn.gotIt, kind: BtnKind.secondary, onPressed: onDone),
+        BatButton(Btn.gotIt, kind: BtnKind.text, onPressed: onDone), // #329 PR 6: 「知道了」 is a text button everywhere
       ]),
     );
   }

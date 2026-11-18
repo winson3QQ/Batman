@@ -16,6 +16,7 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart' show PlatformException;
 
 import '../../key_abilities.dart' show KeyAbilities;
+import '../../say.dart' show tech;
 import '../../member_ui.dart' show SendTrack, askNoLink, endedLine, joinWait, joinreqLostLine, notSentLine, stepFrames;
 import '../nodelink/ble_gate.dart' show Char;
 import '../nodelink/handoff.dart';
@@ -431,7 +432,7 @@ class OwnerConsole {
         _session = null;
         if (unclear != null) return _leaseCheck(_unclearReply(unclear));
         return _leaseCheck(_reply(
-            ReplyKind.unclear, '[REQ_FAIL] 操作沒有成功：${e is PlatformException ? e.code : e.runtimeType}',
+            ReplyKind.unclear, '[REQ_FAIL] 操作沒有成功${tech(e is PlatformException ? e.code : e.runtimeType)}',
             alive: false));
       }
       if (!answer.isCompleted) _kick();

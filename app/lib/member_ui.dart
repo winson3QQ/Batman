@@ -10,7 +10,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-import 'say.dart' show screenText;
+import 'say.dart' show SayLine, screenText;
 import 'src/flows/rekey_send.dart' show sameLast4;
 import 'src/rust/api/member.dart' show MnetView;
 import 'src/rust/api/owner.dart' show OwnerStep, TeamView;
@@ -24,7 +24,7 @@ Future<void> showDupNote(BuildContext context, String note) async {
       context: context,
       builder: (c) => AlertDialog(
             title: const Text(dupNoteTitle),
-            content: Text(screenText(note), key: const Key('dupNote')),
+            content: SayLine(note, key: const Key('dupNote')),
             actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('好'))],
           ));
 }

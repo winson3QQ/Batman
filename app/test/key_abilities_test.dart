@@ -425,7 +425,7 @@ void main() {
         await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: _ScanBle())));
         await t.pumpAndSettle();
         expect(find.text('歡迎'), welcome ? findsOneWidget : findsNothing);
-        expect(find.text('可以做的事'), welcome ? findsNothing : findsOneWidget);
+        expect(find.byType(HomePage), welcome ? findsNothing : findsOneWidget); // #329 PR 6: no node -> no 「可以做的事」 (one 新增節點)
         await t.runAsync(AppLink.instance!.link.dispose);
         rust.nodes = ['0000000000000c4f2a'];
         AppLink.forgetForTest();
@@ -456,7 +456,7 @@ void main() {
           await t.tap(find.text('開始'));
         }
         await t.pumpAndSettle();
-        expect(find.text('可以做的事'), findsOneWidget);
+        expect(find.byType(HomePage), findsOneWidget);
         expect(rust.uiWrites, ['ui/state-v1']);
         await t.runAsync(AppLink.instance!.link.dispose);
         AppLink.forgetForTest();
@@ -503,7 +503,33 @@ void main() {
       // design §4: the plaintext index stays on screen (file names only: nothing is opened, nothing deleted — any
       // other store call of the fake throws)
       expect(find.text('這些節點需要重燒卡回收：'), findsOneWidget);
-      expect(find.text('節點 0000000000000c4f2a'), findsOneWidget);
+      expect(find.text('節點 4F2A') /* #329 PR 6 P1-3: the last four */, findsOneWidget);
+    });
+
+    // #329 PR 6 T6-11 (board 2.4): a title bar; no retry -> the next step is the repair person; the technical
+    // information, once opened, says to give it to them and copies it (the whole node id is there, not on the list).
+    // Negative controls: the title '' / the next step / the copy dropped -> FAIL.
+    testWidgets('2.4: title bar, next step without a retry, the technical information copied', (t) async {
+      String? copied;
+      t.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (c) async {
+        if (c.method == 'Clipboard.setData') copied = (c.arguments as Map)['text'] as String?;
+        return null;
+      });
+      addTearDown(() => t.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+      await start(t, answer(appUsable: false, claim: false, login: false, recover: false, makeNetwork: false, soft: true));
+      expect(find.descendant(of: find.byType(AppBar), matching: find.text(startupKeysTitle)), findsOneWidget);
+      expect(find.textContaining(startupNoRetryNext), findsOneWidget);
+      expect(find.textContaining('0000000000000c4f2a'), findsNothing, reason: 'the whole id only in 技術資訊');
+      await t.tap(find.text('技術資訊（給維修人員看）'));
+      await t.pumpAndSettle();
+      expect(find.text(startupTechAsk), findsOneWidget);
+      expect(find.textContaining('節點紀錄：0000000000000c4f2a'), findsOneWidget);
+      await t.ensureVisible(find.text('複製文字'));
+      await t.pumpAndSettle();
+      await t.tap(find.text('複製文字'));
+      await t.pump();
+      expect(copied, contains('節點紀錄：0000000000000c4f2a'));
+      expect(copied, contains('啟動檢查：'));
     });
 
     // design §4 / §4.1 「單一金鑰遺失」: record AES lost. Negative control: the index not built -> FAIL
@@ -512,10 +538,10 @@ void main() {
       expect(find.textContaining('啟動檢查：${KeyAbilities.aesGone}'), findsOneWidget);
       expect(find.textContaining(KeyAbilities.appOff), findsNothing);
       expect(find.text('這些節點需要重燒卡回收：'), findsOneWidget);
-      expect(find.text('節點 0000000000000c4f2a'), findsOneWidget);
+      expect(find.text('節點 4F2A') /* #329 PR 6 P1-3: the last four */, findsOneWidget);
       // review round 2 MINOR 3: an unfinished claim is listed too, said as not confirmed (full device_id).
       // Negative control: claim-pending not listed -> FAIL
-      expect(find.text('節點 00000000000000beef（認領沒有確認）'), findsOneWidget);
+      expect(find.text('節點 BEEF（認領沒有確認）'), findsOneWidget);
       expect(find.bySubtype<ButtonStyleButton>(), findsNothing);
       expect(calls, isNot(contains('open')));
     });
@@ -531,7 +557,7 @@ void main() {
               makeNetwork: false,
               gone: {'RECORD_AES', 'OWNER_SIGN', 'ADMIN_SIGN', 'OWNER_ENC'}));
       expect(find.textContaining('啟動檢查：${KeyAbilities.allGone}'), findsOneWidget);
-      expect(find.text('節點 0000000000000c4f2a'), findsOneWidget);
+      expect(find.text('節點 4F2A') /* #329 PR 6 P1-3: the last four */, findsOneWidget);
       expect(find.bySubtype<ButtonStyleButton>(), findsNothing);
       expect(calls, isNot(contains('firstRun')), reason: 'with a marker the keys are never made again');
     });
@@ -573,8 +599,8 @@ void main() {
         // review round 2 MINOR 4: the plaintext index is there while the levels cannot be read (listing needs no key),
         // without any re-flash advice. Negative control: the index only when not unreadable -> FAIL
         expect(find.text('手機裡有這些節點的紀錄（沒有打開，也沒有刪除）：'), findsOneWidget);
-        expect(find.text('節點 0000000000000c4f2a'), findsOneWidget);
-        expect(find.text('節點 00000000000000beef（認領沒有確認）'), findsOneWidget);
+        expect(find.text('節點 4F2A') /* #329 PR 6 P1-3: the last four */, findsOneWidget);
+        expect(find.text('節點 BEEF（認領沒有確認）'), findsOneWidget);
         expect(find.widgetWithText(FilledButton, '再試一次'), findsOneWidget);
         expect(find.bySubtype<ButtonStyleButton>(), findsOneWidget, reason: 'the retry is the only button');
         // the retry reads again: this time the keys answer

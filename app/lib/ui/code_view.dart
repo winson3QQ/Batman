@@ -288,7 +288,10 @@ class _CodeInputState extends State<CodeInput> {
   Widget build(BuildContext context) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         if (widget.scan) BatButton(Btn.scanQr, key: const Key('code-scan'), onPressed: _busy ? null : _scan),
         if (widget.scan) const SizedBox(height: 8),
-        if (widget.devTrust) BatButton(Btn.pasteText, key: const Key('code-paste'), kind: BtnKind.secondary, onPressed: _busy ? null : _paste),
+        // #329 PR 6 (8.5): without a scan, the paste is the page's one main action
+        if (widget.devTrust)
+          BatButton(Btn.pasteText,
+              key: const Key('code-paste'), kind: widget.scan ? BtnKind.secondary : BtnKind.primary, onPressed: _busy ? null : _paste),
       ]);
 }
 

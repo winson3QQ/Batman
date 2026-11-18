@@ -100,6 +100,17 @@ void main() {
     expect((h.action, h.second), (HomeAction.joinNetwork, HomeAction.none));
   });
 
+  // #329 PR 6 T6-11 (P1-3): a node without a nickname is named 「節點 XXXX」 — its meta does not say the last four again;
+  // with a nickname it does. Negative control: the tail always added -> FAIL
+  test('P1-3: the meta repeats no last four for a node named by them', () {
+    final plain = node('0000000000000c4f2a', v: sv());
+    expect(nodeRowWords(plain, firstRounds: false).$3, '讀取於 22:48');
+    final nick = NodeInfo(
+        id: plain.id, name: '前門', state: plain.state, fresh: true, shownWhy: null, view: plain.view, readWall: plain.readWall);
+    expect(nodeRowWords(nick, firstRounds: false).$3, '讀取於 22:48　後四碼 4F2A');
+    expect(nodeRowWords(node('0000000000000c4f2a'), firstRounds: false).$3, '', reason: 'never read, no nickname: nothing to add');
+  });
+
   test('r2 D-m6: an older read of a node not in a network says so, not 「有問題」', () {
     final w = nodeRowWords(node('o1', v: sv(nodeState: 1, color: 'red'), fresh: false), firstRounds: false);
     expect(w.$2, endsWith('，當時還沒加入隊伍網路'));

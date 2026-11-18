@@ -1235,7 +1235,7 @@ impl Flow {
 /// 「技術資訊」: the codes
 fn tech(code: u64, detail: &Value) -> String {
     match detail.get(2).and_then(Value::as_uint) {
-        Some(r) => format!("代碼 {code},原因 {r}"),
+        Some(r) => format!("代碼 {code}，原因 {r}"),
         None => format!("代碼 {code}"),
     }
 }

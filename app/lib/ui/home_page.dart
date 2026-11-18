@@ -379,16 +379,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
               }),
           ]),
         ],
-        const BatLabel('可以做的事'),
-        BatCard(children: [
-          BatRow(
-            icon: Icons.add,
-            title: Btn.addNode,
-            sub: widget.keys.refusal(KeyUse.claim) ?? '把另一台節點加入這支手機',
-            enabled: widget.keys.claim,
-            onTap: _addNode,
-          ),
-        ]),
+        // #329 PR 6 (home_no_node): one 「新增節點」 on the page — when the status area already offers it, not here too
+        if (h.action != HomeAction.addNode || !widget.keys.claim) ...[ // (a refusal keeps its reason row)
+          const BatLabel('可以做的事'),
+          BatCard(children: [
+            BatRow(
+              icon: Icons.add,
+              title: Btn.addNode,
+              sub: widget.keys.refusal(KeyUse.claim) ?? '把另一台節點加入這支手機',
+              enabled: widget.keys.claim,
+              onTap: _addNode,
+            ),
+          ]),
+        ],
       ],
     );
   }

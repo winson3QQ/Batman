@@ -10,6 +10,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show ChangeNotifier;
 import 'package:flutter/services.dart' show PlatformException;
 
+import '../../say.dart' show tech;
 import '../../ui/home_logic.dart' show whyNext;
 import '../nodelink/core.dart' show Why;
 import '../nodelink/handoff.dart';
@@ -214,7 +215,7 @@ class NetRun extends ChangeNotifier {
     } catch (e) {
       // code review A m-1 / B m2: a request that threw before it went out (a record that does not read, the phone's
       // keys): the row fails with its reason, never stays 「進行中」
-      r.line = '[REQ_FAIL] 操作沒有成功：${e is PlatformException ? e.code : e.runtimeType}';
+      r.line = '[REQ_FAIL] 操作沒有成功${tech(e is PlatformException ? e.code : e.runtimeType)}';
       // code review C N-4: joined, and the new secrets' request threw before it went out (§2.9)
       if (r.joined && r.note.isEmpty) r.note = '已加入，新密碼沒有送出';
       return _failed(r, retrying, key: e is PlatformException);
@@ -381,7 +382,7 @@ class CheckRun extends ChangeNotifier {
     try {
       end = await _run(clearNotY);
     } catch (e) {
-      lines.add('[REQ_FAIL] 操作沒有成功：${e is PlatformException ? e.code : e.runtimeType}');
+      lines.add('[REQ_FAIL] 操作沒有成功${tech(e is PlatformException ? e.code : e.runtimeType)}');
       end = CheckEnd.noAnswer;
     } finally {
       running = false;

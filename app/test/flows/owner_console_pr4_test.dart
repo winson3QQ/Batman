@@ -116,15 +116,15 @@ class P4Session extends Session {
         const (fGet + 1) => st(OwnerKind.answer, detail: '目前設定：名稱 BCM2711-6c89', settings: view),
         const (fSet + 1) => switch (setAnswer) {
             'ok' => st(OwnerKind.answer, detail: '設定已更新：名稱 BCM2711-6c89', settings: view),
-            'ended' => st(OwnerKind.ended, detail: '連線出錯（x）'),
-            _ => st(OwnerKind.answer, detail: '[REQ_FAIL] 設定沒有成功：節點不接受這個值（代碼 2，原因 13）'),
+            'ended' => st(OwnerKind.ended, detail: '連線出錯\u001ex\u001f'),
+            _ => st(OwnerKind.answer, detail: '[REQ_FAIL] 設定沒有成功：節點不接受這個值\u001e代碼 2，原因 13\u001f' /* #329 PR 6 D7: Rust's shape */),
           },
         const (fLeave + 1) => leaveMode == 'left'
             ? () {
                 cutNext = true;
                 return st(OwnerKind.answer, detail: '[LEFT] 已離開隊伍網路', left: true);
               }()
-            : st(OwnerKind.answer, detail: '[REQ_FAIL] 沒有離開網路（節點仍在隊伍網路裡，代碼 11）— 請再按一次'),
+            : st(OwnerKind.answer, detail: '[REQ_FAIL] 沒有離開網路（節點仍在隊伍網路裡）— 請再按一次\u001e代碼 11\u001f'),
         const (fPage + 1) => pageSilent ? null : st(OwnerKind.answer, detail: '[STATUS] 狀態已更新'),
         const (fSw + 1) => st(OwnerKind.answer, sw: true),
         _ => super.onFrame(frame: frame),

@@ -11,6 +11,7 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
 import 'claim_records.dart';
 import 'key_abilities.dart';
+import 'say.dart' show sayErr, tech;
 import 'scan.dart' show provdService;
 import 'src/rust/api/claim.dart';
 import 'src/rust/api/claim.dart' as claim_api show frameLimit;
@@ -280,7 +281,7 @@ class ClaimRecovery {
       }
       plain = Uint8List.fromList(await store.open(s));
     } catch (e) {
-      say('[CLAIM_FAIL] 讀不到手機裡這台節點的認領紀錄，這次不恢復：$e');
+      say('[CLAIM_FAIL] 讀不到手機裡這台節點的認領紀錄，這次不恢復：${sayErr(e)}');
       return null;
     }
     ReplaySession? session;
@@ -301,7 +302,7 @@ class ClaimRecovery {
         session = s;
         peer = p;
       } catch (e) {
-        say('[CLAIM_FAIL] $e');
+        say('[CLAIM_FAIL] ${sayErr(e)}');
         return null;
       }
       if (_t3 && !await askT3()) return null;
@@ -321,7 +322,7 @@ class ClaimRecovery {
       handedOver = true;
       return session;
     } catch (e) {
-      say('[CLAIM_FAIL] 恢復前的檢查出錯，這次不恢復（手機裡的紀錄沒有改動）：$e'); // review A-m4: K compare, key levels, T3
+      say('[CLAIM_FAIL] 恢復前的檢查出錯，這次不恢復（手機裡的紀錄沒有改動）${e is String ? '：$e' : tech(e)}'); // review A-m4: K compare, key levels, T3
       return null;
     } finally {
       plain.fillRange(0, plain.length, 0); // our own copy: cannot throw
@@ -451,7 +452,7 @@ class ClaimRecovery {
           say('[PENDING_KEPT] $e');
           return RecoveryOutcome.recovered;
         } catch (e) {
-          say('[CLAIM_FAIL] 節點已恢復，但手機的紀錄沒有寫成功（$e）；認領紀錄仍保留，'
+          say('[CLAIM_FAIL] 節點已恢復，但手機的紀錄沒有寫成功${e is String ? '（$e）' : tech(e)}；認領紀錄仍保留，'
               '${_t4 ? '請再從「從認領暫存恢復」試一次' : '請再按一次「認領」'}'); // v6.1 §19.2-6
           return RecoveryOutcome.stopped;
         }

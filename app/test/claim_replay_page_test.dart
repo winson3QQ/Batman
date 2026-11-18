@@ -275,8 +275,8 @@ void main() {
     expect(pageSays('沒找到未認領的這台，改試恢復先前的認領'), isTrue);
     expect(rust.calls, ['copy $nodeRecPath', 'write $nodeRecPath', 'remove $pendPath']);
     expect(rust.disk[nodeRecPath], rec(1));
-    final claim = t.widget<FilledButton>(find.widgetWithText(FilledButton, '認領'));
-    expect(claim.onPressed, isNull, reason: 'R6: after a recovery the QR is forgotten');
+    // #329 PR 6 P2-2: without a code 「認領」 is not shown (was: shown and off)
+    expect(find.text('認領'), findsNothing, reason: 'R6: after a recovery the QR is forgotten');
   });
 
   testWidgets('D3 negative control: no recovery -> NOT_FOUND, no node record', (t) async {
@@ -495,18 +495,25 @@ void main() {
     field.add(Dev('BB', -50, ours: true));
     var checks = 0;
     var freeDuringRun = false;
+    final primaries = <String>{}; // #329 PR 6 T6-10: the primary buttons seen while recovering
     await runPage(t, t4: true, confirm: ['節點 …0c4f2a', '恢復'], until: () {
       if (field.connects > 0 && !rust.calls.contains('remove $pendPath')) {
-        final scan = t.widget<FilledButton>(find.widgetWithText(FilledButton, '掃描 QR'));
-        final paste = t.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '貼上 QR 碼（開發用）'));
+        // #329 PR 6 P2-2: while recovering, 掃描 QR is a secondary button (off) and the paste is in the folded 開發用
+        Iterable<ButtonStyleButton> btns(String s) => find.ancestor(of: find.text(s), matching: find.byWidgetPredicate((w) => w is ButtonStyleButton)).evaluate().map((e) => e.widget as ButtonStyleButton);
+        final scan = btns('掃描 QR').single;
+        final pastes = find.widgetWithText(OutlinedButton, '貼上 QR 碼（開發用）').evaluate().map((e) => e.widget as OutlinedButton);
         checks++;
-        if (scan.onPressed != null || paste.onPressed != null) freeDuringRun = true;
+        primaries.addAll(find.byType(FilledButton).evaluate().map((e) => ((e.widget as FilledButton).child as Row).children.whereType<Flexible>().map((f) => (f.child as Text).data).join()));
+        if (find.byType(FilledButton).evaluate().length != 1) primaries.add("MORE THAN ONE");
+        final from = btns('從認領暫存恢復');
+        if (scan.onPressed != null || pastes.any((p) => p.onPressed != null) || from.any((b) => b.onPressed != null)) freeDuringRun = true;
       }
       return rust.calls.contains('remove $pendPath');
     });
     await t.pump(const Duration(minutes: 5));
     expect(checks, greaterThan(0));
     expect(freeDuringRun, isFalse, reason: 'the other buttons are off during T4');
+    expect(primaries, {'停止恢復'}, reason: 'T6-10: recovering -> 停止恢復 is the one primary (not danger)');
     expect(blePermAsked, 1);
     expect(pageSays('從認領暫存恢復節點 …0c4f2a'), isTrue);
     expect(pageSays('沒找到未認領的這台'), isFalse, reason: 'T4 has its own intro');

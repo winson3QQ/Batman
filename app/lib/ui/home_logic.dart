@@ -146,7 +146,9 @@ String hhmmss(DateTime t) => '${hhmm(t)}:${t.second.toString().padLeft(2, '0')}'
 
 /// One node row: (look, sentence, meta).
 (Look, String, String) nodeRowWords(NodeInfo n, {required bool firstRounds}) {
-  final tail = '後四碼 ${last4(n.id)}';
+  // #329 PR 6 P1-3: a node without a nickname is already named 「節點 XXXX」: its meta does not repeat the last four
+  final tail = n.name == '節點 ${last4(n.id)}' ? '' : '後四碼 ${last4(n.id)}';
+  String withTail(String s) => tail.isEmpty ? s : '$s　$tail';
   final when = n.readWall;
   // §4.6: without a read in this run, an earlier run's read (UiState), unk style only; a future time is 「之前讀過」
   String? before;
@@ -158,7 +160,7 @@ String hhmmss(DateTime t) => '${hhmm(t)}:${t.second.toString().padLeft(2, '0')}'
   }
   // 「讀取於」 only for a fresh read; an older one is 「上次讀取」 (review r3 F-m6)
   final meta = when != null
-      ? '${n.fresh ? '讀取於' : '上次讀取'} ${hhmm(when)}　$tail' : (before != null ? '$before　$tail' : tail);
+      ? withTail('${n.fresh ? '讀取於' : '上次讀取'} ${hhmm(when)}') : (before != null ? withTail(before) : tail);
   final why = n.shownWhy;
   if (why != null) {
     return switch (why) {

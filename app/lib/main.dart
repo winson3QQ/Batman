@@ -16,6 +16,8 @@ import 'src/nodelink/raw_use.dart';
 import 'src/rust/api/owner.dart' show listNodes, listPending;
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
+import 'say.dart' show logText, sayErr;
+import 'ui/home_logic.dart' show last4;
 import 'ui/home_page.dart';
 import 'ui/intro_pages.dart';
 import 'ui/theme.dart';
@@ -23,6 +25,12 @@ import 'ui/widgets.dart';
 import 'ui/ui_state.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
+
+/// #329 PR 6 §3 row 2.4: the key-check page's title bar, its next step when a retry cannot help, and the line above
+/// its technical information.
+const startupKeysTitle = '手機金鑰';
+const startupNoRetryNext = '請找維修人員，把下面的技術資訊給他看。';
+const startupTechAsk = '請把技術資訊給維修人員看（可以按「複製文字」）。';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -123,10 +131,12 @@ class _StartupCheckState extends State<StartupCheck> {
           // cannot be read; an unfinished claim is listed as such. A first run happens only with no record at all.
           if (!_firstRunFailed) {
             final dir = '${(await _platform.invokeMethod<String>('filesDir'))!}/records';
+            final nodes = await listNodes(dir: dir), pend = await listPending(dir: dir);
             index = [
-              for (final n in await listNodes(dir: dir)) '節點 $n',
-              for (final n in await listPending(dir: dir)) '節點 $n（認領沒有確認）',
+              for (final n in nodes) '節點 ${last4(n)}', // #329 PR 6 P1-3: the last four (the whole id: 技術資訊)
+              for (final n in pend) '節點 ${last4(n)}（認領沒有確認）',
             ];
+            tech.addAll([for (final n in nodes) '節點紀錄：$n', for (final n in pend) '認領暫存：$n']);
           }
         } else {
           // one line per reason (claim and recovery share theirs when the owner key is the cause)
@@ -143,9 +153,9 @@ class _StartupCheckState extends State<StartupCheck> {
       index = [];
       lines
         ..clear()
-        ..add('啟動檢查失敗：$e');
+        ..add('啟動檢查失敗：${sayErr(e)}');
     }
-    debugPrint('BMAPP ${[...lines, ...tech].join(' | ')}');
+    debugPrint('BMAPP ${logText([...lines, ...tech].join(' | '))}');
     final make = widget.makeLink;
     if (agree && keys.appUsable && _app == null && make != null) {
       // review pr1 A-m5: a NodeLink that cannot be built leaves the startup result on screen, never a spinner
@@ -258,21 +268,32 @@ class _StartupCheckState extends State<StartupCheck> {
       // §5.2 board 2.4: the key check did not pass; the reason, what the phone holds (names only), a retry when it
       // may help, the technical detail folded away. No gate is relaxed (KeyGate is the existing check).
       final lines = _report!.split('\n');
+      // #329 PR 6 §3 row 2.4: a title bar; with no retry, the next step is the repair person (and the copy below)
+      final next = [...lines.skip(1), if (!_retry) startupNoRetryNext];
       return BatPage(
-        title: '',
+        title: startupKeysTitle,
         body: [
-          StatusHero(look: Look.bad, text: lines.first, next: lines.length > 1 ? lines.skip(1).join('\n') : null),
+          StatusHero(look: Look.bad, text: lines.first, next: next.isEmpty ? null : next.join('\n')),
           if (_index.isNotEmpty) ...[
             BatLabel(_retry ? '手機裡有這些節點的紀錄（沒有打開，也沒有刪除）：' : '這些節點需要重燒卡回收：'),
             BatCard(children: [for (final n in _index) BatRow(icon: Icons.router_outlined, title: n)]),
           ],
           BatCard(children: [
             ExpansionTile(
+                key: const Key('startup-tech'),
                 title: Text('技術資訊（給維修人員看）', style: TextStyle(fontSize: Fs.body, color: t.ink)),
                 children: [
                   Padding(
                     padding: const EdgeInsets.all(14),
-                    child: SelectableText(_tech, style: TextStyle(fontFamily: 'monospace', fontSize: Fs.meta, color: t.ink)),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                      Text(startupTechAsk, style: TextStyle(fontSize: Fs.note, color: t.ink)),
+                      const SizedBox(height: 8),
+                      SelectableText(_tech, style: TextStyle(fontFamily: 'monospace', fontSize: Fs.meta, color: t.ink)),
+                      const SizedBox(height: 8),
+                      BatButton(Btn.copyText,
+                          kind: BtnKind.secondary,
+                          onPressed: () => Clipboard.setData(ClipboardData(text: logText('$_report\n$_tech')))),
+                    ]),
                   ),
                 ]),
           ]),
