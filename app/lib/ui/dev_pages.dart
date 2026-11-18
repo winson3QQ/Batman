@@ -170,7 +170,8 @@ class _SshKeysPageState extends State<SshKeysPage> {
     final checks = [for (final l in lines) checkSshLine(l)];
     final tooMany = lines.length > sshMaxLines;
     final allOk = !tooMany && checks.every((c) => c.ok);
-    final can = widget.app.devTrust && _id != null && !_sending && allOk;
+    // review pr6-delta-D m-1: a node removed while the page is open is no longer pickable, nor sendable
+    final can = widget.app.devTrust && _id != null && widget.app.link.core.states.containsKey(_id) && !_sending && allOk;
     return PopScope(
       canPop: !_sending,
       child: BatPage(title: 'SSH 金鑰', body: [

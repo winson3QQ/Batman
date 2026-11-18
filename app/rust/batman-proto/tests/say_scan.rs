@@ -24,6 +24,8 @@ const ALLOW: &[Allow] = &[
     Allow { file: "teamview.rs", has: "Mbit/s）", why: "user value (link speed)" },
     // a name the user checks, kept in the main part (the reporting node's name, through display_name)
     Allow { file: "teamview.rs", has: "由『{title_name}』看到", why: "user value (node name)" },
+    // the version being uploaded, kept in the main part (its parentheses became full-width with the S6 change)
+    Allow { file: "swupd.rs", has: "上傳中的更新（{ver}）", why: "user value (version)" },
 ];
 
 #[test]

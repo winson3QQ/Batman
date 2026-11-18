@@ -329,7 +329,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
         return _ask('要改用這張 QR 碼嗎？', otherQrText, '改用這張 QR 碼', '沒有改用這張 QR 碼，手機裡的紀錄沒有改動');
       case ClaimTarget.node:
       case ClaimTarget.nodeAndPending:
-        return _ask('節點 …${q.deviceId.substring(14)} 已經認領過', reclaimText(pending: t == ClaimTarget.nodeAndPending), '重新認領',
+        return _ask('節點 …${q.deviceId.substring(14).toUpperCase()} 已經認領過', reclaimText(pending: t == ClaimTarget.nodeAndPending), '重新認領',
             '沒有重新認領，手機裡的紀錄沒有改動');
     }
   }

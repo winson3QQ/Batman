@@ -373,8 +373,8 @@ void main() {
     expect(swHero(act(SwKind.wait, text: '節點正在驗證並寫入新版'), running: false), (Look.busy, '節點正在驗證並寫入新版'));
     expect(swHero(act(SwKind.show_, text: 'x', buttons: [SwButton.pick]), running: true)?.$1, Look.busy);
     expect(swHero(act(SwKind.done, text: '更新完成：1.2.3'), running: false), (Look.ok, '更新完成：1.2.3'));
-    expect(swHero(act(SwKind.done, text: '新版不健康,已退回原本的版本'), running: false)?.$1, Look.bad);
-    expect(swHero(act(SwKind.done, text: '已取消,目前版本不變'), running: false)?.$1, Look.unk);
+    expect(swHero(act(SwKind.done, text: '新版不健康，已退回原本的版本'), running: false)?.$1, Look.bad);
+    expect(swHero(act(SwKind.done, text: '已取消，目前版本不變'), running: false)?.$1, Look.unk);
     expect(swHero(act(SwKind.show_, text: '選檔', buttons: [SwButton.pick, SwButton.refresh]), running: false), isNull);
     expect(swHero(null, running: false), isNull);
   });

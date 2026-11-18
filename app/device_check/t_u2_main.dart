@@ -2,8 +2,9 @@
 // Keystore (seal / open) and UiState together. A device-only check program (not `flutter test`, which uninstalls apps on
 // failure). It needs a hardware-backed RECORD_AES: an emulator's keystore is software level 0, which the key policy
 // refuses (PlatformException(keyLevel, RECORD_AES, 0)), so every premise fails there. Run it on a phone under a package
-// of its own that has NEVER held keys or records (a brand-new applicationId; the program refuses otherwise — on
-// 2026-11-18 it was run under dev3, which held node 7C31, and its `firstRun` destroyed that node's owner key):
+// of its own that has NEVER held keys or records (the program refuses otherwise, t_u2_guard.dart — on 2026-11-18 it was
+// run under dev3, which held node 7C31, and its `firstRun` destroyed that node's owner key). `tu2` is NOT in
+// build.gradle.kts: add it for the run only (a copy of the dev block with applicationIdSuffix ".tu2"), never commit it:
 //   flutter build apk --debug --flavor tu2 -t device_check/t_u2_main.dart
 //   adb -s <phone> install -r build/app/outputs/flutter-apk/app-tu2-debug.apk
 //   adb -s <phone> shell am start -n dev.batman.app.tu2/dev.batman.batman_app.MainActivity
@@ -19,6 +20,8 @@ import 'package:batman_app/ui/ui_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 't_u2_guard.dart';
+
 const platform = MethodChannel('dev.batman/platform');
 
 Future<void> main() async {
@@ -27,15 +30,20 @@ Future<void> main() async {
   await RustLib.init();
   final files = (await platform.invokeMethod<String>('filesDir'))!;
   final dir = '$files/t-u2-records'; // its own directory: never the app's records
-  // 2026-11-18 (#329 PR 6): `firstRun` REGENERATES all four keys (Keys.kt firstRun), so running this over a package
-  // that holds records destroys them for good — it did, on the S20's dev3 (the owner key of node 7C31 was lost; only a
-  // re-flash brings that node back). Refuse when the package has any key or any app record; generate keys only when
-  // there are none.
-  final levels = await platform.invokeMapMethod<String, dynamic>('keyLevels');
-  final hasKey = levels != null && levels.values.any((v) => v != null);
-  final hasRecords = Directory('$files/records').existsSync();
-  if (hasKey || hasRecords) {
-    debugPrint('T-U2 REFUSED: this package already has ${hasKey ? 'keys' : 'records'} — run it under a fresh package');
+  // 2026-11-18 (#329 PR 6): `firstRun` REGENERATES all four keys, so this runs only under a temporary flavor that has
+  // never held a key or a record (t_u2_guard.dart; fail-closed on any doubt).
+  String? refusal;
+  try {
+    refusal = tu2Refusal(
+      flavor: await platform.invokeMethod<String>('flavor'),
+      levels: await platform.invokeMapMethod<String, dynamic>('keyLevels'),
+      hasRecords: Directory('$files/records').existsSync(),
+    );
+  } catch (e) {
+    refusal = 'the check itself failed (${e.runtimeType})';
+  }
+  if (refusal != null) {
+    debugPrint('T-U2 REFUSED: $refusal');
     debugPrint('T-U2 DONE pass=0 fail=1');
     return;
   }
