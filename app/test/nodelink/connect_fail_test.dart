@@ -219,24 +219,30 @@ void main() {
     await r!.handoff!.close();
   });
 
-  test('§6 (review 4 I-m1 / J m-2): the late code-less false only reaches a connect to the same address within ~200 ms; '
-      'NodeLink never retries that soon (≥ 6 s), so it is never hit and the next attempt reads', () async {
+  test('§6 (review 5 I-n1): a known node (「是 Y」) that fails is retried in the same round only after the 6 s gap — '
+      'outside the ~200 ms the late DISCONNECTED reaches — and that retry reads', () async {
     final (nl, clock, radio, _, nlLog) = setup();
-    radio.failAt[addr] = 2000;
     await nl.start(Page.home);
     await clock.run(500);
     radio.scanCtl.add(addr);
-    await clock.run(3000); // failed and closed
+    await clock.run(3000);
+    expect(nl.core.states['Y1']!.kind, Kind.read, reason: 'premise: read once, so the address is 「是 Y」');
+    radio.failAt[addr] = 2000;
+    nl.refresh();
+    await clock.run(500);
+    radio.scanCtl.add(addr);
+    await clock.run(2600); // the second connect has failed and its link is closed
+    expect(radio.connectTimes, hasLength(2), reason: nlLog.join('\n'));
     radio
       ..failAt.remove(addr)
-      ..staleFalse.add(addr); // the next connect first sees the previous link's late DISCONNECTED
-    for (var i = 0; i < 16; i++) {
+      ..staleFalse.add(addr); // a connect within 200 ms of that close would get the late false
+    for (var i = 0; i < 4; i++) {
       radio.scanCtl.add(addr);
-      await clock.run(5000);
+      await clock.run(3000);
     }
-    expect(radio.connectTimes.length, greaterThanOrEqualTo(2), reason: nlLog.join('\n'));
-    expect(radio.connectTimes[1] - (radio.connectTimes[0] + 2000), greaterThanOrEqualTo(6000));
-    expect(radio.staleHits, 0, reason: 'no retry within the 200 ms the late DISCONNECTED can reach');
+    expect(radio.connectTimes.length, greaterThanOrEqualTo(3), reason: nlLog.join('\n'));
+    expect(radio.connectTimes[2] - (radio.connectTimes[1] + 2000), greaterThanOrEqualTo(6000), reason: 'core p.gap');
+    expect(radio.staleHits, 0);
     expect(nl.core.states['Y1']!.kind, Kind.read, reason: nlLog.join('\n'));
   });
 

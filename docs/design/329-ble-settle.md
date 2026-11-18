@@ -27,7 +27,7 @@
 
 ## 2. 改動
 
-1. **失敗就結束**：`NodeLink._run`（`node_link.dart:556`）與 `_lfAttempt`（`:379`）等的是「連線串流的第一個事件」，不是「第一個 `true`」：第一個事件是 `false` → 這次嘗試立刻以 `noResponse` 結束。整個 `lib/` 只有這兩處用 `firstWhere((s) => s)` 等連上（`owner_console.dart:179` 是 handoff 之後才聽，不受影響）。
+1. **失敗就結束**：`NodeLink._run`（`node_link.dart:558`）與 `_lfAttempt`（`:380`）等的是「連線串流的第一個事件」，不是「第一個 `true`」：第一個事件是 `false` → 這次嘗試立刻以 `noResponse` 結束。整個 `lib/` 只有這兩處用 `firstWhere((s) => s)` 等連上（`owner_console.dart:179` 是 handoff 之後才聽，不受影響）。
    - 為什麼不是「只在帶 failure 的事件上結束」（J m-1）：I-M1 指出失敗時第一個事件可能就是**不帶** failure 的 `DISCONNECTED`（`DeviceConnector.kt:117` 先於 `:121-123`），而 Dart 的 `connect()` 在第一個 `disconnected` 就以 `takeWhile` 結束串流（`device_connector.dart:57-64`）——等 failure 會漏接、退回等滿 8 s。全新 connector 在 `CONNECTING` 前不會送 `disconnected`（I 讀原始碼：`:94-97`、lazy 的 `:43-58`、broadcast 不重播）；唯一的例外是同一位址關閉後約 200 ms 內再連（延後合成的 DISCONNECTED、`:68-75`），NodeLink 對同一位址的嘗試至少隔 6 s（`core.dart:430`、`:694`）；就算碰到，結果是 `noResponse`，和今天相同，只是不用等 8 s。
 2. **失敗原因進 log**：`BleGate` 已在聽 `backend.linkStates`（`ble_gate.dart` 的 `_states`，來源是 `connectedDeviceStream`）。`linkStates` 的事件加上失敗碼（`(address, up, failure)`），gate **只要在 `linkStates` 收到帶碼的事件，就自己記一行** `BMAPP gate link …7C down fail=133`，不管那條連結還在不在表上（帶碼的事件是另一則平台訊息，可能在 connect 串流的 false 結束嘗試、`close()` 之後才到：J v3 MAJOR）；它和 NodeLink 的 attempt 行（`attempt …7C×…7d2c connected=-1ms result=noResponse after 2901ms`）用時間與位址末 2 碼對起來。gate 聽的是全域串流，所以舊頁面（ClaimPage、認領恢復、舊控制台、掃描頁）的連線失敗、以及連上之後才帶碼斷掉的事件（例如 status 8）也會記到；無害，對照時以 attempt 行的時間配對（J v4 m-3）。沒有任何帶碼事件的失敗不會有 gate 行。失敗碼 = plugin 錯誤訊息 regex `with status (\d{1,3})\b` 的數字，沒有數字的失敗記 `?`。plugin 一次失敗會送兩筆帶碼事件（`ReactiveBleClient.kt:115-121`），同一次失敗可能記兩行，屬預期。不記訊息全文（含完整 MAC），位址只記末 2 碼（現行）。失敗碼只進 log，不參與任何判斷。
 
@@ -59,7 +59,7 @@
 | 連線失敗（2.9 s 133 / 5 s timeout） | 等滿 8 s | 第一個事件 false → 結束 | 單元：自動讀取（`_run`）與流程登入（`loginFor` / `_lfAttempt`）各一條：假 backend 2 s 送 false → 嘗試約 2 s 結束；負向對照：兩處各自單獨改回 `firstWhere((s)=>s)` → 該條 8 s FAIL |
 | 失敗，linkStates 先送不帶碼、再送帶碼（各在後面的 event-loop 任務） | — | 每筆帶碼事件記一行 gate `link …XX down fail=N`（一次失敗通常兩行）；訊息沒有狀態碼 → `fail=?` | 單元：照 plugin 真實順序（I-M1）；負向對照：只在連結還在表上才記 → FAIL |
 | 正常連上 | 不變 | 不變 | 既有 T-L 全過 |
-| 同一位址關閉後立刻重連，收到過期的 false | 會被 `firstWhere` 忽略 | 以 noResponse 結束（和今天結果相同，只是更快） | 單元：失敗並 close 之後 200 ms 內同一位址再連，backend 先送一筆延後的不帶碼 false → 這次結果 noResponse、core 不顯示「連不到」、同一位址的下一次嘗試在 ≥ 6 s 之後（core.dart:430 / :694） |
+| 同一位址關閉後立刻重連，收到過期的 false | connect 串流已在那個 false 結束（`takeWhile`），等滿 8 s 後 noResponse | NodeLink 的輪與 loginFor 對同一位址都隔 ≥ 6 s（`p.gap`），走不到這個 ~200 ms 的窗口；萬一碰到，結果是 noResponse（和今天相同、只是更快） | 單元：已讀過一次的「是 Y」位址失敗後，同一輪的重試在 ≥ 6 s 後、沒有落進 200 ms 窗口（staleHits 0）且讀到；負向對照 `p.gap` 改 100 ms → FAIL（review 5 I-n1）。另一條直接證明假 radio 在 200 ms 內重連時會送那個 false |
 | 連線中藍牙被關 | `_abort` 丟掉這次嘗試、不記結果 | 失敗事件可能比 radio 狀態先到 → 這次以 noResponse 記進 core | 單元：連線中送 false 後 1 ms 再送 bluetooth off → 不出現「連不到」、畫面是 2.3（藍牙關閉），不是「連不到」。定案（I / J v3）：不加撤回機制；這次的 noResponse 留在 core 裡，最壞的後果是藍牙開回後那一輪要重新認那個位址（多一次握手），不會顯示錯的東西；單元測試斷言「不出現連不到、藍牙開回後下一輪讀得到」；真機 R-4 重跑 |
 | lease / 背景 | 不變 | 不變 | 既有 |
 | 安裝 / 升級 / 降級 | 無持久狀態 | 同 | n/a |
@@ -73,4 +73,6 @@
 
 - 單元（假時鐘）：§6 各列；log 涵蓋 `status 133`、`"Unknown error"`、`"Device is not in queue"` 三種訊息（後兩種 `fail=?`），並斷言 log 不含完整位址；負向對照：把 trace 改成記訊息全文 → 位址斷言 FAIL（J v3 m-6）。帶碼事件要分在**不同的 event-loop 任務**、晚於 connect 串流的 false 送出（照平台訊息的真實順序）；「只在連結開著時收碼」的寫法必須讓這個測試 FAIL（J v3 MAJOR 的負向對照）。
 - 真機：重新整理 / 冷啟動直到收集到 **至少 3 次** Android 的 `status=133`；判準：每一次 app 的嘗試在那筆 133 之後 **≤ 500 ms** 結束，且同一時間附近的 gate 行 `link …XX down fail=` 與 Android 的 status 一致（沒有 gate 行 → 那一項 ❓）。`ReactiveBackend` 把 plugin 事件轉成 `(address, up, code)` 的那段沒有單元測試（要真的 plugin），只靠這一步的真機驗證（I v4 m-5）。收集不到 3 次 → ❓（不是通過）。負向對照：`ab/r1_a0.app` 那兩次（133 之後 5.1 s / 3.0 s 才結束）。另重跑 R-4。
+- 收 log 的搜尋字串：`BMAPP (nl|gate)`（舊腳本只搜 `BMAPP nl`，會漏 gate 行；review 5 I-n2）。
+- **真機結果（2026-11-18 08:17–08:28，S20 / Android 13，a36c383，04 = 7D2C）**：30 次重新整理收集到 3 次自然的 Android `status=133`（08:24:47.395、08:26:24.842、08:27:58.062）；app 的嘗試分別在 133 之後 6 / 4 / 3 ms 結束（`after 2899 / 5026 / 2886ms`，修改前 8000 ms）；每次 gate 記兩行 `link …C4 down fail=133`，與 Android 一致；log 無完整位址。失敗率仍約 1/10（本修正不減少失敗）。原始行：`scratchpad/b2/v3dev/sel.txt`。✅
 - 存檔：Android BT 行、app trace、04 provd 行（換算時間）都放 `scratchpad/b2/` 對應的資料夾。
