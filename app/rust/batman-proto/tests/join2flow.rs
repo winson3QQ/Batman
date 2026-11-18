@@ -1356,3 +1356,14 @@ fn t_a6c_version_n_stores_no_mesh_address() {
     let list = netrec::decode(&plain).unwrap().members().unwrap();
     assert!(list.len() >= 2 && list.iter().all(|m| m.mesh_addr.is_none()), "version N stored key 7: {list:?}");
 }
+
+/// #329 PR 6 D11 / T6-9: the one way this app sends a country that is not US — a join that failed puts back the
+/// node's own earlier country (`Op::Revert`, prev_country), here TW (the user rule: a failed change returns to the
+/// state before it).
+#[test]
+fn d11_revert_sends_the_nodes_own_prev_country() {
+    let (run, n, disk) = join_with("TW", |n| n.join_r.push_back(R::Err(4, m(vec![]))));
+    assert_eq!(run.end, Some(End::Failed(Fail::Rejected, Revert::Reverted { country: "TW".into() })));
+    assert_eq!(n.sets, ["US", "TW"], "US for the join, then the node's own TW back");
+    assert!(disk.mine().is_none());
+}

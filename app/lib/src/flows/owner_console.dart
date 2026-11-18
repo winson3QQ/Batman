@@ -57,6 +57,13 @@ const recordUnopenedLine = '[REQ_FAIL] 手機裡的網路紀錄打不開';
 /// #329 PR 4 §2.2: a settings/set whose outcome is unknown (it went out); the page offers 「重新讀取」.
 const settingsUnclearLine = '[REQ_FAIL] 結果不明 — 請重新讀取設定';
 
+/// #329 PR 6 D11: the countries this app sets on a node (the country page reads this too). Taiwan uses the US band.
+const allowedCountries = {'US'};
+const countryRefusedLine = '[REQ_FAIL] 這個國家不在可選清單，沒有送出';
+
+/// #329 PR 6 D2: an ssh_keys/set whose outcome is unknown; the same set may be sent again (it replaces, idempotent).
+const sshUnclearLine = '[REQ_FAIL] 結果不明 — 可以再送一次同一組（會整組取代）';
+
 /// The update request's unclear mark (nodes.dart:1598 `_swUnanswered`): a lost link ends it at once; never shown.
 const swUnansweredMark = '[SW_LOST]';
 
@@ -569,10 +576,20 @@ class OwnerConsole {
 
   /// `settings/set` {2: country} (nodes.dart:1694). Waits [joinWait] (the node takes up to about 230 s: D2); a lost link
   /// after the signed write is 「結果不明」 (§2.1 (a)).
+  /// #329 PR 6 D11: only a country of [allowedCountries] is sent; any other is refused here, nothing goes out
+  /// (fail-closed). The one other country this app sends is join2's put-back of the node's own earlier value (Rust).
   Future<ConsoleReply> setCountry(String country) {
     _keyError = false;
+    if (!allowedCountries.contains(country)) return Future.value(_reply(ReplyKind.notSent, countryRefusedLine));
     return _ask((s) => s.requestSetCountry(country: country),
         wait: joinWait, unclear: settingsUnclearLine, endedAfterSent: true);
+  }
+
+  /// #329 PR 6 D2: `ssh_keys/set` — [lines] REPLACE every key an app added before (node.go:839-872; 0 lines = all of
+  /// them removed). A lost link after the write is 「結果不明」; sending the same set again is idempotent.
+  Future<ConsoleReply> sshKeys(List<String> lines) {
+    _keyError = false;
+    return _ask((s) => s.requestSshKeys(lines: lines), unclear: sshUnclearLine, endedAfterSent: true);
   }
 
   /// `settings/set` {20: {1: ssid, 2: passphrase}} (nodes.dart:1714). The passphrase goes straight into Rust's

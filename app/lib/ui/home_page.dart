@@ -279,11 +279,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
     final firstRounds = a.link.core.roundsRun < 3;
     final h = decideHome(
         HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: nets.records));
-    // the status area's time is only ever a fresh read's: an older one is not 「讀取於」 (review r3 E-m8 / C-m8)
-    final freshest = infos.where((n) => n.fresh).map((n) => n.readWall).whereType<DateTime>().fold<DateTime?>(null, (x, y) => x == null || y.isAfter(x) ? y : x);
-    // a row about one node shows that node's read time, and only a fresh one (review r2 C-m8)
-    final about = h.node == null ? null : infos.where((n) => n.id == h.node).firstOrNull;
-    final shownTime = about != null ? (about.fresh ? about.readWall : null) : freshest;
+    // #329 PR 6 D9: 「讀取於」 for a fresh read, 「上次讀取」 for an older one (review r2 C MINOR-8's rule); a row
+    // about one node (not a list of several) shows that node's time
+    final shownTime = heroTime(infos,
+        about: h.action == HomeAction.showList ? null : h.node, now: DateTime.now());
     final actionText = switch (h.action) {
       HomeAction.allowBluetooth => Btn.allowBluetooth,
       HomeAction.addNode => Btn.addNode,
@@ -303,7 +302,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
           icon: Icon(Icons.settings_outlined, color: t.ink),
           onPressed: () {
             a.link.setPage(nl.Page.other); // §4.3.2: no reads while the settings are on screen (T-L8; review A-m3)
-            _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(app: a, ui: widget.ui, devTrust: widget.devTrust, notes: widget.notes))));
+            _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(app: a, ui: widget.ui, devTrust: widget.devTrust, notes: widget.notes, keys: widget.keys))));
           },
         ),
       ],
@@ -312,7 +311,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
           look: h.look,
           text: h.text,
           next: h.next,
-          time: shownTime == null || h.look == Look.busy ? null : '讀取於 ${hhmmss(shownTime)}',
+          time: h.look == Look.busy ? null : shownTime,
           onRefresh: h.look == Look.busy ? null : a.link.refresh,
           extra: actionText == null
               ? null

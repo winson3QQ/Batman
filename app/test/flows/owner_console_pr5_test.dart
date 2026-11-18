@@ -8,7 +8,7 @@ import 'package:batman_app/src/rust/api/owner.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../nodes_update_send_test.dart' show FakeRust, step;
+import '../support/fake_node.dart' show FakeRust, step;
 import 'owner_console_test.dart' show Rig, Session;
 
 const fJr = 90, fJr2 = 92;

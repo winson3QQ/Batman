@@ -229,8 +229,24 @@ class _WifiPageState extends State<WifiPage> {
   }
 }
 
-/// Board 5.8: the menu of design §5.5 (U9: no default changes).
-const countries = {'TW': '台灣 TW', 'US': '美國 US'};
+/// Board 5.8: the menu of design §5.5. #329 PR 6 D11: only the countries of [allowedCountries] (US: Taiwan uses that
+/// band); a node set to another one shows it and can be changed to US.
+final countries = {for (final c in allowedCountries) c: _countryLabels[c] ?? c};
+const _countryLabels = {'US': '美國 US（台灣使用這個頻段）'};
+
+bool _hidden(int r) =>
+    r < 0x20 ||
+    (r >= 0x7f && r < 0xa0) ||
+    (r >= 0x200b && r <= 0x200f) ||
+    (r >= 0x2028 && r <= 0x202e) ||
+    (r >= 0x2060 && r <= 0x206f) ||
+    r == 0xfeff;
+
+/// #329 PR 6 D11 (plan §11 MINOR): a node's country string for the screen — control and format characters dropped,
+/// at most 8 characters (a node string; the value is never sent back).
+String countryShown(String cc) => String.fromCharCodes(cc.runes.where((r) => !_hidden(r)).take(8));
+
+String _countryName(String cc) => countries[cc] ?? '${countryShown(cc)}（不在可選清單）';
 
 class CountryPage extends StatefulWidget {
   const CountryPage({super.key, required this.app, required this.ui, required this.id, this.deps});
@@ -299,7 +315,7 @@ class _CountryPageState extends State<CountryPage> {
         context: context,
         builder: (c) => AlertDialog(
               backgroundColor: t.surf,
-              title: Text('把這台的國家從 ${countries[from] ?? from} 改成 ${countries[cc]}？',
+              title: Text('把這台的國家從 ${_countryName(from)} 改成 ${countries[cc]}？',
                   style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
               content: Text('之後加入網路時，國家會改成那個網路的國家。', style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
               actions: [
@@ -339,9 +355,13 @@ class _CountryPageState extends State<CountryPage> {
     return PopScope(
       canPop: !_sending,
       child: BatPage(title: '國家', body: [
-        Text('節點的 HaLow 無線電照這個國家的規定使用頻率。這一版只能選台灣或美國。', style: TextStyle(fontSize: Fs.note, height: 1.55, color: t.sub)),
+        Text('節點的 HaLow 無線電照這個國家的規定使用頻率。台灣使用美國 US 的頻段。', style: TextStyle(fontSize: Fs.note, height: 1.55, color: t.sub)),
         BatCard(children: [
-          BatRow(icon: Icons.public, title: '目前', right: _reading ? '讀取中…' : (cur == null ? '讀不到' : (countries[cur] ?? cur))),
+          BatRow(
+              key: const Key('country-now'),
+              icon: Icons.public,
+              title: '目前',
+              right: _reading ? '讀取中…' : (cur == null ? '讀不到' : _countryName(cur))),
         ]),
         BatCard(children: [
           for (final e in countries.entries)

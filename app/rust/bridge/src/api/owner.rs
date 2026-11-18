@@ -626,7 +626,7 @@ fn verb_text(verb: &str) -> String {
         "status" => "查看狀態".into(),
         "settings/get" => "查看設定".into(),
         "settings/set" => "更改設定".into(),
-        "ssh_keys/set" => "加入 SSH 金鑰".into(),
+        "ssh_keys/set" => "設定 SSH 金鑰".into(),
         "info" | "info-net" => "檢查網路".into(),
         "info-confirm" => "檢查網路".into(),
         "status-page" | "info-page" => "查看狀態".into(),
@@ -671,12 +671,15 @@ fn error_text(asked: &str, code: u64, detail: &Value) -> String {
     format!("[REQ_FAIL] {}沒有成功：{why}（代碼 {code}{reason}{verb}）", verb_text(asked))
 }
 
+/// A whitelist of fields (no passphrase); #329 PR 6 D3: every node string through `statuspage::shown` (a compromised
+/// node cannot put line breaks or direction marks on the 「查看節點設定」 page).
 fn settings_text(b: &Value) -> String {
     let mut out = vec![];
-    if let Some(n) = b.get(1).and_then(Value::as_text) {
+    let text = |v: Option<&Value>| v.and_then(Value::as_text).map(statuspage::shown);
+    if let Some(n) = text(b.get(1)) {
         out.push(format!("名稱 {n}"));
     }
-    if let Some(c) = b.get(2).and_then(Value::as_text) {
+    if let Some(c) = text(b.get(2)) {
         out.push(format!("國家 {c}"));
     }
     if let Some(h) = b.get(10) {
@@ -684,7 +687,7 @@ fn settings_text(b: &Value) -> String {
         let bw = h.get(2).and_then(Value::as_uint).map(|c| format!("（{c} MHz）")).unwrap_or_default();
         out.push(format!("HaLow 無線電 頻道 {ch}{bw}"));
     }
-    if let Some(s) = b.get(20).and_then(|a| a.get(1)).and_then(Value::as_text) {
+    if let Some(s) = text(b.get(20).and_then(|a| a.get(1))) {
         out.push(format!("給手機連的 Wi-Fi「{s}」"));
     }
     if out.is_empty() { "（讀不到任何設定）".into() } else { out.join("，") }
@@ -1006,7 +1009,7 @@ impl OwnerSession {
                         "status" => status_text(&b),
                         "settings/get" => format!("目前設定：{}", settings_text(&b)),
                         "settings/set" => format!("設定已更新：{}", settings_text(&b)),
-                        "ssh_keys/set" => "[SSH_DONE] 已加入 SSH 金鑰".into(),
+                        "ssh_keys/set" => "[SSH_DONE] SSH 金鑰已設定".into(),
                         v => format!("{}：完成", verb_text(v)),
                     };
                     *op = None;
@@ -1766,6 +1769,29 @@ mod tests {
         assert_eq!(status_text(&Value::Map(vec![])), "看不懂節點回傳的狀態：缺少節點狀態（欄位 1）");
     }
 
+    /// #329 PR 6 T6-4 (D3): the 「查看節點設定」 text is a whitelist and every node string goes through `shown` — a
+    /// passphrase field and control / direction characters from a (compromised) node never reach the page.
+    #[test]
+    fn settings_text_whitelist_and_shown() {
+        let s = Value::Map(vec![
+            (Value::Uint(1), Value::Text("node\n假的一行\u{202e}x".into())),
+            (Value::Uint(2), Value::Text("U\u{0007}S".into())),
+            (
+                Value::Uint(20),
+                Value::Map(vec![
+                    (Value::Uint(1), Value::Text("ap\r\u{2066}name".into())),
+                    (Value::Uint(2), Value::Text("SECRET-PASSPHRASE".into())),
+                ]),
+            ),
+        ]);
+        let t = settings_text(&s);
+        assert!(!t.contains("SECRET-PASSPHRASE"), "{t}");
+        for c in ['\n', '\r', '\u{0007}', '\u{202e}', '\u{2066}'] {
+            assert!(!t.contains(c), "{c:?} in {t:?}");
+        }
+        assert!(t.contains("名稱 node") && t.contains("給手機連的 Wi-Fi「ap"), "{t}");
+    }
+
     #[test]
     fn reasons() {
         let m = |kv: Vec<(u64, Value)>| Value::Map(kv.into_iter().map(|(k, v)| (Value::Uint(k), v)).collect());
@@ -1781,7 +1807,7 @@ mod tests {
             error_text("settings/set", 6, &m(vec![(1, Value::Text("settings/set".into())), (2, Value::Uint(20))])),
             "[REQ_FAIL] 更改設定沒有成功：這是舊版節點，它的無線電不由 App 管理（代碼 6，原因 20，settings/set）"
         );
-        assert_eq!(error_text("ssh_keys/set", 12, &Value::Map(vec![])), "[REQ_FAIL] 加入 SSH 金鑰沒有成功：嘗試太多次，請稍後再試（代碼 12）");
+        assert_eq!(error_text("ssh_keys/set", 12, &Value::Map(vec![])), "[REQ_FAIL] 設定 SSH 金鑰沒有成功：嘗試太多次，請稍後再試（代碼 12）");
         assert_eq!(error_text("x/y", 99, &Value::Map(vec![])), "[REQ_FAIL] 操作（x/y）沒有成功：節點回報錯誤（代碼 99）");
     }
 

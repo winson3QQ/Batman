@@ -5,6 +5,7 @@
 // when an operation holds Bluetooth.
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/widgets.dart' show AppLifecycleState;
 
 import 'ble_gate.dart';
@@ -79,6 +80,13 @@ class NodeLink implements LeaseListener {
       .replaceAllMapped(RegExp(r'[0-9a-fA-F]{8,}'), (m) => '…${m[0]!.substring(m[0]!.length - 4)}')
       .replaceAllMapped(RegExp(r'(?:[0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})'), (m) => '…${m[1]}');
 
+  /// #329 PR 6 D4 (design :342): an event the text log must keep (a lease taken back, a record write refused or
+  /// failed); the caller names only the kind, the operation and last fours. Also forwarded to logcat, masked.
+  void note(String line) {
+    core.note(now(), line);
+    _forwardLog();
+  }
+
   void _forwardLog() {
     final t = trace;
     if (t == null) return;
@@ -100,8 +108,23 @@ class NodeLink implements LeaseListener {
 
   final _changed = StreamController<void>.broadcast();
 
-  /// Fires after every change a screen may show (a read, a conclusion, a precondition).
-  Stream<void> get changed => _changed.stream;
+  /// Fires after every change a screen may show (a read, a conclusion, a precondition). Each listener is counted
+  /// ([changedListeners]); events reach it in the same turn the shared broadcast delivers them (addSync: no extra hop).
+  Stream<void> get changed => Stream<void>.multi((c) {
+        _changedListeners++;
+        final s = _changed.stream.listen((_) => c.addSync(null), onError: c.addErrorSync, onDone: c.closeSync);
+        c.onCancel = () {
+          _changedListeners--;
+          return s.cancel();
+        };
+      }, isBroadcast: true);
+  int _changedListeners = 0;
+
+  /// #329 PR 6 D10: how many subscriptions to [changed] are open. A page's own subscription is the difference while it
+  /// is on screen (AppLink keeps one of its own, app_link.dart: `sw.retain`; the home page another), so the plan's
+  /// `hasChangedListener` (a bool) could not tell a page's subscription apart: tests compare this count instead.
+  @visibleForTesting
+  int get changedListeners => _changedListeners;
 
   /// The wall-clock time of each node's last status read.
   final Map<String, DateTime> readWall = {};
