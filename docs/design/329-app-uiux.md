@@ -579,7 +579,7 @@ F22 仍然是 ❓（§1.3）：本設計不解釋它、不宣稱修好；兩輪�
 | 釋放之後 | 丟掉「這次佔用裡寫入或刪除過的節點紀錄」的位址備忘，其他備忘留著（§4.3.3-5）；重算網路摘要表（§4.3.8）；6 s 後一輪（§4.3.2）；之後 30 s 內，對**這次佔用寫入過的節點紀錄**的「解不開」不記備忘（§4.3.3-4） |
 | app 被系統結束、Activity 被重建 | 兩者對 Dart 都是整個重新啟動（⚠️ 依 Flutter 預設的單一 Activity 嵌入方式推論；手機的開發者設定不能動，沒有實測）：佔用、備忘、`SwHold` 都消失；紀錄的一致性由現有的 CAS 與 claim-pending 恢復負責（現況） |
 
-**`RecordWriter`**：F43 的 8 個寫入 / 刪除點全部改成經過它（`ClaimRecords` 改成拿它，不直接呼叫 bridge；包含留副本的 `storeKeepCopy`）。它檢查「呼叫者拿的是目前有效的佔用憑證」，不是就拒絕、什麼都不寫。T-G5 用原始碼搜尋鎖住：`storeWriteCas`、`storeWriteSealed`、`storeRemove`、`storeKeepCopy` 在 `lib/` 只能出現在 `RecordWriter` 與 `UiState` 兩個檔案；`UiState` 裡的路徑參數只能是常數 `ui/state-v1`。啟動程序的 `storeSweep`、`storeWriteMarker` 不在這條規則裡（§4.1 最後一列：它們在任何佔用存在之前跑完），T-G5 另外鎖住它們只出現在 `main.dart` 的 `_install`。
+**`RecordWriter`**：新流程（session 佔用）的寫入 / 刪除點全部經過它（包含留副本的 `storeKeepCopy`）。它檢查「呼叫者拿的是目前有效的佔用憑證」，不是就拒絕、什麼都不寫。**例外（#329 PR 7 T3 定案）**：認領頁 `ClaimPage`（與它裡面的 `ClaimRecovery`）、`ScanPage` 保留原始佔用，認領的寫入走 `ClaimRecords`（claim_records.dart）直接呼叫 bridge，不經 `RecordWriter`——認領寫下的是新憑證唯一的一份，原始佔用被收回之後也不能拒絕這次寫入（拒絕 = 節點已認領、手機沒有憑證）。T-G5 用原始碼搜尋鎖住（`test/t_g5_record_write_src_test.dart`）：直接呼叫紀錄寫入的識別字（`storeWrite*`、`storeRemove`、`storeKeepCopy`、生成碼的 `crateApi…Store{Write,Remove,KeepCopy}…`；含 tear-off，不算註解與 import）在 `lib/` 只能出現在這些檔案、而且次數固定：`app_link.dart` 4（建 `RecordWriter` 的 `RecordStore`）、`record_writer.dart` 0（store 由 app_link 注入）、`claim_records.dart` 3（認領，上述例外）、`ui_state.dart` 2（`ui/state-v1`，不是金鑰紀錄、不需要佔用，§4.6；路徑參數只能是常數 `uiRel`）、`main.dart` 1（`_install` 的 `storeWriteMarker`，§4.1 最後一列：在任何佔用存在之前跑完）；生成碼 `lib/src/rust/**` 不掃。多一個檔案、多一次或少一次呼叫都 FAIL（要改就有意識地改表）；掃不到檔案也 FAIL。啟動程序的 `storeSweep` 不是寫紀錄，不在這條規則裡。
 
 ### 4.5 session 步驟的契約（F24 的每一種）
 
@@ -717,7 +717,7 @@ F22 仍然是 ❓（§1.3）：本設計不解釋它、不宣稱修好；兩輪�
 
 ### 5.3 新增節點（3.1–3.7）
 
-- 整條流程是一個原始佔用（§4.4）；PR 3 的新流程頁改用 `BleGate`、`RecordWriter`（舊 `ClaimPage` 在 PR 1 / 2 期間以 `RawBusy` 持有佔用，見 §4.4）。其餘邏輯不變。
+- 整條流程是一個原始佔用（§4.4）。`ClaimPage` 保留原始佔用（`RawBusy` / `Lease.hold`），寫入走 `ClaimRecords` 直接呼叫 bridge、不經 `RecordWriter`（#329 PR 7 T3 定案；理由與 T-G5 的例外表見 §4.4 `RecordWriter` 段）。其餘邏輯不變。
 - 3.1 只有一個主要動作「掃描 QR code」，並解釋一次「認領」（§3.3）。貼上 / 輸入 16 進位只在開發者選項。
 - 不顯示附近藍牙裝置清單（U2-2）。「附近的節點」掃描頁移到開發者選項。認領中的「找到節點」那一句不顯示 BLE 位址（S10）。
 - 3.2 取名：手機暱稱，1–24 個字，去掉控制字元與前後空白；預設「節點 」加後四碼；之後可在 5.7 改。畫面寫「這個名字只有這支手機看得到。對別人說是哪一台時，請報後四碼」。
