@@ -310,7 +310,7 @@ fn t2_only_a_matching_pair_is_sent() {
         let mut r = Run::new(true);
         r.enter(w("status-idle"));
         let a = r.pick(&bad);
-        assert!(text(&a).starts_with("檔案不對:"), "{a:?}");
+        assert!(text(&a).starts_with("檔案不對："), "{a:?}");
         assert!(!r.verbs.contains(&"update/check"), "a bad pair was sent: {:?}", r.verbs);
     }
 }
@@ -324,36 +324,36 @@ fn t3_every_row_of_section_4() {
     let after = Ctx { written: true, ..c };
     let mf = Ctx { manifest: true, ..c };
     let rows: Vec<(u64, Ctx, &str)> = vec![
-        (1, c, "節點正在試用新版,等它確認(約 5 分鐘)後再更新"),
-        (2, c, "節點的設定還沒存好,不能更新 — 請重開節點;仍然如此請找維修人員"),
+        (1, c, "節點正在試用新版，等它確認（約 5 分鐘）後再更新"),
+        (2, c, "節點的設定還沒存好，不能更新 — 請重開節點；仍然如此請找維修人員"),
         (3, c, "這個更新檔是給別種板子的"),
         (4, c, "要先裝中間版本才能更新到這版"),
-        (5, c, "這版需要重燒卡,不能經 App 更新"),
+        (5, c, "這版需要重燒卡，不能經 App 更新"),
         (6, c, "不允許降回這個版本"),
         (8, c, "節點的記憶體不夠放這個更新檔 — 請重開節點再試"),
-        (11, c, "更新檔內容與簽章不符 — 檔案可能不是同一份(請確認 manifest 和更新檔是一起產生的),或傳輸中被換掉;請重新選檔或重新上傳"),
+        (11, c, "更新檔內容與簽章不符 — 檔案可能不是同一份（請確認 manifest 和更新檔是一起產生的），或傳輸中被換掉；請重新選檔或重新上傳"),
         (12, c, "節點有一個沒完成的網路變更 — 請等一下再試"),
-        (15, c, "這個更新不是這支手機開始的,或已超過 30 分鐘 — 請重新開始更新"),
-        (15, st, "上傳不完整,請重新上傳"),
-        (16, c, "節點給手機連的 Wi-Fi 還沒設定(或被關閉),要先設定才能傳更新檔"),
+        (15, c, "這個更新不是這支手機開始的，或已超過 30 分鐘 — 請重新開始更新"),
+        (15, st, "上傳不完整，請重新上傳"),
+        (16, c, "節點給手機連的 Wi-Fi 還沒設定（或被關閉），要先設定才能傳更新檔"),
         (17, c, "節點的設定沒有存到最新 — 請重開節點後再試"),
-        (18, c, "新版沒有完成試用,節點已回到原本的版本"),
-        (21, c, "節點現在無法寫入,請稍後再試"),
-        (21, after, "這次寫入失敗,舊版本的退路可能已失效,請再更新一次"),
-        (22, c, "上次寫入沒有完成,退路已失效,請再更新一次"),
-        (23, mf, "新版已寫入但沒有啟用(節點重開過),請重新更新"),
-        (23, c, "請重新選 manifest 檔;若節點重開過,要整個重新更新"),
-        (24, c, "這台節點的軟體不能經 App 更新,請用電腦(ssh)更新或重燒卡"),
-        (99, c, "更新沒有成功 — 請再試一次;一直如此請找維修人員"),
+        (18, c, "新版沒有完成試用，節點已回到原本的版本"),
+        (21, c, "節點現在無法寫入，請稍後再試"),
+        (21, after, "這次寫入失敗，舊版本的退路可能已失效，請再更新一次"),
+        (22, c, "上次寫入沒有完成，退路已失效，請再更新一次"),
+        (23, mf, "新版已寫入但沒有啟用（節點重開過），請重新更新"),
+        (23, c, "請重新選 manifest 檔；若節點重開過，要整個重新更新"),
+        (24, c, "這台節點的軟體不能經 App 更新，請用電腦（ssh）更新或重燒卡"),
+        (99, c, "更新沒有成功 — 請再試一次；一直如此請找維修人員"),
     ];
     for (r, x, want) in &rows {
         assert_eq!(su::reason_text(*r, *x), *want, "reason {r} {x:?}");
     }
     let none = V::Map(vec![]);
-    assert_eq!(su::error_text(7, &none, c), "節點正在處理另一個更新(可能是另一支擁有者手機)— 請稍後再試");
-    assert_eq!(su::error_text(10, &none, c), "節點的儲存區寫不進去,這次沒有開始 — 請重開節點後再試");
-    assert_eq!(su::error_text(12, &none, c), "太快了,請稍等 10 秒再按");
-    assert_eq!(su::error_text(6, &none, c), "這台節點的軟體太舊,不能經 App 更新");
+    assert_eq!(su::error_text(7, &none, c), "節點正在處理另一個更新（可能是另一支擁有者手機）— 請稍後再試");
+    assert_eq!(su::error_text(10, &none, c), "節點的儲存區寫不進去，這次沒有開始 — 請重開節點後再試");
+    assert_eq!(su::error_text(12, &none, c), "太快了，請稍等 10 秒再按");
+    assert_eq!(su::error_text(6, &none, c), "這台節點的軟體太舊，不能經 App 更新");
     assert_eq!(su::error_text(11, &m(vec![(2, V::Uint(16))]), c), su::T_AP_OFF);
     assert_eq!(su::error_text(99, &none, c), su::OTHER_TEXT);
     // 6 (a refusal) and the phase 6 rows are three different texts
@@ -369,7 +369,7 @@ fn t3_every_row_of_section_4() {
     assert_eq!(gate(status15(Some("none"), vec![]), true), Gate::Closed(su::T_TRUST_NONE.into()));
     assert_eq!(gate(status15(Some("bad"), vec![]), true), Gate::Closed(su::T_TRUST_BAD.into()));
     assert_eq!(gate(status15(Some("0123456789ABCDEF"), vec![]), true), Gate::Closed(su::T_TRUST_BAD.into()), "not lowercase hex");
-    assert_eq!(gate(status15(Some(TRUST), vec![]), true), Gate::Open(format!("測試信任:{TRUST}")));
+    assert_eq!(gate(status15(Some(TRUST), vec![]), true), Gate::Open(format!("測試信任：{TRUST}")));
     assert_eq!(gate(status15(Some(TRUST), vec![]), false), Gate::Closed(su::T_TRUST_FIELD.into()), "D13: a field build before #255");
     assert_eq!(gate(status15(Some(TRUST), vec![("http_bind_failed", V::Bool(true))]), true), Gate::Closed(su::T_BIND_FAILED.into()));
 }
@@ -391,7 +391,7 @@ fn t3_screens_use_the_texts() {
     assert_eq!(text(&r.reply(Reply::Ok(m(vec![])))), su::T_TRUST_FIELD);
     let mut r = Run::new(true);
     let Action::Show(s) = r.enter(w("status-idle")) else { panic!() };
-    assert_eq!(s.tech, format!("測試信任:{TRUST}"));
+    assert_eq!(s.tech, format!("測試信任：{TRUST}"));
     // check refusals: their texts
     for (x, want) in [("check-refused-nokey", su::reason_text(24, Ctx { status: false, written: false, manifest: true })), ("check-refused-board", "這個更新檔是給別種板子的".into()), ("check-refused-downgrade", "不允許降回這個版本".into())] {
         let mut r = Run::new(true);
@@ -440,7 +440,7 @@ fn t4_the_whole_path_in_order_with_its_waits_and_no_secret_in_any_text() {
     assert!(matches!(a, Action::Wait { ms: 30000, .. }));
     r.after(&a);
     let a = r.reply(w("status-committed"));
-    assert_eq!(text(&a), "更新完成:1.5.14-wsl.30+abcdef1.fw0123456");
+    assert_eq!(text(&a), "更新完成：1.5.14-wsl.30+abcdef1.fw0123456");
     assert!(matches!(a, Action::Done(_)));
     assert_eq!(
         r.verbs,
@@ -674,7 +674,7 @@ fn t5_status_0_15_and_0_11_count_and_a_success_resets() {
     let mut r = Run::new(true);
     r.to_upload();
     written(&mut r);
-    assert_eq!(text(&r.reply(others(w("status-0-15")))), "上傳不完整,請重新上傳");
+    assert_eq!(text(&r.reply(others(w("status-0-15")))), "上傳不完整，請重新上傳");
 }
 
 #[test]
@@ -761,7 +761,7 @@ fn t6_each_row_of_section_3_3() {
     // 1, not ours (no files picked): offer to abandon; bulk/close ok -> idle; 15 -> not this phone
     let mut r = Run::new(true);
     let a = r.enter(w("status-receiving"));
-    assert!(text(&a).starts_with("節點上有一個上傳中的更新(1.5.14-wsl.30"), "{a:?}");
+    assert!(text(&a).starts_with("節點上有一個上傳中的更新（1.5.14-wsl.30"), "{a:?}");
     assert_eq!(verb(&r.press(Button::Abandon)), Verb::BulkClose);
     assert_eq!(buttons(&r.reply(w("bulk-close-ok"))), vec![Button::Pick, Button::Refresh]);
     let mut r = Run::new(true);
@@ -784,25 +784,25 @@ fn t6_each_row_of_section_3_3() {
     let mut r = Run::new(true);
     assert!(matches!(r.enter(w("status-trial")), Action::Wait { ms: 30000, .. }));
     let mut r = Run::new(true);
-    assert_eq!(text(&r.enter(w("status-committed"))), "上一次更新:更新完成:1.5.14-wsl.30+abcdef1.fw0123456");
+    assert_eq!(text(&r.enter(w("status-committed"))), "上一次更新：更新完成：1.5.14-wsl.30+abcdef1.fw0123456");
     let mut r = Run::new(true);
-    assert_eq!(text(&r.enter(w("status-reverted"))), format!("上一次更新:{}", su::T_REVERTED));
+    assert_eq!(text(&r.enter(w("status-reverted"))), format!("上一次更新：{}", su::T_REVERTED));
     let mut r = Run::new(true);
-    assert_eq!(text(&r.enter(w("status-reverted-18"))), format!("上一次更新:{}", su::T_REVERTED_18));
+    assert_eq!(text(&r.enter(w("status-reverted-18"))), format!("上一次更新：{}", su::T_REVERTED_18));
     // 0 + reason without files: its §4 text (status context)
-    for (x, want) in [("status-0-15", "上傳不完整,請重新上傳"), ("status-0-22", "上次寫入沒有完成,退路已失效,請再更新一次"), ("status-0-21", "節點現在無法寫入,請稍後再試"), ("status-0-11", su::reason_text(11, Ctx { status: true, written: false, manifest: false }).leak())] {
+    for (x, want) in [("status-0-15", "上傳不完整，請重新上傳"), ("status-0-22", "上次寫入沒有完成，退路已失效，請再更新一次"), ("status-0-21", "節點現在無法寫入，請稍後再試"), ("status-0-11", su::reason_text(11, Ctx { status: true, written: false, manifest: false }).leak())] {
         let mut r = Run::new(true);
         assert_eq!(text(&r.enter(w(x))), want, "{x}");
     }
     let mut r = Run::new(true);
-    assert_eq!(text(&r.enter(w("status-0-23"))), "請重新選 manifest 檔;若節點重開過,要整個重新更新");
+    assert_eq!(text(&r.enter(w("status-0-23"))), "請重新選 manifest 檔；若節點重開過，要整個重新更新");
     // 0 + 23 with the manifest at hand: check again once
     let mut r = Run::new(true);
     r.to_confirm();
     r.press(Button::Cancel);
     assert_eq!(verb(&r.refresh_to(w("status-0-23"))), Verb::Check);
     assert_eq!(verb(&r.reply(w("check-ok"))), Verb::UpdStatus);
-    assert_eq!(text(&r.reply(w("status-0-23"))), "新版已寫入但沒有啟用(節點重開過),請重新更新");
+    assert_eq!(text(&r.reply(w("status-0-23"))), "新版已寫入但沒有啟用（節點重開過），請重新更新");
     // another owner has written one (3); apply answers 15 -> no manifest here: pick it again
     let mut r = Run::new(true);
     r.enter(others(w("status-written")));
@@ -814,7 +814,7 @@ fn t6_each_row_of_section_3_3() {
     r.put(Put::Ok200);
     let a = r.reply(w("prepare-ok"));
     r.after(&a);
-    assert_eq!(text(&r.reply(w("status-0-21"))), "這次寫入失敗,舊版本的退路可能已失效,請再更新一次");
+    assert_eq!(text(&r.reply(w("status-0-21"))), "這次寫入失敗，舊版本的退路可能已失效，請再更新一次");
 }
 
 #[test]
@@ -858,7 +858,7 @@ fn applied() -> (Run, Action) {
 
 #[test]
 fn t7_after_apply_trial_done_reverted_and_time_limits() {
-    for (x, want) in [("status-committed", "更新完成:1.5.14-wsl.30+abcdef1.fw0123456"), ("status-reverted", su::T_REVERTED), ("status-reverted-18", su::T_REVERTED_18)] {
+    for (x, want) in [("status-committed", "更新完成：1.5.14-wsl.30+abcdef1.fw0123456"), ("status-reverted", su::T_REVERTED), ("status-reverted-18", su::T_REVERTED_18)] {
         let (mut r, a) = applied();
         r.after(&a);
         let a = r.reply(w(x));
@@ -1123,7 +1123,7 @@ fn r1_prepare_15_of_another_upload_is_not_counted() {
 
 #[test]
 fn r1_a_lost_apply_answer_then_5_or_6_is_the_end_of_this_update() {
-    for (x, want) in [("status-committed", "更新完成:1.5.14-wsl.30+abcdef1.fw0123456"), ("status-reverted", su::T_REVERTED), ("status-reverted-18", su::T_REVERTED_18)] {
+    for (x, want) in [("status-committed", "更新完成：1.5.14-wsl.30+abcdef1.fw0123456"), ("status-reverted", su::T_REVERTED), ("status-reverted-18", su::T_REVERTED_18)] {
         let mut r = Run::new(true);
         r.enter(w("status-written"));
         r.press(Button::Apply);
@@ -1290,7 +1290,7 @@ fn v042_a_vpn_stops_before_anything_is_sent_and_offers_retry_or_cancel() {
     assert_eq!((text(&a), buttons(&a)), (su::T_VPN.to_string(), vec![Button::Retry, Button::Cancel]));
     assert!(!r.f.uploading(), "the upload stage ends: no network is held");
     assert!(!r.waits.contains(&31_000), "not a PUT failure: no 31 s wait, not counted");
-    assert_eq!(verb(&r.press(Button::Retry)), Verb::BulkOpen, "再試一次: bulk/open again, then the check again");
+    assert_eq!(verb(&r.press(Button::Retry)), Verb::BulkOpen, "再試一次： bulk/open again， then the check again");
     assert!(matches!(r.reply(w("bulk-open-ok")), Action::Upload { .. }));
     // three VPN stops in a row are not "傳送一直中斷"
     for _ in 0..3 {
@@ -1367,4 +1367,55 @@ fn a13_an_earlier_trust_is_not_shown_next_to_an_unread_status() {
         a = r.reply(stale());
     }
     assert_eq!(tech(&a), "status：快取過期（stale）", "no 測試信任 line next to it");
+}
+
+/// #329 PR 6 (S20 device session 2026-11-18; design §3.4 S6): the update page's sentences use full-width punctuation.
+/// PR 2 changed only the Dart side; every Chinese string literal in src/swupd.rs had 「,」「;」「:」「(」「)」. This scans
+/// the source (so a new sentence is caught too): in a literal holding a Han character, none of them outside `{…}`.
+#[test]
+fn s6_swupd_sentences_full_width() {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/swupd.rs")).unwrap();
+    let mut bad = vec![];
+    let mut scanned = 0;
+    for (no, line) in src.lines().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(a) = rest.find('"') {
+            let after = &rest[a + 1..];
+            let mut end = None;
+            let mut esc = false;
+            for (i, ch) in after.char_indices() {
+                if esc {
+                    esc = false;
+                } else if ch == '\\' {
+                    esc = true;
+                } else if ch == '"' {
+                    end = Some(i);
+                    break;
+                }
+            }
+            let Some(e) = end else { break };
+            let lit = &after[..e];
+            if lit.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) {
+                scanned += 1;
+                let mut depth = 0;
+                for c in lit.chars() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        ',' | ';' | ':' | '(' | ')' if depth == 0 => {
+                            bad.push(format!("swupd.rs:{}: {lit}", no + 1));
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            rest = &after[e + 1..];
+        }
+    }
+    assert!(scanned > 40, "the scan found only {scanned} Chinese literals: it is not reading the sentences");
+    assert!(bad.is_empty(), "half-width punctuation in Chinese sentences:\n{}", bad.join("\n"));
 }

@@ -25,6 +25,12 @@ import 'theme.dart';
 import 'ui_state.dart';
 import 'widgets.dart';
 
+/// The phone's only node, or null when it has none or several (the dev pages pick it in advance).
+String? onlyNode(AppLink app) {
+  final ids = app.link.core.states.keys;
+  return ids.length == 1 ? ids.first : null;
+}
+
 /// One of this phone's nodes, picked first on a dev page: nickname (or 「節點 XXXX」) and last four.
 class NodePickCard extends StatelessWidget {
   const NodePickCard({super.key, required this.app, required this.ui, required this.picked, required this.onPick, this.enabled = true});
@@ -101,7 +107,8 @@ class SshKeysPage extends StatefulWidget {
 class _SshKeysPageState extends State<SshKeysPage> {
   late final OpDeps _d = widget.deps ?? opDeps(widget.app);
   final _text = TextEditingController();
-  String? _id;
+  // S20 device session 2026-11-18: with one node the button did nothing until the node row was tapped; picked already
+  late String? _id = onlyNode(widget.app);
   bool _sending = false;
   String _line = '';
 
@@ -221,7 +228,7 @@ class NodeSettingsPage extends StatefulWidget {
 
 class _NodeSettingsPageState extends State<NodeSettingsPage> {
   late final OpDeps _d = widget.deps ?? opDeps(widget.app);
-  String? _id;
+  late String? _id = onlyNode(widget.app); // device 2026-11-18: one node -> picked already
   bool _reading = false;
   String _text = '';
   bool _ok = false;

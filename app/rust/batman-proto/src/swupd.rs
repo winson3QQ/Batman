@@ -58,45 +58,45 @@ pub const PROD_TRUST: Option<&str> = None;
 
 // ---- texts (§3, §4; the design's wording) -------------------------------------------------------------------
 
-pub const T_TRUST_NONE: &str = "這台節點的軟體不能經 App 更新,只能用電腦(ssh)更新或重燒卡";
+pub const T_TRUST_NONE: &str = "這台節點的軟體不能經 App 更新，只能用電腦（ssh）更新或重燒卡";
 pub const T_TRUST_BAD: &str = "這台節點的更新設定損壞 — 請找維修人員";
 pub const T_TRUST_FIELD: &str = "這版 App 還不能更新節點";
-pub const T_BIND_FAILED: &str = "節點的上傳埠被佔用,請重開節點後再更新";
-pub const T_CHECKING: &str = "節點正在檢查,最多約 6 分鐘,這段時間不能取消";
-pub const T_CONFIRM: &str = "開始傳送後請留在這個畫面,不要離開、不要關螢幕。寫入開始後不能取消;寫好後舊版本的退路已失效。";
-pub const T_SPECIFIER: &str = "手機會暫時離開目前的 Wi-Fi(TAK 會中斷),傳完自動回來";
+pub const T_BIND_FAILED: &str = "節點的上傳埠被佔用，請重開節點後再更新";
+pub const T_CHECKING: &str = "節點正在檢查，最多約 6 分鐘，這段時間不能取消";
+pub const T_CONFIRM: &str = "開始傳送後請留在這個畫面，不要離開、不要關螢幕。寫入開始後不能取消；寫好後舊版本的退路已失效。";
+pub const T_SPECIFIER: &str = "手機會暫時離開目前的 Wi-Fi（TAK 會中斷），傳完自動回來";
 pub const T_NO_WIFI: &str = "沒有連上節點的 Wi-Fi — 請確認手機 Wi-Fi 已開啟";
 /// v0.4.2 (04 + S20, 2026-11-13): an active VPN covering the app takes the PUT's packets into the tunnel, even on the
 /// node AP's Network — the node never sees them
-pub const T_VPN: &str = "這支手機開著 VPN(例如 WireGuard),會擋住傳給節點的資料。請暫時關閉 VPN,或在 VPN 設定裡把 Batman 加進排除的 App,再按「再試一次」。";
-pub const T_UPLOADING: &str = "正在傳送更新檔,請留在這個畫面";
-pub const T_WRITING: &str = "節點正在驗證並寫入新版,可以離開這個畫面";
-pub const T_TAK: &str = "重開約 2 分鐘,全隊 TAK 中斷";
+pub const T_VPN: &str = "這支手機開著 VPN（例如 WireGuard），會擋住傳給節點的資料。請暫時關閉 VPN，或在 VPN 設定裡把 Batman 加進排除的 App，再按「再試一次」。";
+pub const T_UPLOADING: &str = "正在傳送更新檔，請留在這個畫面";
+pub const T_WRITING: &str = "節點正在驗證並寫入新版，可以離開這個畫面";
+pub const T_TAK: &str = "重開約 2 分鐘，全隊 TAK 中斷";
 pub const T_REBOOTING: &str = "節點重新開機中…";
 pub const T_TRIAL: &str = "試用中";
-pub const T_REVERTED: &str = "新版不健康,已退回原本的版本";
-pub const T_REVERTED_18: &str = "新版沒有完成試用,已回到原本的版本";
+pub const T_REVERTED: &str = "新版不健康，已退回原本的版本";
+pub const T_REVERTED_18: &str = "新版沒有完成試用，已回到原本的版本";
 pub const T_LATER: &str = "請稍後在狀態頁確認";
 pub const T_UNSURE: &str = "結果還不確定 — 1 分鐘後自動再看";
-pub const T_NOT_DONE: &str = "這次更新沒有完成,目前版本沒變";
-pub const T_LAST: &str = "上一次更新:";
+pub const T_NOT_DONE: &str = "這次更新沒有完成，目前版本沒變";
+pub const T_LAST: &str = "上一次更新：";
 pub const T_PUT_FAILED: &str = "傳送一直中斷 — 請靠近節點後再試";
 /// P3 :517, as written
-pub const T_REJECTED_UPLOAD: &str = "節點拒絕上傳檔:請重開節點;若仍失敗,可能有人在節點 Wi-Fi 上干擾,請換節點 Wi-Fi 密碼;換了仍失敗,只能重燒";
+pub const T_REJECTED_UPLOAD: &str = "節點拒絕上傳檔：請重開節點；若仍失敗，可能有人在節點 Wi-Fi 上干擾，請換節點 Wi-Fi 密碼；換了仍失敗，只能重燒";
 pub const T_NOT_BACK: &str = "節點還沒回來";
 pub const T_NO_STATUS: &str = "讀不到更新狀態";
-pub const T_NOT_MINE: &str = "這個更新不是這支手機開始的(或已經過期)— 請稍後再試";
-pub const T_REPICK: &str = "請重新選 manifest 檔,就能套用已寫好的新版";
-pub const T_AP_OFF: &str = "節點給手機連的 Wi-Fi 還沒設定(或被關閉),要先設定才能傳更新檔";
-pub const T_IDLE: &str = "選手機裡的兩個檔(manifest 和更新檔)開始更新";
-pub const T_CANCELLED: &str = "已取消,目前版本不變";
-pub const T_BAD_WINDOW: &str = "節點的回應不完整,已停止 — 請再試一次";
+pub const T_NOT_MINE: &str = "這個更新不是這支手機開始的（或已經過期）— 請稍後再試";
+pub const T_REPICK: &str = "請重新選 manifest 檔，就能套用已寫好的新版";
+pub const T_AP_OFF: &str = "節點給手機連的 Wi-Fi 還沒設定（或被關閉），要先設定才能傳更新檔";
+pub const T_IDLE: &str = "選手機裡的兩個檔（manifest 和更新檔）開始更新";
+pub const T_CANCELLED: &str = "已取消，目前版本不變";
+pub const T_BAD_WINDOW: &str = "節點的回應不完整，已停止 — 請再試一次";
 pub const T_STATUS_UNREAD: &str = "讀不到節點的狀態 — 請重新整理";
-pub const E_BUSY_TEXT: &str = "節點正在處理另一個更新(可能是另一支擁有者手機)— 請稍後再試";
-pub const E_STORAGE_TEXT: &str = "節點的儲存區寫不進去,這次沒有開始 — 請重開節點後再試";
-pub const E_RATE_TEXT: &str = "太快了,請稍等 10 秒再按";
-pub const E_UNSUPPORTED_TEXT: &str = "這台節點的軟體太舊,不能經 App 更新";
-pub const OTHER_TEXT: &str = "更新沒有成功 — 請再試一次;一直如此請找維修人員";
+pub const E_BUSY_TEXT: &str = "節點正在處理另一個更新（可能是另一支擁有者手機）— 請稍後再試";
+pub const E_STORAGE_TEXT: &str = "節點的儲存區寫不進去，這次沒有開始 — 請重開節點後再試";
+pub const E_RATE_TEXT: &str = "太快了，請稍等 10 秒再按";
+pub const E_UNSUPPORTED_TEXT: &str = "這台節點的軟體太舊，不能經 App 更新";
+pub const OTHER_TEXT: &str = "更新沒有成功 — 請再試一次；一直如此請找維修人員";
 
 /// Where a reason-code was met: 15 / 21 / 23 read differently (§4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,26 +112,26 @@ pub struct Ctx {
 /// §4: a reason-code in words.
 pub fn reason_text(r: u64, c: Ctx) -> String {
     match r {
-        1 => "節點正在試用新版,等它確認(約 5 分鐘)後再更新",
-        2 => "節點的設定還沒存好,不能更新 — 請重開節點;仍然如此請找維修人員",
+        1 => "節點正在試用新版，等它確認（約 5 分鐘）後再更新",
+        2 => "節點的設定還沒存好，不能更新 — 請重開節點；仍然如此請找維修人員",
         3 => "這個更新檔是給別種板子的",
         4 => "要先裝中間版本才能更新到這版",
-        5 => "這版需要重燒卡,不能經 App 更新",
+        5 => "這版需要重燒卡，不能經 App 更新",
         6 => "不允許降回這個版本",
         8 => "節點的記憶體不夠放這個更新檔 — 請重開節點再試",
-        11 => "更新檔內容與簽章不符 — 檔案可能不是同一份(請確認 manifest 和更新檔是一起產生的),或傳輸中被換掉;請重新選檔或重新上傳",
+        11 => "更新檔內容與簽章不符 — 檔案可能不是同一份（請確認 manifest 和更新檔是一起產生的），或傳輸中被換掉；請重新選檔或重新上傳",
         12 => "節點有一個沒完成的網路變更 — 請等一下再試",
-        15 if c.status => "上傳不完整,請重新上傳",
-        15 => "這個更新不是這支手機開始的,或已超過 30 分鐘 — 請重新開始更新",
+        15 if c.status => "上傳不完整，請重新上傳",
+        15 => "這個更新不是這支手機開始的，或已超過 30 分鐘 — 請重新開始更新",
         16 => T_AP_OFF,
         17 => "節點的設定沒有存到最新 — 請重開節點後再試",
-        18 => "新版沒有完成試用,節點已回到原本的版本",
-        21 if c.written => "這次寫入失敗,舊版本的退路可能已失效,請再更新一次",
-        21 => "節點現在無法寫入,請稍後再試",
-        22 => "上次寫入沒有完成,退路已失效,請再更新一次",
-        23 if c.manifest => "新版已寫入但沒有啟用(節點重開過),請重新更新",
-        23 => "請重新選 manifest 檔;若節點重開過,要整個重新更新",
-        24 => "這台節點的軟體不能經 App 更新,請用電腦(ssh)更新或重燒卡",
+        18 => "新版沒有完成試用，節點已回到原本的版本",
+        21 if c.written => "這次寫入失敗，舊版本的退路可能已失效，請再更新一次",
+        21 => "節點現在無法寫入，請稍後再試",
+        22 => "上次寫入沒有完成，退路已失效，請再更新一次",
+        23 if c.manifest => "新版已寫入但沒有啟用（節點重開過），請重新更新",
+        23 => "請重新選 manifest 檔；若節點重開過，要整個重新更新",
+        24 => "這台節點的軟體不能經 App 更新，請用電腦（ssh）更新或重燒卡",
         _ => OTHER_TEXT,
     }
     .into()
@@ -256,17 +256,17 @@ pub fn pick(files: &[Picked]) -> Result<(usize, Manifest), PickError> {
 /// U1: 「檔案不對:<哪一項>」
 pub fn pick_text(e: PickError) -> String {
     let what = match e {
-        PickError::Count => "請選兩個檔(manifest 和更新檔)".to_string(),
+        PickError::Count => "請選兩個檔（manifest 和更新檔）".to_string(),
         PickError::SizeUnknown => "讀不到檔案大小".into(),
-        PickError::BothManifest => "兩個都是 manifest,沒有更新檔".into(),
+        PickError::BothManifest => "兩個都是 manifest，沒有更新檔".into(),
         PickError::NotGzip => "更新檔不是 gzip 格式".into(),
-        PickError::NoManifest => "兩個都是更新檔,沒有 manifest".into(),
+        PickError::NoManifest => "兩個都是更新檔，沒有 manifest".into(),
         PickError::Manifest(ManifestError::TooLarge) => "manifest 超過 64 KiB".into(),
         PickError::Manifest(ManifestError::NotCbor | ManifestError::NotMap) => "manifest 格式不對".into(),
         PickError::Manifest(ManifestError::Key(k)) => format!("manifest 的欄位 {k} 不對"),
         PickError::Size => "更新檔的大小和 manifest 寫的不同".into(),
     };
-    format!("檔案不對:{what}")
+    format!("檔案不對：{what}")
 }
 
 // ---- the node's answers ---------------------------------------------------------------------------------------
@@ -319,7 +319,7 @@ pub fn gate(status: &Value, dev_trust: bool) -> Gate {
         Some("none") => return Gate::Closed(T_TRUST_NONE.into()),
         Some(t) if t.len() == 16 && t.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) => {
             if dev_trust {
-                format!("測試信任:{t}")
+                format!("測試信任：{t}")
             } else if PROD_TRUST == Some(t) {
                 String::new()
             } else {
@@ -730,7 +730,7 @@ impl Flow {
 
     fn check(&mut self) -> Action {
         let v = self.mf.as_ref().map(|m| m.version.clone()).unwrap_or_default();
-        self.send(Verb::Check, None, &format!("選好的版本:{v}(還沒驗證)\n{T_CHECKING}"))
+        self.send(Verb::Check, None, &format!("選好的版本：{v}（還沒驗證）\n{T_CHECKING}"))
     }
 
     fn open(&mut self) -> Action {
@@ -777,7 +777,7 @@ impl Flow {
             Button::Cancel if asking_tak => self.written_screen(),
             // U5 cancel: the window is open on the node — close it
             Button::Cancel if self.window_open => self.close(true, T_CANCELLED),
-            Button::Cancel => self.idle("已取消,沒有送出任何東西"),
+            Button::Cancel => self.idle("已取消，沒有送出任何東西"),
             Button::Pick | Button::SetAp | Button::WifiPanel | Button::Start | Button::Retry | Button::ApDone => return None,
         })
     }
@@ -836,7 +836,7 @@ impl Flow {
                 if self.put_fails >= TRIES {
                     return Some(self.give_up(T_PUT_FAILED, format!("PUT x{}", self.put_fails)));
                 }
-                self.wait(PUT_FAIL_WAIT_MS, Then::Read(Read::Failed(Fail::Put)), "傳送中斷,等節點放掉上一次的傳送(約 30 秒)…", None)
+                self.wait(PUT_FAIL_WAIT_MS, Then::Read(Read::Failed(Fail::Put)), "傳送中斷，等節點放掉上一次的傳送（約 30 秒）…", None)
             }
             Put::NoNetwork | Put::Denied => self.screen(T_NO_WIFI.into(), String::new(), vec![Button::WifiPanel, Button::Retry, Button::Cancel]),
             // the window stays open: 再試一次 = bulk/open again (extends it), 取消 = bulk/close
@@ -932,8 +932,8 @@ impl Flow {
         let ver = p.version.clone();
         match p.phase {
             // our PUT was just cut: the slot is held up to 30 s (§3.4), then bulk/open again
-            1 if self.ours(&p) => self.wait(PUT_FAIL_WAIT_MS, Then::Open, "等節點放掉上一次的傳送(約 30 秒)…", None),
-            1 => self.screen(format!("節點上有一個上傳中的更新({ver})"), String::new(), vec![Button::Abandon, Button::Refresh]),
+            1 if self.ours(&p) => self.wait(PUT_FAIL_WAIT_MS, Then::Open, "等節點放掉上一次的傳送（約 30 秒）…", None),
+            1 => self.screen(format!("節點上有一個上傳中的更新（{ver}）"), String::new(), vec![Button::Abandon, Button::Refresh]),
             2 => self.writing(p),
             3 => self.written_from(p),
             4 => {
@@ -941,7 +941,7 @@ impl Flow {
                 self.trial_since = Some(now);
                 self.wait(TRIAL_POLL_MS, Then::Read(Read::Reboot), T_TRIAL, None)
             }
-            5 => self.text_with_pick(format!("{T_LAST}更新完成:{ver}"), String::new()),
+            5 => self.text_with_pick(format!("{T_LAST}更新完成：{ver}"), String::new()),
             6 => {
                 let t = if p.reason == Some(18) { T_REVERTED_18 } else { T_REVERTED };
                 self.text_with_pick(format!("{T_LAST}{t}"), String::new())
@@ -1041,7 +1041,7 @@ impl Flow {
                     if self.bad >= TRIES {
                         return self.give_up(T_REJECTED_UPLOAD, "原因 15".into());
                     }
-                    self.wait(PUT_FAIL_WAIT_MS, Then::Open, "等節點放掉上一次的傳送(約 30 秒)…", None)
+                    self.wait(PUT_FAIL_WAIT_MS, Then::Open, "等節點放掉上一次的傳送（約 30 秒）…", None)
                 }
                 // prepare 15 with anything else: bulk/open again, not counted (its own 15 goes back to U2)
                 Fail::Prepare15 => self.open(),
@@ -1059,7 +1059,7 @@ impl Flow {
         if self.tries >= TRIES {
             return self.text_with_pick(E_BUSY_TEXT.into(), format!("x{}", self.tries));
         }
-        self.wait(RETRY_MS, then, "節點忙碌中,10 秒後再試…", None)
+        self.wait(RETRY_MS, then, "節點忙碌中，10 秒後再試…", None)
     }
 
     /// U10: after apply — 4 trial, 5 done, 6 / 6 + 18 reverted; a gone link = still rebooting (5 minutes)
@@ -1081,7 +1081,7 @@ impl Flow {
                 }
                 self.wait(TRIAL_POLL_MS, Then::Read(Read::Reboot), T_TRIAL, None)
             }
-            5 => self.done(format!("更新完成:{}", p.version)),
+            5 => self.done(format!("更新完成：{}", p.version)),
             6 if p.reason == Some(18) => self.done(T_REVERTED_18.into()),
             6 => self.done(T_REVERTED.into()),
             // still the same boot, before the reboot
@@ -1109,7 +1109,7 @@ impl Flow {
             }
             Reply::Err { code: E_RATE, .. } if !self.rate_once => {
                 self.rate_once = true;
-                self.wait(RATE_RETRY_MS, Then::Check, "太快了,10 秒後再送一次…", None)
+                self.wait(RATE_RETRY_MS, Then::Check, "太快了，10 秒後再送一次…", None)
             }
             Reply::Err { code: E_BUSY, .. } | Reply::Lost => self.fail(Fail::Check),
             Reply::Err { code, detail } => {

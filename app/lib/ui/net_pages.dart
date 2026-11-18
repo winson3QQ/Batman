@@ -41,7 +41,7 @@ import 'widgets.dart';
 const goMake = 'make';
 
 /// 4.x_working's next step (#329 PR 6, design S5 / F49: the one wait sentence of a join / make).
-const kRunWait = '請留在這個畫面。這一步最多 6 分鐘。';
+const kRunWait = '請留在這個畫面。'; // each step's own line carries its limit (6 / 2 min); here it showed twice and contradicted the 2 min one (device 2026-11-18)
 
 /// The plain line of a reply for the screen (log marks and technical parts off; #329 PR 6 D7: = splitCode's main
 /// part). Lines on screen go through SayLine, which keeps the technical part under 技術資訊.

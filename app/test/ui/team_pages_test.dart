@@ -393,7 +393,7 @@ void main() {
       );
       expect(w.log.where((l) => l.startsWith('login')), ['login 0000aa01', 'login 0000bb02']);
       expect(w.leaseNames.take(2), ['讀節點網路', '讀節點網路'], reason: 'review A m9: a read is not named as the removal');
-      expect(find.textContaining('節點 …aa01 讀不到（不檢查這台）'), findsOneWidget);
+      expect(find.textContaining('節點 …AA01 讀不到（不檢查這台）'), findsOneWidget);
       expect(rust.reads!.map((r) => '${r.dacHash}:${r.info.length}'), ['d1:0', 'd2:2', 'd3:0'], reason: 'AA-m4');
       expect(find.byKey(const Key('remove-same')), findsOneWidget, reason: '8.3 step 4');
       expect(find.text('移除後要換全隊密碼'), findsOneWidget);

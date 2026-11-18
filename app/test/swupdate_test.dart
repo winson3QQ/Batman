@@ -99,7 +99,7 @@ class Rig {
         act(SwKind.show_, text: 'u3', buttons: [SwButton.start, SwButton.cancel]),
         act(SwKind.upload, uploading: true),
         for (var i = 1; i < puts.length; i++) act(SwKind.upload, uploading: true),
-        act(SwKind.done, text: '更新完成:1.5.14-wsl.30'),
+        act(SwKind.done, text: '更新完成：1.5.14-wsl.30'),
       ];
   late final flow = Script(events);
   late final hold = SwHold(flow);
@@ -226,11 +226,28 @@ void main() {
   });
 
 
+  // #329 PR 6 (S20 device session 2026-11-18): after a wrong pick the page showed 「選擇更新檔」 and 「重新整理」 as two
+  // solid buttons; one main action per page (§3.2, T-C3).
+  testWidgets('pick + refresh: one solid button (選擇更新檔), 重新整理 is not solid', (t) async {
+    final r = Rig(direct: true, answers: [
+      act(SwKind.show_, text: '檔案不對：請選兩個檔（manifest 和更新檔）', buttons: [SwButton.pick, SwButton.refresh]),
+    ]);
+    t.binding.defaultBinaryMessenger.setMockMethodCallHandler(swChannel, r.channel);
+    addTearDown(() => t.binding.defaultBinaryMessenger.setMockMethodCallHandler(swChannel, null));
+    await t.pumpWidget(MaterialApp(home: SwUpdatePage(hold: r.hold, ask: r.ask, onSetAp: () {}, specifierText: 'x')));
+    await pumps(t, 3);
+    expect(find.text('檔案不對：請選兩個檔（manifest 和更新檔）'), findsOneWidget);
+    expect(find.byType(FilledButton), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, buttonLabel(SwButton.pick)), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, buttonLabel(SwButton.refresh)), findsNothing);
+    expect(find.text(buttonLabel(SwButton.refresh)), findsOneWidget);
+  });
+
   testWidgets('D8: the Specifier path — nothing logged, the passphrase only to joinAp, the bearer only to upload', (t) async {
     final r = await run(t, Rig(direct: false));
     expect(r.flow.calls, containsAllInOrder(['start', 'picked', 'press start', 'apCredentials', 'uploaded ok200']));
     expect(r.flow.files!.map((f) => f.size), [300, 1000]);
-    expect(find.text('更新完成:1.5.14-wsl.30'), findsOneWidget);
+    expect(find.text('更新完成：1.5.14-wsl.30'), findsOneWidget);
     expect(r.logs, isEmpty, reason: 'the update flow logs nothing (D8): ${r.logs}');
     final names = r.calls.map((c) => c.method).toList();
     expect(names, containsAllInOrder(['pickUpdateFiles', 'findNodeNetwork', 'joinAp', 'upload', 'cancelUpload']));
@@ -274,7 +291,7 @@ void main() {
           act(SwKind.show_, text: 'u3', buttons: [SwButton.start, SwButton.cancel]),
           act(SwKind.upload, uploading: true),
           act(SwKind.upload, uploading: true),
-          act(SwKind.done, text: '更新完成:1.5.14-wsl.30'),
+          act(SwKind.done, text: '更新完成：1.5.14-wsl.30'),
         ]));
     expect(r.count('upload'), 3);
     expect(r.count('joinAp'), 2, reason: 'the network went away (no_network on it): one more join');
@@ -291,7 +308,7 @@ void main() {
           act(SwKind.show_, text: 'u3', buttons: [SwButton.start, SwButton.cancel]),
           act(SwKind.upload, uploading: true),
           act(SwKind.upload, uploading: true),
-          act(SwKind.done, text: '更新完成:1.5.14-wsl.30'),
+          act(SwKind.done, text: '更新完成：1.5.14-wsl.30'),
         ]));
     expect(r.count('upload'), 2);
     expect(r.count('cancelUpload'), 2, reason: 'each stage releases its network');
@@ -355,7 +372,7 @@ void main() {
     expect(swHero(with_(written, '代碼 11，原因 13'), running: false)?.$1, Look.bad, reason: 'the apply was refused');
     expect(swHero(act(SwKind.wait, text: '節點正在驗證並寫入新版'), running: false), (Look.busy, '節點正在驗證並寫入新版'));
     expect(swHero(act(SwKind.show_, text: 'x', buttons: [SwButton.pick]), running: true)?.$1, Look.busy);
-    expect(swHero(act(SwKind.done, text: '更新完成:1.2.3'), running: false), (Look.ok, '更新完成:1.2.3'));
+    expect(swHero(act(SwKind.done, text: '更新完成：1.2.3'), running: false), (Look.ok, '更新完成：1.2.3'));
     expect(swHero(act(SwKind.done, text: '新版不健康,已退回原本的版本'), running: false)?.$1, Look.bad);
     expect(swHero(act(SwKind.done, text: '已取消,目前版本不變'), running: false)?.$1, Look.unk);
     expect(swHero(act(SwKind.show_, text: '選檔', buttons: [SwButton.pick, SwButton.refresh]), running: false), isNull);

@@ -87,4 +87,14 @@ void main() {
     expect(find.text('認領中斷：中斷'), findsOneWidget);
     expect(find.textContaining('lost'), findsNothing);
   });
+
+  // #329 PR 6 (device session 2026-11-18): 「已套用：節點 …7d2c 已加入網路 bm-94676ef40105」 and 「要讓節點 …7d2c 離開…」
+  // showed the last four in lower case; on screen they are upper case, a network id or a longer hex run is untouched.
+  test('upperLast4: the last four upper case on screen, nothing else', () {
+    expect(screenText('[JOINED] 已套用：節點 …7d2c 已加入網路 bm-94676ef40105'), '已套用：節點 …7D2C 已加入網路 bm-94676ef40105');
+    expect(upperLast4('節點 …ab12、…cd34'), '節點 …AB12、…CD34');
+    expect(upperLast4('…7d2c3'), '…7d2c3', reason: 'five hex digits: not a last four');
+    expect(upperLast4('bm-94676ef40105'), 'bm-94676ef40105');
+    expect(techText('失敗${'\u{1E}'}…ab12${'\u{1F}'}'), '…ab12', reason: 'the technical part is left as it is');
+  });
 }

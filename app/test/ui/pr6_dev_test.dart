@@ -157,6 +157,24 @@ void main() {
     BatButton send(WidgetTester t) => t.widget<BatButton>(find.byKey(const Key('ssh-send')));
     List<String> asked(Fx f) => (f.rigs[0].session as P4Session).asked;
 
+    // S20 device session 2026-11-18: with the phone's only node the button did nothing until its row was tapped. One
+    // node -> picked already; the line goes out without touching the row. Negative control: `_id` starting null -> FAIL.
+    testWidgets('one node: picked already, sent without tapping its row', (t) async {
+      mockChannels(t);
+      final f = Fx(rust, logins: 1);
+      final a = app()..devTrust = true;
+      expect(a.link.core.states.keys, [id], reason: 'premise: one node');
+      t.view.physicalSize = const Size(1080, 4000);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      await t.pumpWidget(host(SshKeysPage(app: a, ui: UiState(MemStore()), deps: f.d)));
+      await t.enterText(find.byKey(const Key('ssh-lines')), k1);
+      await t.pump();
+      await t.tap(find.byKey(const Key('ssh-send')));
+      await settle(t, f);
+      expect(asked(f), ['ssh_keys/set 1: $k1']);
+    });
+
     // CRLF from a clipboard: each line's trailing CR and the blank lines go; the fingerprints are shown; one
     // ssh_keys/set with exactly those lines. Negative control: the page sending without its check -> the next test FAILs.
     testWidgets('two good lines (CRLF, a blank line) -> fingerprints shown, one ssh_keys/set with both', (t) async {

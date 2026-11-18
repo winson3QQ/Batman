@@ -9,7 +9,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../member_ui.dart' show LeaveResult, StatusFields, leaveFlow, leaveNotAsked, memberEntryOf;
-import '../say.dart' show SayLine, stripMarkers;
+import '../say.dart' show SayLine, stripMarkers, upperLast4;
 import '../src/flows/op_session.dart';
 import '../src/flows/owner_console.dart';
 import '../src/nodelink/app_link.dart';
@@ -295,8 +295,8 @@ class _LeavePageState extends State<LeavePage> {
       canPop: !_running,
       child: BatPage(title: Btn.leaveNetwork, body: [
         if (d != null && !_done) ...[
-          Text(d[0], style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
-          Text(d[1], style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+          Text(upperLast4(d[0]), style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
+          Text(upperLast4(d[1]), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
         ],
         if (_running) Text('正在離開網路…（最多約 6 分鐘，請不要關掉這個畫面）', style: TextStyle(fontSize: Fs.body, color: t.sub)),
         if (_line.isNotEmpty) SayLine(_line, key: const Key('leave-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),

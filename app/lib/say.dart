@@ -49,7 +49,14 @@ String tech(Object s) => '$techOpen$s$techClose';
 }
 
 /// [line] as the screen shows it: without its leading log markers (on every line) and without its technical parts.
-String screenText(String line) => splitCode(line.replaceAll(_markers, '')).$1;
+String screenText(String line) => upperLast4(splitCode(line.replaceAll(_markers, '')).$1);
+
+/// #329 PR 6 (device session 2026-11-18): a node's last four on screen are upper case everywhere (p1p2-check: 「…7d2c」
+/// on 4.1 / 10.3 / 8.4). Several Rust sentences put `…{last4}` in lower case and the same value is also the node name
+/// sent to a node (`node-{last4}`), so it is upper-cased here, at display, not at its source. Only 「…」 + exactly four
+/// hex digits: a network id (bm-…) or a longer hex run is left as it is.
+String upperLast4(String s) =>
+    s.replaceAllMapped(RegExp(r'…([0-9a-fA-F]{4})(?![0-9a-fA-F])'), (m) => '…${m[1]!.toUpperCase()}');
 
 /// The technical parts of [line] ('' = none).
 String techText(String line) => splitCode(line).$2;

@@ -360,6 +360,8 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
         // #329 PR 6 P2-5 (9.2): 「開始傳送」 starts what cannot be cancelled once writing starts (T_CONFIRM says so)
         SwButton.apply || SwButton.applyAnyway || SwButton.start => BtnKind.danger,
         SwButton.cancel || SwButton.abandon => BtnKind.text,
+        // #329 PR 6 (device 2026-11-18): 「重新整理」 next to 「選擇更新檔」 made two solid buttons; one main action per page
+        SwButton.refresh => BtnKind.secondary,
         _ => BtnKind.primary,
       };
 

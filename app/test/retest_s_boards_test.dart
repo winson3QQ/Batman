@@ -304,7 +304,7 @@ void main() {
         hold: SwHold(_Flow()),
         ask: (_) async => _sw(
             text: '更新檔已準備好傳送',
-            note: '開始傳送後請留在這個畫面,不要離開、不要關螢幕。寫入開始後不能取消;寫好後舊版本的退路已失效。',
+            note: '開始傳送後請留在這個畫面，不要離開、不要關螢幕。寫入開始後不能取消；寫好後舊版本的退路已失效。',
             buttons: const [SwButton.start, SwButton.cancel]),
         onSetAp: () {}), check: (t) {
       final b = t.widget<FilledButton>(find.widgetWithText(FilledButton, '開始傳送'));
@@ -377,7 +377,7 @@ void main() {
     }),
     '4.1_make_mode': B((ui) => makeForm(World())),
     '4.x_working': B((ui) => makeForm(World()..script('make', [ans('[NET_MADE] 網路已建立', rel: 'net/n1')]), gate: gate),
-        act: start, check: (t) => expect(find.text('請留在這個畫面。這一步最多 6 分鐘。'), findsOneWidget)), // #329 PR 6 T6-11 (S5)
+        act: start, check: (t) { expect(find.text('請留在這個畫面。'), findsOneWidget); expect(find.textContaining('最多 6 分鐘').evaluate().length, lessThanOrEqualTo(1)); }), // #329 PR 6 T6-11 (S5): the limit once, on the step's line
     '4.x_done': B((ui) => makeForm(World()..script('make', [ans('[NET_MADE] 網路已建立', rel: 'net/n1')])), act: (t) async {
       await start(t);
       await settle(t);

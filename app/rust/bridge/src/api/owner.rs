@@ -3452,7 +3452,7 @@ mod sw_tests {
             ("update/status", "status-committed"),
         ];
         let (seen, end) = drive(&mut s, &mut n, &mut sw, &script, &[SwButton::Pick, SwButton::Start, SwButton::Apply]);
-        assert_eq!(end, "更新完成:1.5.14-wsl.30+abcdef1.fw0123456");
+        assert_eq!(end, "更新完成：1.5.14-wsl.30+abcdef1.fw0123456");
         assert_eq!(
             seen.verbs,
             [

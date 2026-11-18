@@ -200,7 +200,7 @@ void main() {
     testWidgets('T-L4: the dialog is Rust\'s, from the fresh read\'s network and the device id\'s own last four', (t) async {
       await openLeave(t);
       expect(rust.dialogs, ['7d2c ab12 admin=false member=false']);
-      expect(find.text('要讓節點 …7d2c 離開隊伍網路嗎？'), findsOneWidget);
+      expect(find.text('要讓節點 …7D2C 離開隊伍網路嗎？'), findsOneWidget); // #329 PR 6: the last four upper case on screen (device 2026-11-18)
     });
 
     testWidgets('T-L1 / T-L2 / T-L3: left -> the read after it on the same session (cut once); the lease back at once',
