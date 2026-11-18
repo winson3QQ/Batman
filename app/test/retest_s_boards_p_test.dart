@@ -18,6 +18,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'key_abilities_test.dart' as ka show FakeRust, answer;
 import 'retest_s_shot.dart';
+import 'support/font_levels.dart';
 import 'ui/retest_p_layout_test.dart' show P, app, id, keys, longNamed, platform, startup, sv, tapText;
 import 'ui/ui_state_test.dart' show MemStore;
 
@@ -65,10 +66,11 @@ void main() {
         act: (t) => tapText(t, '從這支手機移除這台節點')),
   };
 
-  for (final dark in [false, true]) {
+  // #329 PR 7 T8 (b): every board also at text scale 2.0 (design §3.1 T-C2: no overflow; its checks and PNG at 1.0)
+  for (final (dark, scale) in const [(false, 1.0), (true, 1.0), (false, 2.0), (true, 2.0)]) {
     for (final e in boards.entries) {
       final file = '${e.key}_${dark ? 'dark' : 'light'}';
-      testWidgets('retest-s board $file', (t) async {
+      testWidgets('retest-s board $file${scale == 1.0 ? '' : ' ×2.0'}', (t) async {
         sizeView(t);
         final ui = UiState(MemStore());
         await t.pumpWidget(frame(MaterialApp(
@@ -76,7 +78,7 @@ void main() {
           darkTheme: batThemeData(Brightness.dark),
           themeMode: dark ? ThemeMode.dark : ThemeMode.light,
           debugShowCheckedModeBanner: false,
-          builder: (c, child) => MediaQuery(data: MediaQuery.of(c).copyWith(textScaler: TextScaler.noScaling), child: child!),
+          builder: (c, child) => MediaQuery(data: MediaQuery.of(c).copyWith(textScaler: scale == 1.0 ? TextScaler.noScaling : TextScaler.linear(scale)), child: child!),
           home: e.value.build(ui),
         )));
         for (var i = 0; i < 5; i++) {
@@ -88,7 +90,8 @@ void main() {
           await act(t);
           expect(t.takeException(), isNull, reason: 'no overflow after the step');
         }
-        await shoot(t, file);
+        expectSixLevels(t);
+        if (scale == 1.0) await shoot(t, file);
         await t.pumpWidget(const SizedBox()); // the pages' timers go with them
         AppLink.forgetForTest();
       });

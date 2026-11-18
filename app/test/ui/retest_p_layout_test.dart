@@ -28,6 +28,7 @@ import '../key_abilities_test.dart' as ka show FakeRust, answer;
 import '../nodelink/app_link_test.dart' show StatusBle;
 import 'layout_test.dart' show retired;
 import 'ui_state_test.dart' show MemStore;
+import '../support/font_levels.dart';
 
 const id = '0000000000000c4f2a7d2c';
 const platform = MethodChannel('dev.batman/platform');
@@ -198,6 +199,7 @@ void main() {
               final s = w.data ?? w.textSpan?.toPlainText() ?? '';
               expect(retired.hasMatch(s), isFalse, reason: 'T-C4a: "$s"');
             }
+            expectSixLevels(t); // #329 PR 7 T8 (b)
             await t.pumpWidget(const SizedBox()); // the pages' timers go with them
             AppLink.forgetForTest();
           });

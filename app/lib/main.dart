@@ -266,7 +266,7 @@ class _StartupCheckState extends State<StartupCheck> {
                       label: '台灣曙豐防災自訓團臂章',
                       child: Image.asset('assets/brand/badge.webp', width: 160, fit: BoxFit.contain)),
                   const SizedBox(height: 18),
-                  Text('Batman', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700, color: t.ink)),
+                  Text('Batman', style: TextStyle(fontSize: Fs.welcome, fontWeight: FontWeight.w700, color: t.ink)),
                   const SizedBox(height: 6),
                   Text('台灣曙豐防災自訓團', style: TextStyle(fontSize: Fs.note, color: t.sub)),
                 ]),
@@ -337,9 +337,9 @@ class _StartupCheckState extends State<StartupCheck> {
             : ListView(children: [
                 // #329 PR 6 D1: only reached when the check passed but NodeLink did not start (the home page needs
                 // it). The reason, what to do, no 「再試一次」 (F15) and no older console.
-                SayLine(_report!, style: const TextStyle(fontSize: 16)), // review pr6 B-4: split like every sentence
+                SayLine(_report!, style: const TextStyle(fontSize: Fs.body)), // review pr6 B-4: split like every sentence
                 const SizedBox(height: 8),
-                Text(restartLine, style: const TextStyle(fontSize: 16)),
+                Text(restartLine, style: const TextStyle(fontSize: Fs.body)),
                 const SizedBox(height: 16),
                 OutlinedButton(
                     onPressed: _keys.claim // off: the reason is in the report above
@@ -354,7 +354,7 @@ class _StartupCheckState extends State<StartupCheck> {
                 ExpansionTile(
                     title: const Text('技術資訊（給維修人員看）'),
                     tilePadding: EdgeInsets.zero,
-                    children: [SelectableText(_tech, style: const TextStyle(fontFamily: 'monospace', fontSize: 12))]),
+                    children: [SelectableText(_tech, style: const TextStyle(fontFamily: 'monospace', fontSize: Fs.meta))]),
               ]),
       ),
     );

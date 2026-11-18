@@ -112,6 +112,29 @@ abstract final class Fs {
   static const meta = 13.0;
 }
 
+/// #329 PR 7 T8 (b): Material's own text roles (dialog titles, list tiles, input helper / error lines, snack bars,
+/// default Text) at the six sizes of §3.1 too, so no widget falls back to a size outside them.
+TextTheme sixLevels(TextTheme t) {
+  TextStyle? s(TextStyle? x, double size) => (x ?? const TextStyle()).copyWith(fontSize: size);
+  return t.copyWith(
+    displayLarge: s(t.displayLarge, Fs.welcome),
+    displayMedium: s(t.displayMedium, Fs.welcome),
+    displaySmall: s(t.displaySmall, Fs.welcome),
+    headlineLarge: s(t.headlineLarge, Fs.hero),
+    headlineMedium: s(t.headlineMedium, Fs.hero),
+    headlineSmall: s(t.headlineSmall, Fs.hero),
+    titleLarge: s(t.titleLarge, Fs.title),
+    titleMedium: s(t.titleMedium, Fs.body),
+    titleSmall: s(t.titleSmall, Fs.note),
+    bodyLarge: s(t.bodyLarge, Fs.body),
+    bodyMedium: s(t.bodyMedium, Fs.note),
+    bodySmall: s(t.bodySmall, Fs.meta),
+    labelLarge: s(t.labelLarge, Fs.note),
+    labelMedium: s(t.labelMedium, Fs.meta),
+    labelSmall: s(t.labelSmall, Fs.meta),
+  );
+}
+
 ThemeData batThemeData(Brightness b) {
   final t = b == Brightness.light ? BatTheme.light : BatTheme.dark;
   return ThemeData(
@@ -119,7 +142,7 @@ ThemeData batThemeData(Brightness b) {
     brightness: b,
     scaffoldBackgroundColor: t.bg,
     colorScheme: ColorScheme.fromSeed(seedColor: t.acc, brightness: b).copyWith(surface: t.bg, onSurface: t.ink),
-    textTheme: Typography.material2021().black.apply(bodyColor: t.ink, displayColor: t.ink),
+    textTheme: sixLevels(Typography.material2021().black.apply(bodyColor: t.ink, displayColor: t.ink)),
     extensions: [t],
   );
 }
