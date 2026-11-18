@@ -11,7 +11,7 @@
 #                0 instances on 04), dropping it registers again ("registered reason=disconnect"); judge `stop` (L2
 #                latch) and `flip` (L67)
 #   respawn      judge `respawn` (L8) with info.state the same before / after; L80 arm 1 with its control: 02 holds a link
-#                and keeps it 15 s with provd untouched (control), then provd is killed -> the new provd logs
+#                and keeps it 8 s with provd untouched (control; under provd's 30 s rule, #329 N1), then provd is killed -> the new provd logs
 #                "disconnected 1 stale link(s)" and 02 sees Connected=no <= 15 s (02's clock); one instance afterwards
 #   dep-restart  judge dep-helper, dep-bluetoothd / dep-bluetoothd-kill / dep-dbus (with btmon: p2 §22.3 T4–T6, D3c),
 #                sockdir-missing (L77), helper-stop (L71 SIGSTOP row), helper-down (provd's helper backoff), dep-power / power-bondable / power-provdkill
@@ -61,7 +61,16 @@ plog(){ qr "logread | sed -n '/batman-dv-p2: mark $HM\$/,\$p' | grep -c 'batman-
 ninst(){ qr "bluetoothctl mgmt.advinfo 2>/dev/null | sed -n 's/^Instances list with \([0-9]*\) item.*/\1/p' | head -1"; }
 # 04's STATUS key 5: the last 4 hex digits of its serial (provd server.go Status: deviceID = hex(sn), sn = 9 bytes)
 LAST4=""
-last4(){ LAST4=$(qr 'tr -d "\n" < /etc/batman-prov/identity/sn | tail -c 4'); case "$LAST4" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;; esac; no "04's serial last4 unreadable [$LAST4]"; return 1; }
+# A claimed node (the bench base: an N0 member) sends no key 5 (server.go Status: only state 0 / 3), so 02 aims with "-":
+# the UUID must then have exactly one advertiser in range (the central's AMBIGUOUS otherwise), and 04's own log is the
+# witness that the link was 04's. Before this (#329 N1) the unit could not find a member 04 at all (INVALID).
+last4(){
+	local st; SN4=$(qr 'tr -d "\n" < /etc/batman-prov/identity/sn | tail -c 4'); LAST4=""
+	case "$SN4" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) no "04's serial last4 unreadable [$SN4]"; return 1 ;; esac
+	st=$(qr "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta")
+	case "$st" in legacy|unclaimed) LAST4=$SN4 ;; member|claimed) LAST4=- ;; *) no "04's prov state unreadable [$st]"; return 1 ;; esac
+	say "04 is $st: 02 aims by $([ "$LAST4" = - ] && echo 'the UUID alone (a claimed node sends no key 5)' || echo "key 5 = $LAST4")"
+}
 k5(){ printf '0564%s' "$(printf '%s' "$1" | od -An -tx1 | tr -d ' \n')"; }   # CBOR key 5 = text(4) <last4>
 # hold02: 02 connects to 04 and keeps the link up (the central retries its own connects); prints the address;
 # rc 1 = no link (INVALID for the caller: a precondition, not a verdict)
@@ -85,15 +94,17 @@ boot-provd)
 	lg_mark; hmark; c0=$(plog 'adv withdrawn reason=connect')
 	o=$(c02 read "$LAST4"); echo "$o" | sed 's/^/    /'; lg_age_say "read"; lg_guard "read"
 	cv=$(sed -n 's/^CTRL //p' <<< "$o"); sv=$(sed -n 's/^STATUS //p' <<< "$o"); nm=$(sed -n 's/^NAME //p' <<< "$o"); a=$(sed -n 's/^ADDR //p' <<< "$o")
-	if [ -z "$a" ]; then inv "02 could not read 04 (no advertiser with key 5 = $LAST4 / reads failed): $(echo $o)"
+	if [ -z "$a" ]; then inv "02 could not read 04 (aimed by [$LAST4]: no such advertiser / more than one / reads failed): $(echo $o)"
 	else
 		[ "$(plog 'adv withdrawn reason=connect')" -gt "$c0" ] && ok "04 logged the connection 02 made for the read (the link was to 04)" || no "04 logged no connection while 02 read [$a] — 02 read another node?"
-		ok "02 found 04 by UUID + last4 $LAST4 at $a ($(sed -n 's/^ADVERTISERS //p' <<< "$o") advertiser(s) of the UUID in range)"
+		ok "02 found 04 by UUID$([ "$LAST4" = - ] || echo " + last4 $LAST4") at $a ($(sed -n 's/^ADVERTISERS //p' <<< "$o") advertiser(s) of the UUID in range)"
 		# the name 02 shows is BlueZ's per-address cache of the GAP name from an earlier connection (the RPA is kept 900 s):
 		# not evidence about the advertisement — that is judged on 04 itself (judge adv-data below)
 		say "02's name for 04: [$nm] before connecting, GAP Device Name [$(sed -n 's/^GAPNAME //p' <<< "$o")] after (GATT, main.conf Name; recorded only)"
 		[ "$cv" = a4010102000318f404192000 ] && ok "02 read CTRL {1:1,2:0,3:244,4:8192} with no pairing" || no "CTRL [$cv]"
-		case "$sv" in a5*"$(k5 "$LAST4")"*) ok "02 read STATUS with no pairing: a 5-entry map with key 5 = $LAST4 ($sv)" ;; *) no "STATUS [$sv] (want a 5-entry map with key 5 = $LAST4: $(k5 "$LAST4"))" ;; esac
+		if [ "$LAST4" = - ]; then
+			case "$sv" in *"$(k5 "$SN4")"*) no "STATUS [$sv] of a claimed node carries key 5 = $SN4" ;; a4*) ok "02 read STATUS with no pairing: a 4-entry map, no key 5 (claimed) ($sv)" ;; *) no "STATUS [$sv] (want a 4-entry map without key 5: 04 is claimed)" ;; esac
+		else case "$sv" in a5*"$(k5 "$LAST4")"*) ok "02 read STATUS with no pairing: a 5-entry map with key 5 = $LAST4 ($sv)" ;; *) no "STATUS [$sv] (want a 5-entry map with key 5 = $LAST4: $(k5 "$LAST4"))" ;; esac; fi
 		[ "$(sed -n 's/^PAIRED //p' <<< "$o")" = no ] && ok "02 not paired after the reads" || no "02 paired [$(sed -n 's/^PAIRED //p' <<< "$o")]"
 	fi
 	lg_mark; hmark; wc0=$(plog 'adv withdrawn reason=connect'); rd0=$(plog 'adv registered reason=disconnect')   # taken right before the hold (review B-m2)
