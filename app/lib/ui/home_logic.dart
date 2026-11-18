@@ -63,7 +63,35 @@ class HomeHero {
   final String? node; // the node the action is about
 }
 
-String _many(List<NodeInfo> ns, String one, String many) => ns.length == 1 ? one.replaceAll('X', ns.first.name) : many.replaceAll('N', '${ns.length}');
+bool _asciiAlnum(int c) => (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a);
+
+/// A CJK character that is a letter (ideographs, kana, hangul): not CJK punctuation or a full-width form.
+bool _cjkLetter(int c) =>
+    (c >= 0x3400 && c <= 0x4dbf) ||
+    (c >= 0x4e00 && c <= 0x9fff) ||
+    (c >= 0xf900 && c <= 0xfaff) ||
+    (c >= 0x3040 && c <= 0x30ff) ||
+    (c >= 0xac00 && c <= 0xd7af) ||
+    (c >= 0x20000 && c <= 0x2fa1f);
+
+bool _gap(int? a, int? b) => a != null && b != null && ((_asciiAlnum(a) && _cjkLetter(b)) || (_cjkLetter(a) && _asciiAlnum(b)));
+
+/// #329 PR 7 T16 (#329:222): [name] (a nickname, 「節點 XXXX」, a person's name) between the words [before] and
+/// [after] of a Dart sentence: one space where an ASCII letter or digit at the name's edge meets a CJK character, none
+/// next to CJK punctuation or between CJK characters. Rust's sentences keep their own format.
+String nameIn(String before, String name, String after) {
+  if (name.isEmpty) return '$before$after';
+  final b = before.isEmpty ? null : before.runes.last, a = after.isEmpty ? null : after.runes.first;
+  return '$before${_gap(b, name.runes.first) ? ' ' : ''}$name${_gap(name.runes.last, a) ? ' ' : ''}$after';
+}
+
+/// [template] with its one 「X」 replaced by [name] (the spaces by [nameIn]).
+String fillX(String template, String name) {
+  final i = template.indexOf('X');
+  return nameIn(template.substring(0, i), name, template.substring(i + 1));
+}
+
+String _many(List<NodeInfo> ns, String one, String many) => ns.length == 1 ? fillX(one, ns.first.name) : many.replaceAll('N', '${ns.length}');
 
 /// The §5.1 table, top to bottom. Row 9 was removed in v10 (預期離線).
 HomeHero decideHome(HomeInputs i) {
@@ -80,7 +108,7 @@ HomeHero decideHome(HomeInputs i) {
   }
   final identity = ns.where((n) => n.shownWhy == Why.identity).toList();
   if (identity.isNotEmpty) {
-    return HomeHero(4, Look.bad, '${identity.first.name} 的身分和這支手機記錄的不同',
+    return HomeHero(4, Look.bad, nameIn('', identity.first.name, '的身分和這支手機記錄的不同'),
         action: HomeAction.seeNode, node: identity.first.id);
   }
   final concluded = ns.any((n) => n.state.last != null && n.state.last != Concl.notYet && n.state.last != Concl.queued);
@@ -94,7 +122,7 @@ HomeHero decideHome(HomeInputs i) {
       NetRecords.mpend => (HomeAction.seeRequest, HomeAction.none),
       NetRecords.none => (HomeAction.makeNetwork, HomeAction.joinTeam),
     };
-    return HomeHero(6, Look.warn, _many(notIn, 'X 還沒加入隊伍網路', '有 N 台節點還沒加入隊伍網路'),
+    return HomeHero(6, Look.warn, _many(notIn, 'X還沒加入隊伍網路', '有 N 台節點還沒加入隊伍網路'),
         action: act, second: second, node: notIn.first.id);
   }
   final red = fresh.where((n) => n.state.view == 'red').toList();
@@ -114,10 +142,10 @@ HomeHero decideHome(HomeInputs i) {
     // §5.1 row 10 (review A-m5): the first rounds -> 正在找; devices not recognised yet -> say so; else not read yet
     final unknownNear = stale.where((n) => n.state.last == Concl.notYet).toList();
     final text = i.firstRounds
-        ? '正在找${stale.first.name}…'
+        ? nameIn('正在找', stale.first.name, '…')
         : unknownNear.isNotEmpty
-            ? '附近有還沒認出來的裝置，還在找${unknownNear.first.name}'
-            : _many(stale, '還沒讀到X 的狀態', '還沒讀到 N 台節點的狀態');
+            ? nameIn('附近有還沒認出來的裝置，還在找', unknownNear.first.name, '')
+            : _many(stale, '還沒讀到X的狀態', '還沒讀到 N 台節點的狀態');
     return HomeHero(10, Look.unk, text, action: HomeAction.refresh);
   }
   if (i.todos > 0) return HomeHero(11, Look.warn, '有 ${i.todos} 件事要你處理');

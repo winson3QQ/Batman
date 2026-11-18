@@ -22,6 +22,7 @@ import 'rekey_result.dart' show leaderVersionLine;
 import '../src/flows/rekey_send.dart' show VersionRead;
 import 'team_deps.dart';
 import 'theme.dart';
+import 'home_logic.dart' show nameIn;
 import 'widgets.dart';
 
 /// The line an offline operation ends with when it has no result of its own (R10 / R12).
@@ -185,7 +186,7 @@ class PersonPage extends StatelessWidget {
                 onTap: () => go('', n.dacHash)),
         ]),
     ], foot: [
-      if (!person.isSelf) BatButton('移除${person.name}，全隊換密碼', kind: BtnKind.danger, onPressed: () => go(person.owner, '')),
+      if (!person.isSelf) BatButton(nameIn('移除', person.name, '，全隊換密碼'), kind: BtnKind.danger, onPressed: () => go(person.owner, '')),
     ]);
   }
 }
