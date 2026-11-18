@@ -533,15 +533,16 @@ class NodeLink implements LeaseListener {
   /// A link is parked only in the foreground on its node's page.
   bool _onPage(String id) => core.fg && core.page == Page.node && core.pageNode == id;
 
-  /// §4.1 Park, one synchronous step: [h] becomes the kept link, parked. False = not parked and NodeLink holds no
-  /// reference (a frame the inbox was holding closed it, or the gate refused a link that is not up); the caller
-  /// destroys [h].
-  bool _park(LoginHandoff h) {
+  /// §4.1 Park, one synchronous step: [h] becomes the kept link, parked (null). Not null = not parked and NodeLink
+  /// holds no reference (a frame the inbox was holding closed it, or the gate refused a link that is not up): the
+  /// future of that close, which ends when the link is gone (§4.3: what the holder's `close()` waits for).
+  Future<void>? _park(LoginHandoff h) {
     _kept = h;
     _ks = KeptState.parked;
     _keptLease = null;
+    Future<void>? closing;
     void gone() {
-      if (identical(_kept?.link, h.link) && _ks != KeptState.lent) _closeKept();
+      if (identical(_kept?.link, h.link) && _ks != KeptState.lent) closing = _closeKept();
     }
 
     _keptSub ??= h.link.state.listen((up) {
@@ -549,14 +550,14 @@ class NodeLink implements LeaseListener {
     }, onError: (Object _) => gone(), onDone: gone);
     // nothing is expected on a parked link: a frame or a subscription error closes it (never parsed)
     h.inbox.handle((_) => gone(), (_) => gone());
-    if (!identical(_kept, h)) return false;
+    if (!identical(_kept, h)) return closing ?? h.destroy().then((_) => _pump());
     try {
       gate.pass(h.link, null);
     } on Refused {
       _forget();
-      return false;
+      return h.destroy().then((_) => _pump());
     }
-    return true;
+    return null;
   }
 
   /// Drop the reference: the kept link is nobody's here from now on. A read on it is cancelled.
@@ -598,9 +599,7 @@ class NodeLink implements LeaseListener {
   Future<void> _giveBack(LoginHandoff h, {required bool reusable}) {
     if (identical(_kept, h) && _ks == KeptState.lent) {
       if (reusable && core.blocked == null && _onPage(h.id)) {
-        final k = h.again();
-        if (_park(k)) return Future.value();
-        return k.destroy().then((_) => _pump());
+        return _park(h.again()) ?? Future.value();
       }
       _forget();
     }
@@ -640,7 +639,13 @@ class NodeLink implements LeaseListener {
       }
       final t = now();
       if (core.keptRead(t, k.id, k.link.address, o)) _noteRead(k.id, o, t);
-      if (!_park(k)) k.destroy().then((_) => _pump());
+      _park(k);
+      _pump();
+    }, onError: (Object _) {
+      // a reader that fails (KeptReader.read never should): the link is not left in state reading
+      stop();
+      if (!identical(_kept, k) || _ks != KeptState.reading) return;
+      _closeKept();
       _pump();
     });
   }
@@ -854,8 +859,8 @@ class NodeLink implements LeaseListener {
     if (keep != null) {
       if (!accepted) {
         keep.destroy().then((_) => _pump()); // a late result, the record went
-      } else if (!_park(keep)) {
-        keep.destroy().then((_) => _pump()); // the link is not up
+      } else {
+        unawaited(_park(keep)); // not parked (the link is not up): destroyed there
       }
     }
     _pump();

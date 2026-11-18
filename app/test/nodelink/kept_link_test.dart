@@ -129,6 +129,7 @@ class KRadio implements BleBackend {
   final hold = <int, List<int>>{};
   StreamController<bool>? conn;
   String addr = '';
+  int goneMs = 0; // the stack reports a closed link gone this long (fake clock) after the disconnect
 
   @override
   Stream<String> scan() {
@@ -143,7 +144,11 @@ class KRadio implements BleBackend {
     late StreamController<bool> c;
     c = conn = StreamController<bool>(onCancel: () {
       if (open > 0) open--;
-      _st.add((address, false, null));
+      if (goneMs > 0) {
+        clock.after(Duration(milliseconds: goneMs), () => _st.add((address, false, null)));
+      } else {
+        _st.add((address, false, null));
+      }
     });
     scheduleMicrotask(() {
       open++;
@@ -190,6 +195,7 @@ class Wrap implements Prober, KeptReader {
   Wrap(this.inner);
   final SessionProber inner;
   void Function(Outcome o)? onReturn;
+  bool failRead = false; // the next read on a kept link completes with an error (once)
 
   @override
   bool Function(String id)? get keepFor => inner.keepFor;
@@ -197,7 +203,13 @@ class Wrap implements Prober, KeptReader {
   set keepFor(bool Function(String id)? f) => inner.keepFor = f;
 
   @override
-  Future<Outcome> read(LoginHandoff h, {required Future<void> cancelled}) => inner.read(h, cancelled: cancelled);
+  Future<Outcome> read(LoginHandoff h, {required Future<void> cancelled}) {
+    if (failRead) {
+      failRead = false;
+      return Future.error(StateError('a reader that fails'));
+    }
+    return inner.read(h, cancelled: cancelled);
+  }
 
   @override
   Future<Outcome> probe(GateLink link, String id, {required Future<void> due, required Future<void> cancelled}) async {
@@ -242,7 +254,11 @@ class KRig {
       reg: reg,
       prober: wrapped ?? reads,
       loginProber: HandoffProber(openRecord: open, ownerPub: pub, signOwner: sign),
-      keysOk: () async => keys,
+      keysOk: () async {
+        final f = duringKeys;
+        if (f != null) await f();
+        return keys;
+      },
       readRecords: () async => [...this.recs],
       now: () => clock.t,
       after: clock.after,
@@ -265,6 +281,7 @@ class KRig {
   late final radio = KRadio(clock);
   final trace = <String>[];
   bool keys = true;
+  Future<void> Function()? duringKeys; // runs inside keysOk(), before its answer
   bool netKnown = false;
   Completer<Uint8List?>? openHold;
   String advAddr = 'a1';
@@ -500,13 +517,50 @@ void main() {
       expect(rig.readAt, greaterThan(t0));
     });
 
-    test('(c) fresh == false -> not a read', () async {
+    test('(c) fresh == false -> not a read; the link is closed and the round reads by a new connect', () async {
       final rig = await t1();
       final at = rig.readAt;
       rig.s0.fresh = false;
-      await rig.run(61000, adv: false);
+      await rig.wait(() => rig.s0.views == 2, adv: false, what: 'the 60 s read has its page');
+      final t0 = rig.clock.t;
+      await rig.run(300, adv: false);
       expect(rig.s0.statusReqs, 2, reason: rig.tr);
       expect(rig.readAt, at, reason: 'a page that is not fresh was recorded as a read');
+      expect(rig.st, gone, reason: rig.tr);
+      await rig.until(t0 + 25000); // the round's window is 30 s
+      expect((rig.radio.connects, rig.nSessions), (2, 2), reason: rig.tr);
+      expect((rig.gate.links, rig.nl.keptState), (1, KeptState.parked));
+      expect(identical(rig.nl.kept!.session, rig.sess(1)), isTrue);
+      expect(rig.readAt, greaterThan(t0));
+    });
+
+    test('(b2) the read has its page and is still in the hint / team step at 5 s -> closed, the late body not recorded',
+        () async {
+      final rig = await t1();
+      final at = rig.readAt;
+      rig.netKnown = true;
+      rig.radio.hold[fStatus] = [3500];
+      rig.openHold = Completer<Uint8List?>(); // never ends: the step's own 2 s budget is real time, not the fake clock
+      await rig.wait(() => rig.nl.keptState == KeptState.reading, adv: false, what: 'the 60 s read');
+      final t0 = rig.clock.t;
+      await rig.until(t0 + 4700, adv: false);
+      expect((rig.nl.keptState, rig.s0.views, rig.openHold), (KeptState.reading, 2, null), reason: rig.tr);
+      await rig.until(t0 + 5300, adv: false);
+      expect(rig.st, gone, reason: rig.tr);
+      expect(rig.readAt, at, reason: 'a read that returned after its limit was recorded');
+    });
+
+    test('(b3) a reader that completes with an error -> closed; the round reads by a new connect', () async {
+      final rig = await t1(wrap: true);
+      expect(rig.st, parked, reason: rig.tr);
+      rig.wrapped!.failRead = true;
+      await rig.wait(() => !rig.wrapped!.failRead, adv: false, what: 'the 60 s read');
+      final t0 = rig.clock.t;
+      await rig.run(300, adv: false);
+      expect(rig.st, gone, reason: rig.tr);
+      await rig.until(t0 + 25000);
+      expect((rig.radio.connects, rig.gate.links, rig.nl.keptState), (2, 1, KeptState.parked), reason: rig.tr);
+      expect(rig.readAt, greaterThan(t0));
     });
 
     test('(d) errorCode -> still parked, no scan and no connect; 2\' when the core makes it so', () async {
@@ -585,6 +639,18 @@ void main() {
       l.writtenNodes.add('Y1');
       rig.recs.removeWhere((r) => r.id == 'Y1');
       await l.release();
+      await rig.run(300, adv: false);
+      expect(rig.st, gone, reason: rig.tr);
+    });
+    test('record removed, and another lease is held when the records come back (taken on the registry itself)',
+        () async {
+      final rig = await t1();
+      final l = (await rig.nl.acquire('移除節點', LeaseKind.session))!;
+      expect(rig.st, parked);
+      rig.recs = [const Rec('Y2', 1)];
+      unawaited(l.release());
+      // NodeLink.acquire waits for the record read; a lease taken on the registry is how the rig gets in between
+      expect(rig.reg.acquire('操作', LeaseKind.session), isNotNull);
       await rig.run(300, adv: false);
       expect(rig.st, gone, reason: rig.tr);
     });
@@ -673,6 +739,21 @@ void main() {
       await rig.run(300, adv: false);
       expect(rig.st, gone, reason: rig.tr);
     });
+  });
+
+  test('T7 (c) lent, a held frame at the park, the stack reports the link gone 1 s later -> close() returns then',
+      () async {
+    final rig = await t1();
+    final (l, h) = await rig.lend();
+    rig.radio.goneMs = 1000;
+    rig.radio.tx.add([99]); // nobody handles a lent link's frames here: the inbox holds it
+    var closed = false;
+    unawaited(h.close(reusable: true).then((_) => closed = true));
+    await rig.run(500, adv: false);
+    expect((closed, rig.gate.links, rig.nl.keptState), (false, 1, null), reason: rig.tr);
+    await rig.run(1000, adv: false);
+    expect((closed, rig.st), (true, gone), reason: rig.tr);
+    await l.release();
   });
 
   group('T8: lent, the lease goes and the holder does not close; the next round reads; then the late close', () {
@@ -891,6 +972,16 @@ void main() {
       await rig.run(300, adv: false);
       expect((rig.st, rig.radio.written.length), (gone, n), reason: rig.tr);
     });
+    test('the lease is released while keysOk() runs -> noLease, 0 links, no request sent', () async {
+      final rig = await t1();
+      final l = (await rig.nl.acquire('操作', LeaseKind.session))!;
+      rig.duringKeys = () => l.release();
+      final n = rig.radio.written.length;
+      final r = await rig.nl.loginFor(l, 'Y1');
+      expect((r.end, r.handoff), (LoginForEnd.noLease, null));
+      await rig.run(300, adv: false);
+      expect((rig.st, rig.radio.written.length), (gone, n), reason: rig.tr);
+    });
     test('core.blocked set (on the core only: NodeLink.radio() itself closes a parked link, T5)', () async {
       final rig = await t1();
       rig.nl.core.setRadio(rig.clock.t, permission: false);
@@ -1009,23 +1100,6 @@ void main() {
       await rig.run(300, adv: false);
       return rig.st;
     }
-
-    test('(e) background() between the answer and the end of the hint / team step', () async {
-      final rig = KRig(rust);
-      rig.netKnown = true;
-      final hold = rig.openHold = Completer<Uint8List?>();
-      await rig.nl.start(Page.node, node: 'Y1');
-      await rig.wait(() => rig.nSessions == 1 && rig.s0.views == 1, what: 'the first read has its page');
-      rig.nl.background();
-      await rig.run(300, adv: false);
-      expect(rig.st, gone, reason: rig.tr);
-      hold.complete(null);
-      await rig.run(300, adv: false);
-      expect(rig.st, gone);
-      rig.nl.foreground();
-      await rig.run(5000);
-      expect(rig.radio.connects, 2, reason: rig.tr);
-    });
 
     test('(e) a cancel at every microtask turn around the end of the hint / team step: disposed, or kept', () async {
       // a session is either NodeLink's kept one or disposed: never open with nobody holding it. background() ends

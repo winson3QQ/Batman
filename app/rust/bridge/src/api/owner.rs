@@ -2646,6 +2646,90 @@ mod member_tests {
         assert_eq!(s.status_view(false, true).row, "2'");
     }
 
+    /// #329 UX plan §6 (F12): a kept session is read again and again, by the status page and by a console that only
+    /// reads. status → settings → status → info → status on one session: each answer is its own request's, each
+    /// status page is the read just made and is fresh, and a read in between leaves the page as it was.
+    #[test]
+    fn a_kept_session_answers_each_read_with_its_own_and_every_status_is_fresh() {
+        let t = |k: &str| Value::Text(k.into());
+        let m = |kv: Vec<(u64, Value)>| Value::Map(kv.into_iter().map(|(k, v)| (Value::Uint(k), v)).collect());
+        let not_joined = m(vec![
+            (1, Value::Uint(1)),
+            (2, Value::Uint(2)),
+            (3, Value::Uint(2)),
+            (5, m(vec![(1, Value::Uint(7)), (2, t("NOT_JOINED SEARCHING"))])),
+            (15, Value::Map(vec![(t("uptime_s"), Value::Uint(600)), (t("join"), Value::Map(vec![(t("snr_db"), t("31")), (t("plinks"), Value::Uint(0))]))])),
+        ]);
+        let joined = m(vec![
+            (1, Value::Uint(2)),
+            (2, Value::Uint(0)),
+            (15, Value::Map(vec![(t("uptime_s"), Value::Uint(600)), (t("join"), Value::Map(vec![(t("snr_db"), t("31")), (t("plinks"), Value::Uint(1))]))])),
+        ]);
+        // one request: every node request answered from `answers` in order; the verbs the node saw and the Answer step
+        fn ask(s: &mut OwnerSession, n: &mut super::tests::FakeNode, mut step: OwnerStep, answers: Vec<Value>) -> (Vec<String>, OwnerStep) {
+            let mut verbs = vec![];
+            let mut answers = answers.into_iter();
+            loop {
+                match step.kind {
+                    OwnerKind::Write => {
+                        let (id, verb) = n.request(&step.frames);
+                        verbs.push(verb);
+                        let mut next = None;
+                        for f in n.answer(id, Ok(answers.next().expect("an answer for each request"))) {
+                            next = s.on_frame(f).or(next);
+                        }
+                        step = next.expect("a step after the node's answer");
+                    }
+                    OwnerKind::Answer => return (verbs, step),
+                    k => panic!("a read asks nothing else: {k:?}"),
+                }
+            }
+        }
+        let page = |s: &OwnerSession| {
+            let v = s.status_view(false, true);
+            (v.row, v.version, v.fresh, v.rate_note)
+        };
+        let shown = |row: &str, ver: &str| (row.to_string(), ver.to_string(), true, String::new());
+        let (mut s, mut n) = super::tests::logged_in();
+
+        // status 1
+        let st = s.request_status_page().unwrap();
+        let (verbs, a) = ask(&mut s, &mut n, st, vec![not_joined.clone(), m(vec![(4, t("v1"))])]);
+        assert_eq!((verbs, a.detail.as_str()), (vec!["status".to_string(), "info".to_string()], "[STATUS] 狀態已更新"));
+        assert_eq!(page(&s), shown("7", "v1"));
+
+        // settings: its own answer; the page is still status 1
+        let st = s.request_settings().unwrap();
+        let (verbs, a) = ask(&mut s, &mut n, st, vec![m(vec![(1, t("BCM2711-6c89")), (2, t("US"))])]);
+        assert_eq!(verbs, ["settings/get"]);
+        let got = a.settings.clone().expect("the settings answer carries the settings");
+        assert_eq!((got.read, got.name.as_str(), got.country.as_str()), (true, "BCM2711-6c89", "US"));
+        assert!(a.detail.starts_with("目前設定：") && a.info.is_empty(), "{}", a.detail);
+        assert_eq!(page(&s), shown("7", "v1"));
+
+        // status 2: the new read, fresh
+        let st = s.request_status_page().unwrap();
+        let (verbs, a) = ask(&mut s, &mut n, st, vec![joined, m(vec![(4, t("v2"))])]);
+        assert_eq!((verbs, a.detail.as_str()), (vec!["status".to_string(), "info".to_string()], "[STATUS] 狀態已更新"));
+        assert_eq!(a.settings, None);
+        assert_eq!(page(&s), shown("3", "v2"));
+
+        // info: its own body as it came; the page is still status 2 (its version is not this info's)
+        let raw = m(vec![(4, t("raw")), (9, Value::Uint(1))]);
+        let st = s.request_info().unwrap();
+        let (verbs, a) = ask(&mut s, &mut n, st, vec![raw.clone()]);
+        assert_eq!(verbs, ["info"]);
+        assert_eq!((a.detail.as_str(), a.info.clone(), a.settings.clone()), ("[INFO] 已讀取", cbor::encode(&raw), None));
+        assert_eq!(page(&s), shown("3", "v2"));
+
+        // status 3
+        let st = s.request_status_page().unwrap();
+        let (verbs, a) = ask(&mut s, &mut n, st, vec![not_joined, m(vec![(4, t("v3"))])]);
+        assert_eq!((verbs, a.detail.as_str()), (vec!["status".to_string(), "info".to_string()], "[STATUS] 狀態已更新"));
+        assert!(a.info.is_empty());
+        assert_eq!(page(&s), shown("7", "v3"));
+    }
+
     #[test]
     fn m10_forgetting_an_approved_node_says_it_revokes_nothing() {
         let mut r = NetRec::made(joinflow::NetRecord {
