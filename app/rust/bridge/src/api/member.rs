@@ -413,6 +413,10 @@ mod tests {
             assert!(t.starts_with("這不是正確的"), "{t}");
             assert!(!t.contains(w) && !t.contains("qr-object") && !t.contains("hex"), "the internal word in [{t}]");
         }
+        // review misc2 J m-a: an approval that does not parse says what to do next
+        for w in ["approval keys", "approval secrets", "approval item is not a COSE_Sign1", "not an approval"] {
+            assert!(invite_err(&Error::Format(w)).contains("請隊長重新產生同意碼"), "{w}");
+        }
     }
 
     // #329 PR 5 V-M1 / R19: the member's 「這支手機是第 N 版」 is MNet key 2 (what an import sets to the update's `to`)
