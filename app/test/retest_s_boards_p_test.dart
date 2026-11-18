@@ -18,6 +18,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'key_abilities_test.dart' as ka show FakeRust, answer;
 import 'retest_s_shot.dart';
+import 'support/a11y.dart';
 import 'support/font_levels.dart';
 import 'ui/retest_p_layout_test.dart' show P, app, id, keys, longNamed, platform, startup, sv, tapText;
 import 'ui/ui_state_test.dart' show MemStore;
@@ -72,6 +73,7 @@ void main() {
       final file = '${e.key}_${dark ? 'dark' : 'light'}';
       testWidgets('retest-s board $file${scale == 1.0 ? '' : ' ×2.0'}', (t) async {
         sizeView(t);
+        final sem = t.ensureSemantics(); // #329 PR 7 §4: the guidelines read the semantics tree
         final ui = UiState(MemStore());
         await t.pumpWidget(frame(MaterialApp(
           theme: batThemeData(Brightness.light),
@@ -91,8 +93,10 @@ void main() {
           expect(t.takeException(), isNull, reason: 'no overflow after the step');
         }
         expectSixLevels(t);
+        if (scale == 1.0) await expectA11y(t, file); // #329 PR 7 §4: 48 dp, contrast, one solid button
         if (scale == 1.0) await shoot(t, file);
         await t.pumpWidget(const SizedBox()); // the pages' timers go with them
+        sem.dispose();
         AppLink.forgetForTest();
       });
     }

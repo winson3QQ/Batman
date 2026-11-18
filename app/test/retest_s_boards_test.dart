@@ -45,14 +45,15 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'flows/net_run_test.dart' show World, ans;
 import 'retest_s_shot.dart';
+import 'support/a11y.dart';
 import 'support/font_levels.dart';
 import 'ui/layout_test.dart' as lt show app;
 import 'ui/layout_test.dart' show busy, id, keys, sv;
 import 'ui/team_pages_test.dart' as tp;
 import 'ui/ui_state_test.dart' show MemStore;
 
-SwAction _sw({String text = '', String note = '', int percent = -1, List<SwButton> buttons = const []}) => SwAction(
-    kind: SwKind.show_,
+SwAction _sw({SwKind kind = SwKind.show_, String text = '', String note = '', int percent = -1, List<SwButton> buttons = const []}) => SwAction(
+    kind: kind,
     waitMs: BigInt.zero,
     note: note,
     text: text,
@@ -205,7 +206,8 @@ void main() {
   const jr = JoinReqView(
       sas: '4821', name: '王小明', deviceSuffix: 'BB02', replacesApproved: false, joinreqHash: 'h', previous: '', updateFirst: true);
   const code = 'A2010203040506070809A0B0C0D0E0F0A2010203040506070809A0B0C0D0E0F0';
-  final failed = World()..script('make', [ans('[REQ_FAIL] 建立網路沒有成功：節點拒絕\u001e代碼 11，原因 14\u001f') /* #329 PR 6 D7: Rust's shape */]);
+  // #329 PR 7 §4: a new World per board (one script answers once: the dark board got the generic 「操作沒有成功」)
+  World failed() => World()..script('make', [ans('[REQ_FAIL] 建立網路沒有成功：節點拒絕\u001e代碼 11，原因 14\u001f') /* #329 PR 6 D7: Rust's shape */]);
   final gate = Completer<void>();
 
   // file name (ASCII) -> board
@@ -314,6 +316,17 @@ void main() {
       expect(find.textContaining('寫入開始後不能取消'), findsOneWidget, reason: 'the consequence is written');
       expect(find.widgetWithText(TextButton, '取消'), findsOneWidget);
     }),
+    // #329 PR 7 §4 (9.x): the update over — done (swupd.rs:1084), reverted (T_REVERTED, :1086); the hero says which
+    '9.x_done': B((ui) => SwUpdatePage(
+        hold: SwHold(_Flow()), ask: (_) async => _sw(kind: SwKind.done, text: '更新完成：1.5.14-wsl.30'), onSetAp: () {}), check: (t) {
+      expect(find.descendant(of: find.byKey(const Key('sw-hero')), matching: find.byIcon(Look.ok.icon)), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, '關閉'), findsOneWidget);
+    }),
+    '9.x_reverted': B((ui) => SwUpdatePage(
+        hold: SwHold(_Flow()), ask: (_) async => _sw(kind: SwKind.done, text: '新版不健康，已退回原本的版本'), onSetAp: () {}), check: (t) {
+      expect(find.descendant(of: find.byKey(const Key('sw-hero')), matching: find.text('更新沒有成功，已回到原本的版本')), findsOneWidget);
+      expect(find.descendant(of: find.byKey(const Key('sw-hero')), matching: find.byIcon(Look.bad.icon)), findsOneWidget);
+    }),
     'team_hub': B((ui) => TeamHubPage(app: app(null), ui: ui), check: (t) {
       // #329 PR 6 T6-11 (P2-1): each side's steps numbered, in order, before 「其他」
       for (final (n, of, s) in [(1, 2, '邀請隊員'), (2, 2, '收隊員的申請'), (1, 3, '收隊長的邀請'), (2, 3, '匯入隊長的同意'), (3, 3, '讓我的節點加入隊長的網路')]) {
@@ -383,10 +396,10 @@ void main() {
       await start(t);
       await settle(t);
     }),
-    '4.x_failed': B((ui) => makeForm(failed), act: (t) async {
+    '4.x_failed': B((ui) => makeForm(failed()), act: (t) async {
       await start(t);
       await settle(t);
-    }),
+    }, check: (t) => expect(find.text('建立網路沒有成功：節點拒絕'), findsOneWidget)),
     '4.x_check_network': B((ui) => CheckNetPage(app: app(sv('green')), ui: UiState(MemStore()..ids = [id]), preselect: id)),
     '10.3_leave': B((ui) => LeavePage(app: app(sv('green', canLeave: true)), ui: ui, id: id, deps: busy)),
     'pick_network': B((ui) {
@@ -406,6 +419,7 @@ void main() {
       final file = '${e.key}_${dark ? 'dark' : 'light'}';
       testWidgets('retest-s board $file${scale == 1.0 ? '' : ' ×2.0'}', (t) async {
         sizeView(t);
+        final sem = t.ensureSemantics(); // #329 PR 7 §4: the guidelines read the semantics tree
         final ui = UiState(MemStore());
         await t.pumpWidget(frame(MaterialApp(
           theme: batThemeData(Brightness.light),
@@ -428,8 +442,10 @@ void main() {
         }
         if (scale == 1.0) check0?.call(t); // the checks look at the 1.0 layout (lazily built lists)
         expectSixLevels(t);
+        if (scale == 1.0) await expectA11y(t, file); // #329 PR 7 §4: 48 dp, contrast, one solid button
         if (scale == 1.0) await shoot(t, file);
         await t.pumpWidget(const SizedBox()); // the pages' timers go with them
+        sem.dispose();
         for (final a in made) {
           await a.link.dispose();
         }

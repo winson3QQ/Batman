@@ -25,6 +25,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../flows/op_session_test.dart' show Fx;
 import '../flows/owner_console_pr4_test.dart' show P4Session;
 import '../retest_s_shot.dart';
+import '../support/a11y.dart';
 import '../support/font_levels.dart';
 import 'pages_test.dart' show app, id, sv;
 import 'pr6_dev_test.dart' show DevRust, f1, f2, k1, k2, member, mockChannels, net;
@@ -111,7 +112,7 @@ void main() {
       await pick(t);
       await t.enterText(find.byKey(const Key('ssh-lines')), '$k1\n$k2\nssh-rsa AAAAB3NzaC1yc2E x');
       await t.pump();
-      await t.pump(const Duration(milliseconds: 300)); // the field's label animation to its floating place
+      await t.pump(const Duration(seconds: 1)); // the field's label animation to its floating place, the row's ink gone
     }, check: (t) {
       expect(find.text('第 1 行：$f1'), findsOneWidget);
       expect(find.text('第 2 行：$f2'), findsOneWidget);
@@ -173,6 +174,7 @@ void main() {
       final file = '${e.key}_${dark ? 'dark' : 'light'}';
       testWidgets('pr6 board $file${scale == 1.0 ? '' : ' ×2.0'}', (t) async {
         sizeView(t);
+        final sem = t.ensureSemantics(); // #329 PR 7 §4: the guidelines read the semantics tree
         mockChannels(t); // appVersion / flavor, the clipboard
         t.binding.defaultBinaryMessenger.setMockMethodCallHandler(secureChannel, (c) async => true);
         final f = Fx(rust);
@@ -201,8 +203,10 @@ void main() {
         }
         if (scale == 1.0) e.value.check(t); // the checks look at the 1.0 layout (lazily built lists)
         expectSixLevels(t);
+        if (scale == 1.0) await expectA11y(t, file); // #329 PR 7 §4: 48 dp, contrast, one solid button
         if (scale == 1.0) await shoot(t, file);
         await t.pumpWidget(const SizedBox());
+        sem.dispose();
         await a.link.dispose();
         await t.pump(const Duration(seconds: 10)); // NodeLink's round after a release
       });

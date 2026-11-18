@@ -379,11 +379,12 @@ class _OrphanJoinsPageState extends State<OrphanJoinsPage> {
               actions: [
                 Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                   BatButton(Btn.forgetJoin, key: const Key('orphan-forget'), onPressed: () => Navigator.pop(c, 'forget')),
-                  // remove-member §3.6: a node that may be lost / captured is excluded instead (the old console's choice)
+                  // remove-member §3.6: a node that may be lost / captured is excluded instead (the old console's choice);
+                  // #329 PR 7 §4: secondary — one solid button per dialog; the danger confirmation is on the page it opens
                   if (a.devTrust) ...[
                     const SizedBox(height: 8),
                     BatButton(Btn.excludeThis,
-                        key: const Key('orphan-exclude'), kind: BtnKind.danger, onPressed: () => Navigator.pop(c, 'exclude')),
+                        key: const Key('orphan-exclude'), kind: BtnKind.secondary, onPressed: () => Navigator.pop(c, 'exclude')),
                   ],
                   const SizedBox(height: 6),
                   BatButton(Btn.cancel, kind: BtnKind.text, onPressed: () => Navigator.pop(c)),
