@@ -22,3 +22,6 @@ a<<x>>b<<y>>c|abc|x；y
 a<<x>>b>>c|axbc|
 # nested: an OPEN inside an open part is unpaired too
 外<<一<<二>>三>>尾|外一二三尾|
+# nested with one end only (review pr6 A-3): a nested OPEN must make the whole line main, not end a part and open
+# a new one (that would give main "ad", technical "b；c")
+a<<b<<c>>d|abcd|

@@ -89,6 +89,29 @@ void main() {
     await finish(t, a);
   });
 
+  // review pr6 B-4: Rust's `only` and every card line go through SayLine (a technical part under 技術資訊, never raw
+  // U+001E / U+001F). Negative control: `only` or a card line back to Text(...) -> the raw characters FAIL.
+  testWidgets('B-4: a technical part in only / a card is split, never shown raw', (t) async {
+    final a = await page(
+        t,
+        (a) => readWith(
+            a,
+            id,
+            team(
+                only: '這台沒連上\u001e代碼 4\u001f',
+                cards: const ['🟢 『客廳』 在線\u001e原因 2\u001f', '❔ 不明節點\n不在名單裡\u001e代碼 5\u001f'],
+                tech: const [])));
+    final shown = t.widgetList<Text>(find.byType(Text)).map((w) => w.data ?? '').toList();
+    for (final s in shown) {
+      expect(s.contains('\u001e') || s.contains('\u001f'), isFalse, reason: 'raw control character on screen: $s');
+    }
+    expect(find.text('這台沒連上'), findsOneWidget);
+    expect(find.text('🟢 『客廳』 在線'), findsOneWidget);
+    expect(find.text('不在名單裡'), findsOneWidget);
+    expect(find.text('技術資訊（給維修人員看）'), findsNWidgets(3), reason: 'one fold per line with a technical part');
+    await finish(t, a);
+  });
+
   testWidgets('one section per own node, never merged: two nodes of one network -> two sections, each its title',
       (t) async {
     final a = await page(t, (a) {

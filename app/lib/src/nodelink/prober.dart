@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 §4.3.3-3/-4: one attempt's login + status read with the Rust OwnerSession, mapped to the core's outcome.
 // The record is opened (Keystore) for this attempt only; the Rust session is disposed when the attempt ends (review
 // pr1 B-m2). The plain bytes from the platform channel cannot be zeroed from Dart (a read-only buffer, seen on the
@@ -181,6 +183,8 @@ class SessionProber implements Prober {
                     .timeout(hintMax, onTimeout: () => null),
                 cancelled.then((_) => null),
               ]);
+              // (review pr6 A-6: `!result.isCompleted` is a defence only — no test can tell it: once [result] is
+              // completed, done() below ignores `o`, so the outcome is the same with or without it)
               if (team != null && !result.isCompleted) o = Outcome.withTeam(o.res, o.view, o.extra, team);
             }
             done(o);

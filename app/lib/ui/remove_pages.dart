@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 5 plan v16 §2.7 (boards 8.3, 8.4): removing a member / excluding an own node, and the new-secrets checklist.
 // The steps are the old console's _remove / _updates (nodes.dart:1348-1421, :1457-1499) unchanged:
 // - 8.3 reads every own node of removeOwnNodes(target) that the phone has a record of, one at a time (P19, no skip),

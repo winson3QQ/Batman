@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../member_ui.dart' show forgetNotice;
-import '../say.dart' show SayLine, TechFold, logText, screenText, stripMarkers, techText;
+import '../say.dart' show SayLine, TechFold, logText, screenText, stripMarkers, tech, techText;
 import '../src/flows/net_index.dart' show JoinTodo;
 import '../src/flows/op_session.dart';
 import '../src/flows/owner_console.dart';
@@ -17,9 +17,10 @@ import '../src/nodelink/node_link.dart' show NodeLink;
 import '../src/rust/api/rekey.dart' show netPeople;
 import '../src/rust/api/ssh.dart' show sshFingerprint, sshLineProblem;
 import 'home_logic.dart' show last4;
+import 'remove_pages.dart' show RemoveConfirmPage;
 import 'settings_pages.dart' show opDeps, opLine;
 import 'team_deps.dart';
-import 'team_pages.dart' show PersonPage;
+import 'team_pages.dart' show sameNameLines;
 import 'theme.dart';
 import 'ui_state.dart';
 import 'widgets.dart';
@@ -79,7 +80,9 @@ SshLineCheck checkSshLine(String line) {
   return f == null ? SshLineCheck(line, problem: '金鑰內容解不開') : SshLineCheck(line, fingerprint: f);
 }
 
-const sshReplaceNote = '送出的這一組會取代之前由 app 加入的全部金鑰（節點上原本就有、不是 app 加的不受影響）。';
+const sshReplaceNote = '送出的這一組會取代之前由 app 加入的全部金鑰；節點上原本就有、不是 app 加的不受影響。'
+    '例外：一把金鑰如果本來就在節點上、又由 app 送過，之後任何一次取代（不只送出空的一組）都會把它一起移除。'
+    '要保留的金鑰（例如 lab key）請每一次都放進這一組。';
 const sshSetButton = '設定 SSH 金鑰（取代之前由 app 加入的）';
 const sshRemoveButton = '移除 app 加入的全部 SSH 金鑰';
 const sshDoneLine = 'SSH 金鑰已設定';
@@ -315,6 +318,9 @@ class _LogPageState extends State<LogPage> {
 
 // ---- D4a 忘記加入中的節點 ---------------------------------------------------------------------------------------------
 
+/// 「排除這台」 for a node that is not one of this phone's own nodes in that record (review pr6 A-5).
+const orphanNotOwnLine = '這台不在這支手機自己的節點裡，不能從這裡排除';
+
 class OrphanJoinsPage extends StatefulWidget {
   const OrphanJoinsPage({super.key, required this.app, required this.ui});
   final AppLink app;
@@ -381,21 +387,27 @@ class _OrphanJoinsPageState extends State<OrphanJoinsPage> {
     if (pick == 'forget') return _forget(j);
   }
 
-  /// PersonPage's own exclusion (team_pages.dart:175-183): this phone's group, its node rows (the same controller).
+  /// The exclusion of this very node (review pr6 A-5: as the old console did, `_pendingExclude = (net, m.dacHash)` at
+  /// main c4905ed nodes.dart:1283): RemoveConfirmPage — PersonPage's own controller (team_pages.dart `go('', dacHash)`)
+  /// — for this phone's group with this node as the target. A node that is not one of this phone's own nodes in the
+  /// record is said so (nothing to exclude from here).
   Future<void> _exclude(JoinTodo j) async {
     final d = teamDeps(a);
-    final (_, plain) = await d.readRecord(j.net.rel);
-    final keys = await d.publicKeys();
-    if (!mounted) return;
-    if (plain == null) return setState(() => _line = stripMarkers(recordUnopenedLine));
     try {
+      final (_, plain) = await d.readRecord(j.net.rel); // (A-7: a failed read is said too, not left unhandled)
+      final keys = await d.publicKeys();
+      if (!mounted) return;
+      if (plain == null) return setState(() => _line = stripMarkers(recordUnopenedLine));
       final people = netPeople(recordPlain: plain, ownerPub: keys['owner']!);
       final self = people.where((p) => p.isSelf).firstOrNull;
       if (self == null) return setState(() => _line = '這個網路紀錄裡找不到這支手機自己的節點');
-      await Navigator.of(context)
-          .push(MaterialPageRoute(builder: (_) => PersonPage(app: a, netId: j.net.id, person: self, all: people)));
+      if (!self.nodes.any((n) => n.dacHash == j.member.dacHash)) return setState(() => _line = orphanNotOwnLine);
+      await Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) => RemoveConfirmPage(
+              app: a, netId: j.net.id, person: self, owner: '', node: j.member.dacHash, same: sameNameLines(self, people))));
     } catch (e) {
-      if (mounted) setState(() => _line = '讀不到網路紀錄裡的隊員');
+      // review pr6 A-7: a Rust String error keeps its own words; anything else is technical as a whole
+      if (mounted) setState(() => _line = e is String ? '讀不到網路紀錄裡的隊員：$e' : '讀不到網路紀錄裡的隊員${tech(e)}');
     }
   }
 
@@ -424,7 +436,7 @@ class _OrphanJoinsPageState extends State<OrphanJoinsPage> {
       line = await forgetJoining(l, a.writer,
           rel: j.net.rel, plain: p, gen: gen, dacHash: j.member.dacHash, seal: a.console.seal, keyError: (e) => keyErrorToRadio(e, a.link));
     } catch (e) {
-      line = e is String ? e : '[REQ_FAIL] 忘記沒有成功';
+      line = e is String ? e : '[REQ_FAIL] 忘記沒有成功${tech(e)}'; // review pr6 A-7: the exception as 技術資訊
     } finally {
       await l.release(); // NetIndex computes again on the release: the row goes once the record says so
     }

@@ -85,7 +85,7 @@ pub fn ssh_line_problem(line: String) -> Option<String> {
         return Some("行中間有換行字元".into());
     }
     if !node_accepts(&line) {
-        return Some("不是節點接受的格式：要是 ssh-ed25519 公鑰，後面的註解最多 40 個英數字元".into());
+        return Some("不是節點接受的格式：要是 ssh-ed25519 公鑰，後面的註解最多 40 個可列印 ASCII 字元".into());
     }
     if ssh_fingerprint(line).is_none() {
         return Some("金鑰內容解不開".into());
@@ -145,6 +145,12 @@ mod tests {
             assert_eq!(ssh_fingerprint(b.clone()), None, "{b:?}");
         }
         assert_eq!(ssh_line_problem(format!("ssh-ed25519 {key} {}", "c".repeat(40))), None, "comment of 40 is fine");
+        // review pr6 B-5: the comment is any printable ASCII (symbols and spaces too), and the refusal says so
+        assert_eq!(ssh_line_problem(format!("ssh-ed25519 {key} a@b.c-d_e+f !~")), None, "symbols in the comment");
+        assert_eq!(
+            ssh_line_problem(bad[0].clone()).as_deref(),
+            Some("不是節點接受的格式：要是 ssh-ed25519 公鑰，後面的註解最多 40 個可列印 ASCII 字元")
+        );
         // > 256 bytes although every part is within its own limit is impossible (12 + 200 + 41 = 253): the byte cap
         // is checked first all the same
         assert_eq!(ssh_line_problem("x".repeat(257)).as_deref(), Some("超過 256 個位元組"));

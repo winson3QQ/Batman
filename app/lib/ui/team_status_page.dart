@@ -101,12 +101,8 @@ class _TeamPageState extends State<TeamPage> {
           else
             Text('上次讀取 ${hhmm(tr.readWall)}', key: const Key('teamOld'), style: small),
           const SizedBox(height: 6),
-          if (v.only.isNotEmpty)
-            Text(
-              v.only,
-              key: const Key('teamOnly'),
-              style: TextStyle(fontSize: Fs.body, color: ink),
-            ),
+          // review pr6 B-4: Rust's `only` and cards are split like every sentence (a technical part never shows raw)
+          if (v.only.isNotEmpty) SayLine(v.only, key: const Key('teamOnly'), style: TextStyle(fontSize: Fs.body, color: ink)),
           for (final (i, c) in v.cards.indexed)
             KeyedSubtree(
               key: ValueKey('teamCard-$i'),
@@ -124,11 +120,11 @@ class _TeamPageState extends State<TeamPage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
+                          SayLine(
                             fresh ? c.split('\n').first : _noLight(c.split('\n').first),
                             style: TextStyle(fontSize: Fs.body, height: 1.4, color: ink),
                           ),
-                          for (final l in c.split('\n').skip(1)) Text(l, style: small),
+                          for (final l in c.split('\n').skip(1)) SayLine(l, style: small),
                         ],
                       ),
                     ),

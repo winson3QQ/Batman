@@ -33,12 +33,13 @@ List<String> keyLines(KeyAbilities? k) {
   ];
 }
 
-/// Each node's technical list (`StatusView.tech`) of this run's read, by last four; none -> [notReadYet].
+/// Each node's technical list (`StatusView.tech`) of this run's read, by its full id (review pr6 A-8 / B-3: two nodes
+/// may share a last four; the page and the copy show the last four only); none -> [notReadYet].
 Map<String, List<String>> nodeTech(AppLink a) {
   final ids = a.link.core.states.keys.toList()..sort();
   return {
     for (final id in ids)
-      last4(id): switch (a.link.core.states[id]!.extra) {
+      id: switch (a.link.core.states[id]!.extra) {
         final StatusView v when v.tech.isNotEmpty => v.tech,
         _ => const [notReadYet],
       }
@@ -53,7 +54,7 @@ String diagCopy({required String version, required String flavor, required KeyAb
       '金鑰（啟動時的檢查結果）：',
       for (final l in keyLines(keys)) '  $l',
       for (final e in tech.entries) ...[
-        '節點 …${e.key}：',
+        '節點 …${last4(e.key)}：',
         for (final l in e.value) '  ${logText(NodeLink.mask(l))}',
       ],
     ].join('\n');
@@ -113,7 +114,7 @@ class _DiagPageState extends State<DiagPage> {
             Padding(
               padding: const EdgeInsets.all(12),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('節點 …${n.key}', style: TextStyle(fontSize: Fs.body, fontWeight: FontWeight.w600, color: t.ink)),
+                Text('節點 …${last4(n.key)}', style: TextStyle(fontSize: Fs.body, fontWeight: FontWeight.w600, color: t.ink)),
                 for (final l in n.value) Text(logText(l), style: mono),
               ]),
             ),

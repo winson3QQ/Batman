@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 3 §2.6 (design §4.3.8): the phone's network records, summarised once per change for the screens — which
 // kinds the phone holds (home row 6 and 3.5 / 3.6), the openable net records with their name, applied flag and members
 // (4.1's forms, the pending screens), and the 「節點加入網路沒有做完」 todos. Held by AppLink, computed after the

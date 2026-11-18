@@ -260,6 +260,8 @@ class NodeLinkCore {
       _earlyTargets.remove(id);
       // #329 PR 6 D5(c): a round still running drops it too (its late result is then not taken, `result`)
       _round?.targets.remove(id);
+      // (review pr6 A-6: a defence only — `result` already drops the read by `states[id] == null` and `tick` walks
+      // `targets` only, so no test can tell this line; it keeps the round's map free of a gone id)
       _round?.t.remove(id);
     }
     for (final r in recs) {

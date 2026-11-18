@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 3 §2.5 / §2.8 (design §5.4): the flows behind the new network pages, without widgets so every rule is
 // tested directly. The page owns the lease calls (acquire / hold / pageGone), keepScreenOn and the dialogs; these
 // classes own the order of the requests and what each reply means (only by ConsoleReply, plan §2.3).

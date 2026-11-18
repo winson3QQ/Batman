@@ -10,11 +10,12 @@ import 'key_abilities.dart';
 import 'scan.dart';
 import 'src/nodelink/app_link.dart';
 import 'src/nodelink/core.dart' as nlcore show Page;
+import 'src/nodelink/node_link.dart' show NodeLink;
 import 'src/nodelink/raw_use.dart';
 import 'src/rust/api/owner.dart' show listNodes, listPending;
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
-import 'say.dart' show logText, sayErr;
+import 'say.dart' show SayLine, logText, sayErr;
 import 'ui/home_logic.dart' show last4;
 import 'ui/home_page.dart';
 import 'ui/intro_pages.dart';
@@ -155,7 +156,8 @@ class _StartupCheckState extends State<StartupCheck> {
         ..clear()
         ..add('啟動檢查失敗：${sayErr(e)}');
     }
-    debugPrint('BMAPP ${logText([...lines, ...tech].join(' | '))}');
+    // review pr6 B-1: logcat keeps the last four only (the whole id stays in 技術資訊 on screen and in its copy)
+    debugPrint('BMAPP ${NodeLink.mask(logText([...lines, ...tech].join(' | ')))}');
     final make = widget.makeLink;
     if (agree && keys.appUsable && _app == null && make != null) {
       // review pr1 A-m5: a NodeLink that cannot be built leaves the startup result on screen, never a spinner
@@ -320,7 +322,7 @@ class _StartupCheckState extends State<StartupCheck> {
             : ListView(children: [
                 // #329 PR 6 D1: only reached when the check passed but NodeLink did not start (the home page needs
                 // it). The reason, what to do, no 「再試一次」 (F15) and no older console.
-                Text(_report!, style: const TextStyle(fontSize: 16)),
+                SayLine(_report!, style: const TextStyle(fontSize: 16)), // review pr6 B-4: split like every sentence
                 const SizedBox(height: 8),
                 Text(restartLine, style: const TextStyle(fontSize: 16)),
                 const SizedBox(height: 16),

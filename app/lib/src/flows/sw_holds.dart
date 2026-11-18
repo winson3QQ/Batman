@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 4 §2.8: the software updates left half-way, one per node, in memory (as the old console's `_swHold` field,
 // nodes.dart:1630-1640): the update page puts one here and takes it back; 「從這支手機移除這台節點」 drops it. The home
 // page's todo 「軟體更新還沒做完」 reads it (design §4.8: prepared, not applied). Gone when the app ends (as today).

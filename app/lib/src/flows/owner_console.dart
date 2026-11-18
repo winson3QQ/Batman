@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 3 §2.3: the owner requests of the new pages (make / join / confirm a network, send the new secrets, the link
 // check after a join), copied from the old console (nodes.dart `_tryLogin`'s step loop, `_ask`, `_makeNetwork`,
 // `_joinNetwork`, `_confirmNetwork`, `_sendUpdateFor`, `_watchLink`) with the same behaviour and the same lines.

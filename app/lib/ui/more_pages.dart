@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 4 §2.6 / §2.7 (design §5.5 board 5.7, board 10.3): 「更多」 of a node — nickname, country, leave the network,
 // technical data, remove from this phone — and the leave page. The leave is 254-app-leave v4.1 as the old console does
 // it (leaveFlow / sendLeave, unchanged); only who answers its four questions changes: one OpSession.once holds the

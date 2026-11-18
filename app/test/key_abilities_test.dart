@@ -553,6 +553,23 @@ void main() {
       expect(copied, contains('啟動檢查：'));
     });
 
+    // review pr6 B-1: the startup line in logcat carries the node ids' last four only (the whole id stays in 技術資訊).
+    // Negative control: main.dart's debugPrint without NodeLink.mask -> the whole id in the line -> FAIL.
+    testWidgets('B-1: the logcat startup line has no whole device id', (t) async {
+      final printed = <String>[];
+      final old = debugPrint;
+      debugPrint = (String? m, {int? wrapWidth}) => printed.add(m ?? '');
+      try {
+        await start(t, answer(appUsable: false, claim: false, login: false, recover: false, makeNetwork: false, soft: true));
+      } finally {
+        debugPrint = old;
+      }
+      final startup = printed.where((l) => l.startsWith('BMAPP ') && l.contains('節點紀錄：')).toList();
+      expect(startup, hasLength(1), reason: printed.join('\n'));
+      expect(startup.single, isNot(contains('0000000000000c4f2a')));
+      expect(startup.single, contains('節點紀錄：…'));
+    });
+
     // design §4 / §4.1 「單一金鑰遺失」: record AES lost. Negative control: the index not built -> FAIL
     testWidgets('record AES lost: said so (not "not hardware"), the node index shown, no button', (t) async {
       await start(t, answer(appUsable: false, claim: false, login: false, recover: false, makeNetwork: false, gone: {'RECORD_AES'}));

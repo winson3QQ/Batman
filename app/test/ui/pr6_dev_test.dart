@@ -11,11 +11,13 @@ import 'package:batman_app/src/nodelink/core.dart';
 import 'package:batman_app/src/nodelink/lease.dart';
 import 'package:batman_app/src/nodelink/record_writer.dart';
 import 'package:batman_app/src/rust/api/owner.dart';
+import 'package:batman_app/src/rust/api/rekey.dart' show PersonNode, PersonView;
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/ui/dev_pages.dart';
 import 'package:batman_app/ui/diag_page.dart';
 import 'package:batman_app/ui/home_logic.dart';
 import 'package:batman_app/ui/net_pages.dart' show NetFormPage;
+import 'package:batman_app/ui/remove_pages.dart' show RemoveConfirmPage;
 import 'package:batman_app/ui/ui_state.dart';
 import 'package:batman_app/ui/widgets.dart' show BatButton, BtnKind;
 import 'package:flutter/material.dart';
@@ -38,6 +40,8 @@ const f2 = 'SHA256:viFJWaOp4vg6jfumspq8LSMb0ChDfnBQjyhjnC7mHGU';
 class DevRust extends fake.FakeRust {
   final checked = <String>[]; // every line the page asked Rust about
   final forgot = <String>[]; // dac hashes netForgetJoining was asked to forget
+  Object? readThrows; // review pr6 A-7: reading a sealed record throws this (a non-String exception)
+  List<PersonView>? people; // review pr6 A-5: netPeople's answer (null = FakeRust's)
 
   // the two vectors are taken; anything else is refused with the Rust words for its case
   @override
@@ -46,11 +50,22 @@ class DevRust extends fake.FakeRust {
     if (line == k1 || line == k2) return null;
     if (line.contains('\r')) return '行中間有換行字元';
     if (line.length > 256) return '超過 256 個位元組';
-    return '不是節點接受的格式：要是 ssh-ed25519 公鑰，後面的註解最多 40 個英數字元';
+    return '不是節點接受的格式：要是 ssh-ed25519 公鑰，後面的註解最多 40 個可列印 ASCII 字元';
   }
 
   @override
   String? crateApiSshSshFingerprint({required String line}) => switch (line) { k1 => f1, k2 => f2, _ => null };
+
+  @override
+  Future<SealedRecord?> crateApiOwnerStoreReadSealed({required String dir, required String rel}) {
+    final e = readThrows;
+    if (e != null) throw e;
+    return super.crateApiOwnerStoreReadSealed(dir: dir, rel: rel);
+  }
+
+  @override
+  List<PersonView> crateApiRekeyNetPeople({required List<int> recordPlain, required List<int> ownerPub}) =>
+      people ?? super.crateApiRekeyNetPeople(recordPlain: recordPlain, ownerPub: ownerPub);
 
   @override
   OwnerStep crateApiOwnerNetForgetJoining({required List<int> recordPlain, required BigInt recordGen, required String dacHash}) {
@@ -78,6 +93,8 @@ void mockChannels(WidgetTester t) {
         return Uint8List(4);
       case 'seal':
         return Uint8List(3);
+      case 'publicKeys':
+        return {'owner': Uint8List(65), 'admin': Uint8List(65)};
     }
     return null;
   });
@@ -103,6 +120,8 @@ void main() {
     rust
       ..checked.clear()
       ..forgot.clear()
+      ..readThrows = null
+      ..people = null
       ..calls.clear()
       ..records.clear();
   });
@@ -148,6 +167,13 @@ void main() {
       expect(find.text('第 1 行：$f1'), findsOneWidget);
       expect(find.text('第 2 行：$f2'), findsOneWidget);
       expect(find.text(sshReplaceNote), findsOneWidget, reason: 'the replace meaning is always on the page');
+      // review pr6 B-2: a key both on the node already and sent by the app goes with any later replace (not only an
+      // empty set) — said on the page with 1–8 lines too. Negative control: the old note (no exception) -> FAIL.
+      final note = t.widget<Text>(find.byKey(const Key('ssh-replace-note'))).data!;
+      expect(note, contains('之後任何一次取代'));
+      expect(note, contains('一起移除'));
+      expect(note, contains('lab key'));
+      expect(note, contains('每一次都放進這一組'));
       expect((send(t).text, send(t).kind), (sshSetButton, BtnKind.primary));
       await t.tap(find.byKey(const Key('ssh-send')));
       await settle(t, f);
@@ -156,7 +182,7 @@ void main() {
     });
 
     for (final (name, text, row) in [
-      ('another key type', '$k1\nssh-rsa AAAAB3NzaC1yc2E x', '第 2 行不合格：不是節點接受的格式：要是 ssh-ed25519 公鑰，後面的註解最多 40 個英數字元'),
+      ('another key type', '$k1\nssh-rsa AAAAB3NzaC1yc2E x', '第 2 行不合格：不是節點接受的格式：要是 ssh-ed25519 公鑰，後面的註解最多 40 個可列印 ASCII 字元'),
       ('over 256 bytes', 'ssh-ed25519 ${'A' * 300}', '第 1 行不合格：超過 256 個位元組'),
       ('a CR inside the line', 'ssh-ed25519 AAAA\rB x\r', '第 1 行不合格：行中間有換行字元'),
     ]) {
@@ -460,6 +486,102 @@ void main() {
       await t.pumpWidget(const SizedBox());
       await t.pump(const Duration(seconds: 10)); // NodeLink's round after a release
     });
+
+    Future<void> drain(WidgetTester t, AppLink a) async {
+      for (var i = 0; i < 5; i++) {
+        await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+        await t.pump();
+      }
+    }
+
+    Future<void> close(WidgetTester t, AppLink a) async {
+      await a.link.dispose();
+      await t.pumpWidget(const SizedBox());
+      await t.pump(const Duration(seconds: 10)); // NodeLink's round after a release
+    }
+
+    // review pr6 A-7. Negative control: the catch back to a fixed line without the exception -> no 技術資訊 -> FAIL.
+    testWidgets('A-7: 放棄這次加入 that throws a non-String -> the line, and the exception under 技術資訊', (t) async {
+      final j = JoinTodo(NetEntry('n1', net(const [])), member('dev0000b', 'dB'));
+      rust
+        ..records.add('net/n1')
+        ..readThrows = StateError('boom');
+      final a = await openPage(t, NetSnapshot(orphanJoins: [j]));
+      await t.tap(find.text('「山隊」裡的 …000B'));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('orphan-forget')));
+      await drain(t, a);
+      expect(find.text('忘記沒有成功'), findsOneWidget);
+      noControl(t);
+      expect(find.text(techTitle), findsOneWidget);
+      await t.tap(find.text(techTitle));
+      await t.pump();
+      expect(find.text('Bad state: boom'), findsOneWidget);
+      expect(a.reg.current, isNull, reason: 'its lease released');
+      await close(t, a);
+    });
+
+    // review pr6 A-5: 「排除這台」 goes straight to the removal of that very node (the old console's
+    // `_pendingExclude = (net, m.dacHash)`), with PersonPage's own controller. Negative control: _exclude back to
+    // PersonPage (the whole list) -> no RemoveConfirmPage -> FAIL.
+    testWidgets('A-5: 排除這台 opens the exclusion of that node (its dac hash), not the whole list', (t) async {
+      final j = JoinTodo(NetEntry('n1', net(const [])), member('dev0000b', 'dB'));
+      rust
+        ..records.add('net/n1')
+        ..people = const [
+          PersonView(owner: 'me', fpr: 'F', name: '我', isSelf: true, sameName: [], nodes: [
+            PersonNode(last4: '000A', dacHash: 'dA', state: 'applied'),
+            PersonNode(last4: '000B', dacHash: 'dB', state: 'joining'),
+          ]),
+        ];
+      final a = await openPage(t, NetSnapshot(orphanJoins: [j]));
+      await t.tap(find.text('「山隊」裡的 …000B'));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('orphan-exclude')));
+      await drain(t, a);
+      expect(find.byType(RemoveConfirmPage), findsOneWidget);
+      final p = t.widget<RemoveConfirmPage>(find.byType(RemoveConfirmPage));
+      expect((p.node, p.owner, p.netId, p.person.isSelf), ('dB', '', 'n1', true));
+      await close(t, a);
+    });
+
+    // review pr6 A-7 (排除這台). Negative control: the catch back to a fixed line without the exception -> FAIL.
+    testWidgets('A-7: 排除這台 whose record read throws a non-String -> the line, the exception under 技術資訊', (t) async {
+      final j = JoinTodo(NetEntry('n1', net(const [])), member('dev0000b', 'dB'));
+      rust
+        ..records.add('net/n1')
+        ..readThrows = StateError('boom');
+      final a = await openPage(t, NetSnapshot(orphanJoins: [j]));
+      await t.tap(find.text('「山隊」裡的 …000B'));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('orphan-exclude')));
+      await drain(t, a);
+      expect(find.text('讀不到網路紀錄裡的隊員'), findsOneWidget);
+      noControl(t);
+      await t.tap(find.text(techTitle));
+      await t.pump();
+      expect(find.text('Bad state: boom'), findsOneWidget);
+      await close(t, a);
+    });
+
+    testWidgets('A-5: 排除這台 for a node that is not one of this phone\'s own -> said so, nothing opened', (t) async {
+      final j = JoinTodo(NetEntry('n1', net(const [])), member('dev0000b', 'dB'));
+      rust
+        ..records.add('net/n1')
+        ..people = const [
+          PersonView(owner: 'me', fpr: 'F', name: '我', isSelf: true, sameName: [], nodes: [
+            PersonNode(last4: '000A', dacHash: 'dA', state: 'applied'),
+          ]),
+        ];
+      final a = await openPage(t, NetSnapshot(orphanJoins: [j]));
+      await t.tap(find.text('「山隊」裡的 …000B'));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('orphan-exclude')));
+      await drain(t, a);
+      expect(find.byType(RemoveConfirmPage), findsNothing);
+      expect(find.text(orphanNotOwnLine), findsOneWidget);
+      await close(t, a);
+    });
   });
 
   // ---- T6-5 診斷 ---------------------------------------------------------------------------------------------------
@@ -519,6 +641,31 @@ void main() {
       expect(find.text(notReadYet), findsOneWidget);
       expect(find.text('金鑰：沒有啟動時的檢查結果'), findsOneWidget);
       expect(find.byKey(const Key('diag-soft')), findsNothing);
+    });
+
+    // review pr6 A-8 / B-3: two nodes with the same last four are both there (on the page and in the copy).
+    // Negative control: nodeTech keyed by last4(id) again -> one section only -> FAIL.
+    testWidgets('two nodes sharing a last four: both sections, both copied', (t) async {
+      mockChannels(t);
+      final a = app();
+      const twin = 'ffffffffffff00000a7d2c'; // the same last four as [id]
+      a.link.core.setRecords(const [Rec(id, 1), Rec(twin, 2)]);
+      a.link.core.states[id]!.extra = withTech(['軟體版本 1.4.12']);
+      a.link.core.states[twin]!.extra = withTech(['軟體版本 1.4.13']);
+      t.view.physicalSize = const Size(1080, 4000);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      await t.pumpWidget(host(DiagPage(app: a, keys: keys())));
+      await t.pump();
+      expect(find.text('節點 …7D2C'), findsNWidgets(2));
+      expect(find.text('軟體版本 1.4.12'), findsOneWidget);
+      expect(find.text('軟體版本 1.4.13'), findsOneWidget);
+      await t.tap(find.byKey(const Key('diag-copy')));
+      await t.pump();
+      expect('節點 …7D2C：'.allMatches(clip!).length, 2);
+      expect(clip, allOf(contains('  軟體版本 1.4.12'), contains('  軟體版本 1.4.13')));
+      expect(clip, isNot(contains(twin)));
+      expect(clip, isNot(contains(id)));
     });
 
     testWidgets('keys that fit: no soft warning', (t) async {

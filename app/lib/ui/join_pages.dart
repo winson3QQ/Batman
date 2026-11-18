@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 5 plan v16 §2.8 (boards 7.8–7.10, 8.5): the member's pages. The steps are the old console's (_takeInvite,
 // _requestJoin, _showPendingBody, _takeApproval / _importApproval, _takeUpdate; nodes.dart:867-1037, :1503-1542)
 // unchanged; every record write is an OfflineOp (R10, re-read under the lease R11), ECDH's z is the page's own copy and

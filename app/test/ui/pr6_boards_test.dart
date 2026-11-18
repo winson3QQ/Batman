@@ -114,7 +114,7 @@ void main() {
     }, check: (t) {
       expect(find.text('第 1 行：$f1'), findsOneWidget);
       expect(find.text('第 2 行：$f2'), findsOneWidget);
-      expect(find.text('第 3 行不合格：不是節點接受的格式：要是 ssh-ed25519 公鑰，後面的註解最多 40 個英數字元'), findsOneWidget);
+      expect(find.text('第 3 行不合格：不是節點接受的格式：要是 ssh-ed25519 公鑰，後面的註解最多 40 個可列印 ASCII 字元'), findsOneWidget);
       expect(find.text(sshReplaceNote), findsOneWidget);
       expect(t.widget<BatButton>(find.byKey(const Key('ssh-send'))).onPressed, isNull);
     }),

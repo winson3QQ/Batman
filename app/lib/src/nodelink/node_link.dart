@@ -155,8 +155,11 @@ class NodeLink implements LeaseListener {
   /// for a record that is gone ([_dropGoneTeams]); a page change keeps it. Never logged (254 T-A9).
   final Map<String, TeamRead> teams = {};
 
-  /// D5(c): the team sections of records no longer on the phone go with them.
-  void _dropGoneTeams() => teams.removeWhere((id, _) => !core.states.containsKey(id));
+  /// D5(c): the team sections (and the read times, review pr6 A-4) of records no longer on the phone go with them.
+  void _dropGoneTeams() {
+    teams.removeWhere((id, _) => !core.states.containsKey(id));
+    readWall.removeWhere((id, _) => !core.states.containsKey(id));
+  }
 
   /// R8: a read's hint for [id], kept only while [id]'s page is open (a late one after leaving is dropped); an empty
   /// line removes it. Fires [changed] when it changes.
@@ -635,7 +638,8 @@ class NodeLink implements LeaseListener {
     final t = now();
     final accepted = core.result(t, a, o);
     // the wall time of a read; a 2' is a read too (its own time, not the last body's: PR 2 review r2 D-m6)
-    if (o.res == Res.body) readWall[a.id] = wall();
+    // (review pr6 A-4: only a read the core took; a dropped one leaves no time behind, e.g. for a record gone)
+    if (accepted && o.res == Res.body) readWall[a.id] = wall();
     // #329 PR 6 D5(c): the team section of this read, only when the core took the read (not a cancelled round, not
     // a record gone, not an error-code answer), with the very readAt / readWall just written for it
     final team = o.team;

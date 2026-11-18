@@ -161,6 +161,8 @@ void main() {
     r.prober.hold!.complete();
     await r.clock.run(3000);
     expect(r.nl.teams, isEmpty);
+    // review pr6 A-4 (negative control: readWall written before / without `accepted` -> FAIL)
+    expect(r.nl.readWall, isEmpty, reason: 'a read the core dropped leaves no read time');
   });
 
   test('node/<id> removed (records read again at a lease release) -> its team goes; a page change keeps it', () async {
@@ -176,5 +178,6 @@ void main() {
     await r.clock.run(500);
     expect(r.nl.core.states, isEmpty);
     expect(r.nl.teams, isEmpty);
+    expect(r.nl.readWall, isEmpty, reason: 'review pr6 A-4: its read time goes too (negative control: not cleared -> FAIL)');
   });
 }

@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 5 plan v16 §2.6: what the team pages keep in memory (design §4.1 邀請 controller / 移除 controller).
 // Nothing here is written to a record or to UiState, and nothing here decides anything (T15, T-R1): an app that is
 // killed starts with both empty, which is the design's accepted behaviour.

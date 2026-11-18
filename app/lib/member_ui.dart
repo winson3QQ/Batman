@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #254 app — remote invite screens (254-app-member-join v6.1 §5-1, §5-6, §8). Plain widgets with their actions
 // passed in (no BLE, no Rust, no platform channel here), so the screen gates are widget-tested:
 // - the two SAS screens carry the R22 line and call their action only when the button is pressed, with the SAS

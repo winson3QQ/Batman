@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 5 plan v16 §2.7 (boards 8.1, 7.1, 7.3–7.7, 8.2): the leader's team pages. The steps are the old console's
 // (_members, _makeInvite, _checkRequest, SasConfirmView; nodes.dart:1311-1344, :798-864) unchanged: every record
 // write is an OfflineOp (R10, re-read under the lease R11), the codes go through CodeView (R1–R4), the confirmation

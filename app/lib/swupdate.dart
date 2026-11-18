@@ -8,6 +8,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'say.dart' show SayLine;
 import 'src/rust/api/swupdate.dart';
 import 'ui/theme.dart';
 import 'ui/widgets.dart';
@@ -376,8 +377,8 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
         body: [
           if (hero case (final look, final text)) StatusHero(key: const Key('sw-hero'), look: look, text: text),
           if (a != null && a.text.isNotEmpty && hero?.$2 != a.text) // (said once: not again under the status area)
-            Text(a.text, style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, height: 1.4, color: t.ink)),
-          if (a != null && a.note.isNotEmpty) Text(a.note, style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+            SayLine(a.text, style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, height: 1.4, color: t.ink)),
+          if (a != null && a.note.isNotEmpty) SayLine(a.note, style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
           if (a != null && a.percent >= 0) LinearProgressIndicator(value: a.percent / 100),
           if (uploading && a != null) ...[
             LinearProgressIndicator(value: a.size > BigInt.zero ? _sent / a.size.toDouble() : null),

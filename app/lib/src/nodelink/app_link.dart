@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 §4.1 / §4.2: the app's one radio, lease registry, BleGate and NodeLink, built once after the startup check.
 // Monotonic time (a Stopwatch) for the core; dart:async Timers for the waits.
 import 'dart:async';

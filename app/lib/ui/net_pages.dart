@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 3 §2.4 / §2.5 / §2.8 (design §5.4): the network pages — 4.1 (the form: make or join, which nodes),
 // NetRunPage (one node after the other, then the result: one route, two stages), CheckNetPage (檢查網路).
 //

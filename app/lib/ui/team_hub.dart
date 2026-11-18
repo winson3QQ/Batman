@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 5 R15 (§2.10 / §2.12): 「隊伍與邀請」 — the old console's member buttons, every row always there (no record
 // looked at); the page a row opens says why when the phone holds nothing it can use. Dev builds only (F14 / T-S5).
 import 'package:flutter/material.dart';

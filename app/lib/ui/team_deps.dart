@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 5 plan v16: the app's parts for the team pages — OfflineOp (R10), its platform, sendNewKey (R17), and the
 // small readers every team page uses. Tests build their own fakes of the same shapes.
 

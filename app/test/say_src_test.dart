@@ -10,7 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 /// Where a sentence would be shown as is.
 final _rules = <String, RegExp>{
   // (Selectable)Text: #329 PR 6's dev pages show node answers in a SelectableText
-  'Text(<sentence>)': RegExp(r'\b(?:Selectable)?Text\(\s*(?!screenText\()[\w!?.]*\b(?:detail|line|text|_line|_note|note|_text)\b(?![\w(])', multiLine: true),
+  'Text(<sentence>)': RegExp(r'\b(?:Selectable)?Text\(\s*(?!screenText\()[\w!?.]*\b(?:detail|line|text|_line|_note|note|_text|_report|only)\b(?![\w(])', multiLine: true),
   'Text(<literal with \$e>)': RegExp(r"""\b(?:Selectable)?Text\(\s*'[^']*\$\{?e\b"""),
   'title: <sentence>': RegExp(r'\btitle:\s*(?!screenText\()[\w!?.]*\.(?:detail|line)\b'),
   'SnackBar(<sentence>)': RegExp(r'SnackBar\([^;]*\.(?:detail|line)\b'),
@@ -30,7 +30,8 @@ List<File> _files() {
   for (final d in ['lib/ui']) {
     out.addAll(Directory(d).listSync(recursive: true).whereType<File>().where((f) => f.path.endsWith('.dart')));
   }
-  out.addAll([File('lib/claim.dart'), File('lib/member_ui.dart')]);
+  // review pr6 A-2 / B-4: main.dart (the startup page) and swupdate.dart (Rust's Screen.text / note) too
+  out.addAll([File('lib/claim.dart'), File('lib/member_ui.dart'), File('lib/main.dart'), File('lib/swupdate.dart')]);
   return out;
 }
 
@@ -65,7 +66,7 @@ void main() {
     expect(fs.length, greaterThanOrEqualTo(20));
     // #329 PR 6: the new pages that show Rust sentences (dev pages, 診斷, 全隊) are in the scan
     final names = fs.map((f) => f.path.replaceAll('\\', '/')).toList();
-    for (final p in ['lib/ui/dev_pages.dart', 'lib/ui/diag_page.dart', 'lib/ui/team_status_page.dart', 'lib/ui/settings_pages.dart']) {
+    for (final p in ['lib/ui/dev_pages.dart', 'lib/ui/diag_page.dart', 'lib/ui/team_status_page.dart', 'lib/ui/settings_pages.dart', 'lib/main.dart', 'lib/swupdate.dart']) {
       expect(names.any((n) => n.endsWith(p)), isTrue, reason: p);
     }
     for (final f in fs) {
@@ -84,6 +85,8 @@ void main() {
     expect(_rules['Text(<sentence>)']!.hasMatch('Text(screenText(_line))'), isFalse);
     expect(_rules['Text(<sentence>)']!.hasMatch('SelectableText(_text, key: k)'), isTrue);
     expect(_rules['Text(<sentence>)']!.hasMatch('SelectableText(screenText(_text))'), isFalse);
+    expect(_rules['Text(<sentence>)']!.hasMatch('Text(_report!, style: s)'), isTrue); // review pr6 B-4
+    expect(_rules['Text(<sentence>)']!.hasMatch('Text(v.only, key: k)'), isTrue);
     expect(_rules['Text(<literal with \$e>)']!.hasMatch("Text('出錯：\$e')"), isTrue);
     expect(_rules['title: <sentence>']!.hasMatch('BatBanner(title: st.detail)'), isTrue);
     expect(_rules['SnackBar(<sentence>)']!.hasMatch('SnackBar(content: Text(r.line))'), isTrue);
