@@ -44,7 +44,7 @@ class HomeInputs {
   });
   final List<NodeInfo> nodes;
   final Why? blocked; // Bluetooth off / no permission / keys
-  final bool firstRounds; // this run's first two rounds are not over
+  final bool firstRounds; // some node's first two rounds of this run are not over (#329 PR 7 T8)
   final int todos;
   final NetRecords records; // row 6's button
 }
@@ -191,8 +191,9 @@ String whyNext(Why w) => switch (w) {
       Why.notFound => '節點可能沒開機、還在開機，或離手機太遠。app 會持續自動重試，連上後這裡會自己更新。',
       Why.identity => '這台的身分證明和手機記錄的不同：可能是被重燒過，也可能是別的裝置冒充。不要在它上面做任何設定，請找維修人員確認。',
       Why.refused => '這台節點不接受這支手機的登入（可能已被重設或交給別人）。請找維修人員。',
-      Why.bluetoothOff => '請打開手機的藍牙。打開後 app 會自動重新讀取。',
-      Why.noPermission => '請回首頁按「允許藍牙權限」。',
+      // #329 PR 7 T6: the node page shows the button these two name, right below
+      Why.bluetoothOff => '請按下面的「開啟藍牙設定」打開手機的藍牙。打開後 app 會自動重新讀取。',
+      Why.noPermission => '請按下面的「允許藍牙權限」。',
       Why.keys => '這支手機的金鑰現在不能用。請重新開啟 app；一直如此請找維修人員。',
     };
 

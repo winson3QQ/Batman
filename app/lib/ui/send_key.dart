@@ -14,12 +14,16 @@ import 'widgets.dart';
 const kSendKey = '把新密碼送給節點';
 
 class SendKeyButton extends StatefulWidget {
-  const SendKeyButton({super.key, required this.app, required this.id, this.row = false});
+  const SendKeyButton({super.key, required this.app, required this.id, this.row = false, this.off = false});
   final AppLink app;
   final String id;
 
   /// true: a row (更多); false: a button (the hint card)
   final bool row;
+
+  /// #329 PR 7 T6: Bluetooth off or no permission (nothing can be sent): the button is a greyed secondary one, so the
+  /// status area's Bluetooth button is the page's only primary one; the widget (and a result it shows) stays
+  final bool off;
 
   @override
   State<SendKeyButton> createState() => _SendKeyButtonState();
@@ -47,7 +51,10 @@ class _SendKeyButtonState extends State<SendKeyButton> {
       if (widget.row)
         BatRow(key: Key('send-key-${widget.id}'), icon: Icons.vpn_key_outlined, title: kSendKey, enabled: !_running, onTap: _send)
       else
-        BatButton(kSendKey, key: Key('send-key-${widget.id}'), onPressed: _running ? null : _send),
+        BatButton(kSendKey,
+            key: Key('send-key-${widget.id}'),
+            kind: widget.off ? BtnKind.secondary : BtnKind.primary,
+            onPressed: _running || widget.off ? null : _send),
       if (s != null)
         Padding(
           padding: const EdgeInsets.all(12),

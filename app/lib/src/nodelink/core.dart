@@ -88,6 +88,10 @@ class NodeState {
   int miss = 0; // consecutive 沒找到
   int same = 0; // consecutive 不變 (full rounds only)
   int notYetRun = 0; // consecutive 還沒輪到 (§4.3.5 「連續兩輪以上」)
+
+  /// #329 PR 7 T8: rounds of this run that ended normally and reached this node (any conclusion but 排隊中; a
+  /// cancelled round never ends, so it does not count). Only grows; [NodeLinkCore.startup] sets it to 0.
+  int roundsEnded = 0;
   Concl? last;
 
   /// The last read's screen data (Outcome.extra), kept with `view`.
@@ -170,6 +174,10 @@ class NodeLinkCore {
     return s.kind == Kind.read && !s.stale && s.readAt != null && now - s.readAt! < p.fresh;
   }
 
+  /// #329 PR 7 T8 (review B-M4 / F m-8): 「頭兩輪」 per node — fewer than two rounds that tried [id] have ended in this
+  /// run. An id without a state (its record went) is not in its first rounds.
+  bool firstRounds(String id) => (states[id]?.roundsEnded ?? 2) < 2;
+
   bool get roundIsEarly => _round?.early ?? false;
   Attempt? get running => _round?.running;
 
@@ -192,6 +200,9 @@ class NodeLinkCore {
 
   void startup(int now, Page pg, {String? node}) {
     started = true;
+    for (final s in states.values) {
+      s.roundsEnded = 0; // #329 PR 7 T8: the first rounds are this run's
+    }
     page = pg;
     pageNode = node;
     _begin(now, early: false);
@@ -568,7 +579,10 @@ class NodeLinkCore {
       final c = _conclude(r, id);
       final s = states[id]!;
       s.last = c;
-      s.notYetRun = c == Concl.notYet ? s.notYetRun + 1 : (c == Concl.queued ? s.notYetRun : 0);
+      // #329 PR 7 T8 (review E m-11): a target still 排隊中 at the end was not reached by this round; 還沒輪到 counts
+      // (the round looked for it among the devices it saw; its sentence is the one shown after the first rounds)
+      if (c != Concl.queued) s.roundsEnded++;
+      s.notYetRun =c == Concl.notYet ? s.notYetRun + 1 : (c == Concl.queued ? s.notYetRun : 0);
       switch (c) {
         case Concl.read:
           break;

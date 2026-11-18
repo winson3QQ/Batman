@@ -537,7 +537,7 @@ class _NetFormPageState extends State<NetFormPage> {
                 title: Text(_name4(id), style: TextStyle(fontSize: Fs.body, color: t.ink)),
                 subtitle: Text(
                     [
-                      nodeRowWords(nodeInfo(a, id, widget.ui), firstRounds: a.link.core.roundsRun < 3).$2,
+                      nodeRowWords(nodeInfo(a, id, widget.ui), firstRounds: a.link.core.firstRounds(id)).$2,
                       if (_makes && id == maker) '由這台建立網路',
                     ].join('　'),
                     style: TextStyle(fontSize: Fs.meta, color: t.sub)),

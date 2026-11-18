@@ -402,6 +402,8 @@ abstract final class Btn {
   static const copyText = '複製文字';
   static const clearClip = '清除剪貼簿';
   static const pasteText = '貼上文字';
+  // #329 PR 7 T7: home rows 7 / 8 with several nodes
+  static const showList = '看節點清單';
 
   static const all = {
     refresh, addNode, makeNetwork, joinNetwork, checkNetwork, seeNode, allowBluetooth, openBluetooth, tryAgain, gotIt,
@@ -409,6 +411,6 @@ abstract final class Btn {
     excludeThis, goOn, claim, seeRequest, joinTeam, openAppSettings, next, skipIntro, start, finishIt,
     nextNode, stopHere, retryNode, checkAgain, otherNode, forgetJoin, done, oldConsole,
     scanQr, pasteQr, stopRecovery, fromPending, addAnother, memberJoin,
-    copyText, clearClip, pasteText,
+    copyText, clearClip, pasteText, showList,
   };
 }
