@@ -11,6 +11,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart' show
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:batman_app/claim.dart';
+import 'package:batman_app/say.dart' show TechFold;
 import 'package:batman_app/src/nodelink/ble_gate.dart';
 import 'package:batman_app/src/nodelink/core.dart' show NodeLinkCore;
 import 'package:batman_app/src/nodelink/lease.dart';
@@ -297,6 +298,17 @@ void main() {
     expect(find.textContaining('已經被認領的節點不能再認領'), findsOneWidget);
     expect(find.textContaining('我的節點'), findsNothing);
     expect(rust.calls, isEmpty);
+  });
+
+  // #329 PR 7 T10 (design §3.4 S10): 「找到節點」 shows the last four on screen and the BLE address only under that line's
+  // 技術資訊. Negative controls: the address not in a technical part -> FAIL (on screen); no address -> FAIL (fold).
+  testWidgets('T10 S10: the found node\'s BLE address is in the technical part only', (t) async {
+    rust.statusLast4 = '9999';
+    await runClaim(t, '重新認領', findFor: const Duration(milliseconds: 800), realMs: 50);
+    expect(find.text('找到節點，後四碼 9999：未認領'), findsWidgets, reason: 'the main words: last four and state only');
+    expect(find.textContaining('BLE'), findsNothing, reason: 'no address on screen');
+    expect(find.textContaining('AA'), findsNothing);
+    expect(t.widgetList<TechFold>(find.byType(TechFold)).map((f) => f.text), contains('BLE 位址 AA'));
   });
 
   // control: nothing claimed nearby (an unclaimed node of another tail) -> only the plain message

@@ -282,8 +282,9 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
         } catch (e) {
           _log('讀不到 $id 的狀態：$e');
         }
-        _log('found $id'); // #329 S10: the BLE address only in the technical log
-        _say('找到節點，後四碼 ${(last4 ?? '----').toUpperCase()}：${stateText(state)}');
+        _log('found $id');
+        // #329 design §3.4 S10 (PR 7 T10): the BLE address under the line's 技術資訊, never in its main words
+        _say('找到節點，後四碼 ${(last4 ?? '----').toUpperCase()}：${stateText(state)}${tech('BLE 位址 $id')}');
         if (state == 'unclaimed' && last4 == want) return (id, conn);
         if (state == 'claimed' || state == 'member') _claimedNear++; // its id tail is not public: it may be this QR's node
         await conn.cancel(); // not ours: its advertising comes back
