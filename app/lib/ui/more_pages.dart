@@ -270,7 +270,9 @@ class _LeavePageState extends State<LeavePage> {
           if (gone() || !c.alive) return null;
           final p = await c.statusPage(hasNet: hasNet, hasMnet: hasMnet);
           final v = p.value;
-          return v is StatusView ? leaveFieldsOf(v) : null;
+          // #329 UX plan §4.9: on a kept session this read may be rate-limited; Rust then returns the page from
+          // before the leave, marked not fresh: that is no value (the page says the status was not read)
+          return v is StatusView && v.fresh ? leaveFieldsOf(v) : null;
         },
       );
       return last ?? const ConsoleReply(ReplyKind.notSent, leaveNotAsked);

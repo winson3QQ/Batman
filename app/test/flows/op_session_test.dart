@@ -13,7 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_node.dart' show FakeRust;
 import 'owner_console_pr4_test.dart' show P4Session;
-import 'owner_console_test.dart' show Rig;
+import 'owner_console_test.dart' show Rig, Session;
 
 /// The lease's end, seen with whether the console was still alive then.
 class Order implements LeaseListener {
@@ -27,8 +27,8 @@ class Order implements LeaseListener {
 }
 
 class Fx {
-  Fx(this.rust, {int logins = 2}) {
-    rigs = [for (var i = 0; i < logins; i++) Rig(rust, make: P4Session.new)];
+  Fx(this.rust, {int logins = 2, Session Function(FakeRust) make = P4Session.new}) {
+    rigs = [for (var i = 0; i < logins; i++) Rig(rust, make: make)];
     // one registry for the operation's own lease (each Rig's lease only carries its link)
     reg = rigs.first.reg;
   }

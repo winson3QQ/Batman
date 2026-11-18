@@ -57,7 +57,7 @@ class HintSource {
 /// R7: the hint never holds a read longer than this. #329 PR 6 D5(b): one budget for the hint and the team section.
 const hintMax = Duration(seconds: 2);
 
-class SessionProber implements Prober {
+class SessionProber implements Prober, KeptReader {
   SessionProber({
     required this.openRecord,
     required this.ownerPub,
@@ -105,6 +105,11 @@ class SessionProber implements Prober {
 
   /// After msg2: the existing 20 s (F3).
   final Duration answerMax;
+
+  /// #329 UX plan §4.1: set by NodeLink on its read prober: true = a read of [id] that ends with a body leaves its
+  /// session open and returns it in [Outcome.keep]. Null (a flow's login, tests) = never.
+  @override
+  bool Function(String id)? keepFor;
 
   @override
   Future<Outcome> probe(GateLink link, String id, {required Future<void> due, required Future<void> cancelled}) async {
@@ -169,23 +174,15 @@ class SessionProber implements Prober {
             }
           case OwnerKind.answer:
             answer?.cancel(); // #329 PR 5 R7 (K-m2): the hint's wait cannot turn a good read into a broken one
-            final v = session.statusView(hasNet: false, hasMnet: false);
-            // a status answer that is an error code (Rust row 2') is 不變, not a read (§4.3.3-4, round-5 B-M1);
-            // E_UNSUPPORTED is row 1, a definite answer
-            var o = v.row == "2'" ? Outcome(Res.errorCode, '', v) : Outcome(Res.body, v.color, v);
-            read = o;
-            // #329 PR 5 R7 / PR 6 D5(b): the hint and the team section on this session, before done() (done lets the
-            // cleanup dispose the session); one 2 s budget; over it or cancelled -> no team section (null)
-            final hs = hint;
-            if (hs != null && o.res == Res.body) {
-              final team = await Future.any<TeamSeen?>([
-                _afterRead(hs, session, id, v, () => cleaning || result.isCompleted)
-                    .timeout(hintMax, onTimeout: () => null),
-                cancelled.then((_) => null),
-              ]);
-              // (review pr6 A-6: `!result.isCompleted` is a defence only — no test can tell it: once [result] is
-              // completed, done() below ignores `o`, so the outcome is the same with or without it)
-              if (team != null && !result.isCompleted) o = Outcome.withTeam(o.res, o.view, o.extra, team);
+            var o = await _answered(session, id,
+                cancelled: cancelled, stop: () => cleaning || result.isCompleted, onRead: (r) => read = r);
+            // #329 UX plan §4.1: on the open node page the session stays open for NodeLink (after the hint / team
+            // step: the outcome was replaced there). A probe cancelled meanwhile has already ended with [read],
+            // which carries no keep, so the cleanup below runs for it.
+            if (o.res == Res.body && (keepFor?.call(id) ?? false)) {
+              inbox.handle(null, null);
+              final h = handed = LoginHandoff(id: id, link: link, inbox: inbox, session: session, sub: sub);
+              o = o.withKeep(h);
             }
             done(o);
             st = null;
@@ -254,7 +251,8 @@ class SessionProber implements Prober {
     // the cleanup never changes the outcome: each step on its own, a failure only logged
     answer?.cancel();
     final h = handed;
-    if (h != null && identical(o.extra, h)) return o; // §2.2: handed over — subscription, link, session are the flow's
+    // §2.2: handed over — subscription, link, session are the flow's (extra) or NodeLink's (keep, #329 UX plan §4.1)
+    if (h != null && (identical(o.extra, h) || identical(o.keep, h))) return o;
     inbox.handle(null, null);
     try {
       await sub?.cancel();
@@ -266,6 +264,95 @@ class SessionProber implements Prober {
     } catch (e) {
       log?.call('probe $id cleanup: dispose ${e.runtimeType} $e');
     }
+    return o;
+  }
+
+  /// The `answer` step of a status read on [session], for [probe] and [read]: Rust's status view as the outcome,
+  /// given to [onRead] at once, then the hint / team step on the same session. [freshOnly]: a page Rust marks not
+  /// fresh (the node answered E_RATE and Rust kept the page before it) is no read.
+  Future<Outcome> _answered(OwnerSession session, String id,
+      {required Future<void> cancelled,
+      required bool Function() stop,
+      required void Function(Outcome o) onRead,
+      bool freshOnly = false}) async {
+    final v = session.statusView(hasNet: false, hasMnet: false);
+    if (freshOnly && !v.fresh) return const Outcome(Res.noResponse);
+    // a status answer that is an error code (Rust row 2') is 不變, not a read (§4.3.3-4, round-5 B-M1);
+    // E_UNSUPPORTED is row 1, a definite answer
+    var o = v.row == "2'" ? Outcome(Res.errorCode, '', v) : Outcome(Res.body, v.color, v);
+    onRead(o);
+    // #329 PR 5 R7 / PR 6 D5(b): the hint and the team section on this session, before the caller ends the read (that
+    // lets the cleanup dispose the session); one 2 s budget; over it or cancelled -> no team section (null)
+    final hs = hint;
+    if (hs != null && o.res == Res.body) {
+      final team = await Future.any<TeamSeen?>([
+        _afterRead(hs, session, id, v, stop).timeout(hintMax, onTimeout: () => null),
+        cancelled.then((_) => null),
+      ]);
+      // (review pr6 A-6: `!stop()` is a defence only — no test can tell it: once the read has ended, the caller
+      // ignores this outcome, so the result is the same with or without it)
+      if (team != null && !stop()) o = Outcome.withTeam(o.res, o.view, o.extra, team);
+    }
+    return o;
+  }
+
+  /// #329 UX plan §4.4: one status read on the kept session [h] (two requests: status, then info). A page that is
+  /// not fresh is no answer; an `ended` step, any other step and a thrown error are `broken`. A cancelled read ends
+  /// with the page it had read, else no answer. Sets the inbox handler for its requests and clears it when it
+  /// returns; closes and disposes nothing; never completes with an error.
+  @override
+  Future<Outcome> read(LoginHandoff h, {required Future<void> cancelled}) async {
+    final session = h.session;
+    if (session == null) return const Outcome(Res.broken);
+    final id = h.id;
+    final result = Completer<Outcome>();
+    void done(Outcome o) {
+      if (!result.isCompleted) result.complete(o);
+    }
+
+    void broke(String where, Object e) {
+      log?.call('kept read $id: ${e.runtimeType} $e $where');
+      done(const Outcome(Res.broken));
+    }
+
+    Outcome? read;
+    unawaited(cancelled.then((_) => done(read ?? const Outcome(Res.noResponse))));
+
+    Future<void> run(OwnerStep? st) async {
+      while (st != null && !result.isCompleted) {
+        switch (st.kind) {
+          case OwnerKind.write:
+            for (final f in st.frames) {
+              if (result.isCompleted) return;
+              await h.link.write(Char.rx, f);
+            }
+            st = null;
+          case OwnerKind.answer:
+            done(await _answered(session, id,
+                cancelled: cancelled, stop: () => result.isCompleted, onRead: (r) => read = r, freshOnly: true));
+            st = null;
+          default:
+            log?.call('kept read $id: step ${st.kind.name}');
+            done(const Outcome(Res.broken));
+            st = null;
+        }
+      }
+    }
+
+    h.inbox.handle((f) {
+      if (result.isCompleted) return;
+      final OwnerStep? st;
+      try {
+        st = session.onFrame(frame: f);
+      } catch (e) {
+        broke('on a frame', e);
+        return;
+      }
+      run(st).catchError((Object e) => broke('after a frame', e));
+    }, (Object e) => broke('on the subscription', e));
+    unawaited(Future.sync(() => run(session.requestStatusPage())).catchError((Object e) => broke('', e)));
+    final o = await result.future;
+    h.inbox.handle(null, null);
     return o;
   }
 

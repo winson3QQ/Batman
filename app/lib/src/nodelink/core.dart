@@ -41,10 +41,16 @@ class Rec {
 enum Res { body, errorCode, undecryptable, certRejected, refusedForbidden, refusedOther, noResponse, broken }
 
 class Outcome {
-  const Outcome(this.res, [this.view = '', this.extra]) : team = null;
+  const Outcome(this.res, [this.view = '', this.extra])
+      : team = null,
+        keep = null;
 
   /// #329 PR 6 D5(b): a read's outcome with the team section worked out on its session.
-  const Outcome.withTeam(this.res, this.view, this.extra, this.team);
+  const Outcome.withTeam(this.res, this.view, this.extra, this.team) : keep = null;
+  const Outcome._kept(this.res, this.view, this.extra, this.team, this.keep);
+
+  /// #329 UX plan §4.1: this outcome with [keep] set.
+  Outcome withKeep(Object keep) => Outcome._kept(res, view, extra, team, keep);
   final Res res;
   final String view;
 
@@ -55,6 +61,11 @@ class Outcome {
   /// `Object?` so this file stays free of bridge types; only NodeLink reads it, and only after [NodeLinkCore.result]
   /// accepted the read.
   final Object? team;
+
+  /// #329 UX plan §4.1: the open session of this read (NodeLink's `LoginHandoff`), left open for NodeLink to keep;
+  /// null = the prober cleaned up as always. `Object?` as [team]; only NodeLink's `_run` reads it, and it parks or
+  /// destroys it.
+  final Object? keep;
 }
 
 class Attempt {
@@ -528,6 +539,39 @@ class NodeLinkCore {
         }
         r.noResp.add(a.addr);
     }
+    return true;
+  }
+
+  /// #329 UX plan §4.4: [id] is a target of the active round and has no body and no error answer yet (a status read
+  /// on the kept link is due).
+  bool keptNeeds(String id) {
+    final t = _round?.t[id];
+    return t != null && !t.body && !t.err;
+  }
+
+  /// #329 UX plan §4.4: a status read on the kept link, without an attempt: a body is recorded as [result] records
+  /// one; an error code too, but without a retry (B6: the kept session stays, the round ends at its window). True =
+  /// taken into this round. False (nothing recorded): no round, [id] not a target or its record gone, any other
+  /// outcome.
+  bool keptRead(int now, String id, String addr, Outcome o) {
+    final t = _round?.t[id];
+    final s = states[id];
+    if (t == null || s == null) return false;
+    switch (o.res) {
+      case Res.body:
+        isY[addr] = id;
+        notY[addr]?.remove(id);
+        t.body = true;
+        s.extra = o.extra;
+        _read(s, now, o.view);
+      case Res.errorCode:
+        isY[addr] = id;
+        t.err = true;
+        s.errExtra = o.extra;
+      default:
+        return false;
+    }
+    _log('${_s(now)}   kept $id -> ${o.res.name}${o.view.isEmpty ? '' : ' ${o.view}'}');
     return true;
   }
 

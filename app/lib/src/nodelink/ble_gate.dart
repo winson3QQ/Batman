@@ -57,9 +57,14 @@ class GateScan {
 }
 
 class GateLink {
-  GateLink._(this.gate, this.token, this.address);
+  GateLink._(this.gate, this._token, this.address);
   final BleGate gate;
-  final Token token;
+
+  /// #329 UX plan §4.7: null while NodeLink keeps the link parked (every GATT call is refused); written only by
+  /// [BleGate.pass].
+  Token? _token;
+  Token? get token => _token;
+  Cancel? _parked; // the gate's 120 s timer of a parked link
   final String address;
   StreamSubscription<bool>? _sub;
   final _state = StreamController<bool>.broadcast();
@@ -67,6 +72,9 @@ class GateLink {
   bool _down = false;
   Completer<void>? _gone;
   bool get open => _open;
+
+  /// Open, and no down seen from either source (the connect stream, the backend's linkStates).
+  bool get up => _open && !_down;
 
   /// true = connected, false = disconnected.
   Stream<bool> get state => _state.stream;
@@ -84,7 +92,8 @@ class GateLink {
   }
 
   void _usable(String what) {
-    if (!_open || _down || !gate.reg.valid(token)) throw Refused('$what on a closed link or a revoked token');
+    final t = _token;
+    if (!_open || _down || t == null || !gate.reg.valid(t)) throw Refused('$what on a closed link or a revoked token');
   }
 
   Future<int> requestMtu(int mtu) async {
@@ -111,6 +120,8 @@ class GateLink {
   Future<void> close() async {
     if (!_open) return;
     _open = false;
+    _parked?.call();
+    _parked = null;
     if (!_down) _gone = Completer<void>();
     try {
       await _sub?.cancel(); // cancelling the connect subscription disconnects (flutter_reactive_ble)
@@ -161,6 +172,9 @@ class BleGate implements LeaseListener {
   static const closeMax = Duration(seconds: 5);
   static const scanWindow = Duration(seconds: 30);
   static const scanMax = 4;
+
+  /// #329 UX plan §4.5: a parked link nobody passes on for this long is closed by the gate (two 60 s rounds).
+  static const parkedMax = Duration(seconds: 120);
 
   final List<GateScan> _scans = [];
   final List<GateLink> _links = [];
@@ -244,6 +258,25 @@ class BleGate implements LeaseListener {
     _links.add(l);
     l._sub = backend.connect(address, timeout).listen(l._on, onError: (_) => l._on(false), onDone: () => l._on(false));
     return l;
+  }
+
+  /// #329 UX plan §4.7: give an open link to another token, or park it (null: no GATT call passes until the next
+  /// pass; the gate closes it after [parkedMax]). Refused for a link that is not up and for a token that is not the
+  /// current one; the caller then closes the link. Only NodeLink calls this.
+  void pass(GateLink l, Token? t) {
+    if (!l.up) throw Refused('pass on a link that is not up');
+    if (t != null && !reg.valid(t)) {
+      _refuse('pass: $t is not the current token');
+      throw Refused('not the current token');
+    }
+    l._parked?.call();
+    l._parked = null;
+    l._token = t;
+    if (t == null) {
+      l._parked = after(parkedMax, () {
+        if (l._open && l._token == null) l.close();
+      });
+    }
   }
 
   /// Close what a token opened: the registry took it back (§4.4 cap), a lease was released (its leftovers), or NodeLink

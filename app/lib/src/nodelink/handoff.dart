@@ -59,6 +59,7 @@ class LoginHandoff {
     this.session,
     this.sub,
     this.detail = '',
+    this.hook,
   });
   final String id;
   final GateLink link;
@@ -71,12 +72,32 @@ class LoginHandoff {
   /// The `loggedIn` step's text (the old console showed it as [LOGGED_IN]).
   final String detail;
 
+  /// #329 UX plan §4.3: NodeLink's hook on a handoff it handed out. [close] calls it once instead of tearing the
+  /// link down; it parks the link or destroys it. Null (tests, a handoff not from NodeLink) = close as before.
+  final Future<void> Function(LoginHandoff h, {required bool reusable})? hook;
+
   bool _closed = false;
   bool get closed => _closed;
 
+  /// §4.2: a new object over the same link, inbox, session and subscription (this one's [_closed] is one-shot, so
+  /// every lending and every park has its own object).
+  LoginHandoff again({Future<void> Function(LoginHandoff h, {required bool reusable})? hook}) =>
+      LoginHandoff(id: id, link: link, inbox: inbox, session: session, sub: sub, detail: detail, hook: hook);
+
+  /// The holder is done. [reusable]: the session only read, and may be used again (§4.3; only the hook reads it).
+  /// Idempotent; shares its one shot with [destroy]. Returns when the link is gone or parked.
+  Future<void> close({bool reusable = false}) {
+    final k = hook;
+    if (k == null) return destroy();
+    if (_closed) return Future.value();
+    _closed = true;
+    inbox.handle(null, null);
+    return k(this, reusable: reusable);
+  }
+
   /// Idempotent: stop handling frames, cancel the subscription, close the link (waits until it is gone), dispose the
   /// session. Each step on its own; a failure never stops the next.
-  Future<void> close() async {
+  Future<void> destroy() async {
     if (_closed) return;
     _closed = true;
     inbox.handle(null, null);

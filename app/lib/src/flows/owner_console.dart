@@ -413,11 +413,13 @@ class OwnerConsole {
       String? unclear,
       String? timeoutLine,
       Object? Function(OwnerSession s, OwnerStep st)? derive,
-      bool endedAfterSent = false}) async {
+      bool endedAfterSent = false,
+      bool read = false}) async {
     final s = _session;
     if (_closed || s == null) return _reply(ReplyKind.notSent, askNoLink, alive: false);
     if (!lease.valid) return _reply(ReplyKind.leaseLost, askNoLink);
     if (_busy) throw StateError('owner console: one request at a time');
+    if (!read) _onlyReads = false;
     _busy = true;
     _waitFor = wait;
     _waitLine = timeoutLine ?? '[REQ_FAIL] ${wait.inSeconds} 秒內節點沒有回應（結果不明；下次操作會重新連線）';
@@ -566,7 +568,7 @@ class OwnerConsole {
   /// read). 8.3 pairs them with the record's dac hash, as the old `_remove` did.
   Future<ConsoleReply> info() {
     _keyError = false;
-    return _ask((s) => s.requestInfo(), derive: (s, st) => st.info.isEmpty ? null : st.info);
+    return _ask((s) => s.requestInfo(), derive: (s, st) => st.info.isEmpty ? null : st.info, read: true);
   }
 
   // ---- #329 PR 4 §2.2: settings, leave, the status page, the software update ------------------------------------
@@ -574,7 +576,7 @@ class OwnerConsole {
   /// `settings/get` (nodes.dart:1672): the answer's [ConsoleReply.settings] is the current values.
   Future<ConsoleReply> settings() {
     _keyError = false;
-    return _ask((s) => s.requestSettings());
+    return _ask((s) => s.requestSettings(), read: true);
   }
 
   /// `settings/set` {2: country} (nodes.dart:1694). Waits [joinWait] (the node takes up to about 230 s: D2); a lost link
@@ -666,6 +668,10 @@ class OwnerConsole {
 
   void Function()? _stopWait;
 
+  /// #329 UX plan §4.3: every request this console made was `info` or `settings` (a read). Rust's session keeps
+  /// state after anything else, so only such a session may be used again.
+  bool _onlyReads = true;
+
   /// Idempotent (plan §2.2): stop taking frames, wait for the step in progress (seal / CAS / netPersisted; at most
   /// 10 s), then the subscription, the link (until it is gone) and the session. Every caller waits for the same close
   /// (code review C N-2: a second caller does not return before the link is gone).
@@ -688,8 +694,11 @@ class OwnerConsole {
     try {
       await _chain.timeout(const Duration(seconds: 10), onTimeout: () {});
     } catch (_) {}
+    // #329 UX plan §4.3: the session may be used again only when it is still good here (an unclear answer, a lost
+    // link and a request cut by this close have set it to null) and it only read
+    final reusable = _session != null && _onlyReads;
     _session = null;
-    await h.close();
+    await h.close(reusable: reusable);
   }
 }
 
