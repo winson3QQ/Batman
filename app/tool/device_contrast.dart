@@ -120,7 +120,11 @@ class BoxContrast {
 }
 
 /// Measures the box [x1, x2) × [y1, y2) of [img] (clipped to the picture; null = nothing of it is inside).
-BoxContrast? measure(Rgba img, int x1, int y1, int x2, int y2, {double minShare = 0.02}) {
+///
+/// The foreground must cover [minShare] of the box's NON-background pixels and at least [minAbs] of the whole box: a
+/// big card row with a short label has few ink pixels against the box but most of the non-background ones (S20,
+/// 2026-11-18: by the whole box the card's 1-px border won over the label), and a lone speck stays no foreground.
+BoxContrast? measure(Rgba img, int x1, int y1, int x2, int y2, {double minShare = 0.02, double minAbs = 0.002}) {
   x1 = x1.clamp(0, img.width);
   x2 = x2.clamp(0, img.width);
   y1 = y1.clamp(0, img.height);
@@ -136,10 +140,11 @@ BoxContrast? measure(Rgba img, int x1, int y1, int x2, int y2, {double minShare 
   final n = (x2 - x1) * (y2 - y1);
   final bg = hist.entries.reduce((a, b) => b.value > a.value ? b : a).key;
   final lbg = luminance(bg);
+  final nonBg = n - hist[bg]!;
   int? fg;
   var best = -1.0;
   for (final e in hist.entries) {
-    if (e.key == bg || e.value < minShare * n) continue;
+    if (e.key == bg || e.value < minShare * nonBg || e.value < minAbs * n) continue;
     final d = (luminance(e.key) - lbg).abs();
     if (d > best) {
       best = d;
@@ -198,7 +203,9 @@ List<String> report(List<UiNode> nodes, Rgba img, {double min = 4.5}) {
       rows.add('SECURE?\t-\t${hex(first)}\t-\t$at\t$shown');
       continue;
     }
-    final m = measure(img, n.x1, n.y1, n.x2, n.y2);
+    // inset 6 px (when the box allows it): a card's own border is not the text's background or foreground
+    final i = (n.x2 - n.x1 > 24 && n.y2 - n.y1 > 24) ? 6 : 0;
+    final m = measure(img, n.x1 + i, n.y1 + i, n.x2 - i, n.y2 - i);
     if (m == null) {
       rows.add('OFF\t-\t-\t-\t$at\t$shown');
     } else if (m.fg == null) {
