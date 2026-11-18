@@ -67,23 +67,19 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // design 254-app-s1 §4.1: the key uses of the channel (keyLevels / signOwner / signAdmin / ecdh / seal) are
-    // KeyHandlers' (pure, JVM-tested): it reads the four live levels and KeyPolicy decides before a key is touched,
-    // whatever the Dart side checked or skipped. Here a call is only forwarded, off the UI thread (every Keystore read
-    // is), and the answer handed back; [wipe] zeroes a secret (ECDH z) once handed over. Not gated: `open` (record
-    // decryption), `publicKeys`, and `firstRun` (generation + self-test at first install).
+    // design 254-app-s1 §4.1: the key uses of the channel (keyLevels / signOwner / signAdmin / ecdh / seal / open) are
+    // KeyHandlers' (pure, JVM-tested): it reads the live levels (`open`: the record AES key's only, #329 PR 7 T1) and
+    // KeyPolicy decides before a key is touched, whatever the Dart side checked or skipped. Here a call is only
+    // forwarded, off the UI thread (every Keystore read is), and the answer handed back (KeyAnswer.deliver); [wipe]
+    // zeroes a secret (ECDH z, an opened record: #329 PR 7 T2) once handed over. Not gated: `publicKeys`, and
+    // `firstRun` (generation + self-test at first install).
     private fun keyCall(result: MethodChannel.Result, wipe: Boolean = false, f: (KeyHandlers) -> KeyAnswer) = Thread {
         val a = try {
             f(Keys().handlers(BuildConfig.DEV_TRUST))
         } catch (e: Exception) {
             KeyAnswer.Err("keystore", "${e.javaClass.simpleName}: ${e.message}", null) // the Keystore itself did not open
         }
-        runOnUiThread {
-            when (a) {
-                is KeyAnswer.Ok -> { result.success(a.value); if (wipe) (a.value as? ByteArray)?.fill(0) }
-                is KeyAnswer.Err -> result.error(a.code, a.message, a.details)
-            }
-        }
+        runOnUiThread { KeyAnswer.deliver(a, wipe, result::success, result::error) }
     }.start()
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -137,11 +133,9 @@ class MainActivity : FlutterActivity() {
                 // Dev builds only, a P-256 peer (KeyHandlers.ecdh); z is zeroed once handed over; any failure is an
                 // error and the caller writes nothing.
                 "ecdh" -> keyCall(result, wipe = true) { it.ecdh(call.argument<ByteArray>("peer")) }
-                "open" -> Thread {
-                    val sealed = call.argument<ByteArray>("sealed"); val aad = call.argument<ByteArray>("aad")
-                    val r = runCatching { Keys().open(requireNotNull(sealed) { "no record" }, requireNotNull(aad) { "no aad" }) }
-                    runOnUiThread { r.fold({ result.success(it) }, { result.error("keystore", "${it.javaClass.simpleName}: ${it.message}", null) }) }
-                }.start()
+                // #329 PR 7 T1 / T2: record decryption, gated on the record AES key's level only (KeyHandlers.open);
+                // the plaintext is zeroed once handed over
+                "open" -> keyCall(result, wipe = true) { it.open(call.argument<ByteArray>("sealed"), call.argument<ByteArray>("aad")) }
                 "seal" -> keyCall(result) { it.seal(call.argument<ByteArray>("plain"), call.argument<ByteArray>("aad")) }
                 // #329 PR 5 plan v16 §2.1 / R1: an app-made upper-case hex code -> {size, version, bits}; error `qr` (fixed
                 // message, never the text) when it is not one

@@ -18,16 +18,29 @@ import org.junit.Test
 // key is used. Negative controls: the gate call removed in KeyHandlers.use, the levels read replaced by constant
 // hardware levels, or sig_enc mapped back to SIGN_OWNER -> these FAIL.
 class KeyHandlersTest {
-    /** Records every call; [levels] is what the Keystore answers (null = it throws, like an unreadable key). */
-    private class FakeKeys(var levels: Map<KeyRole, Int?>?) : KeyUses {
+    /**
+     * Records every call; [levels] is what the Keystore answers (null = it throws, like an unreadable key); a key in
+     * [unreadable] throws when its own level is read, and makes levels() (all four) throw too.
+     */
+    private class FakeKeys(var levels: Map<KeyRole, Int?>?, val unreadable: Set<KeyRole> = emptySet()) : KeyUses {
         val calls = mutableListOf<String>()
-        override fun levels(): Map<KeyRole, Int?> { calls += "levels"; return levels ?: throw IllegalStateException("keystore busy") }
+        override fun levels(): Map<KeyRole, Int?> {
+            calls += "levels"
+            if (unreadable.isNotEmpty()) throw IllegalStateException("keystore busy: $unreadable")
+            return levels ?: throw IllegalStateException("keystore busy")
+        }
+        override fun level(role: KeyRole): Int? {
+            calls += "level $role"
+            if (role in unreadable) throw IllegalStateException("keystore busy: $role")
+            return (levels ?: throw IllegalStateException("keystore busy"))[role]
+        }
         override fun sign(role: KeyRole, input: ByteArray): ByteArray { calls += "sign $role"; return byteArrayOf(0x30, 1) }
         override fun ecdh(peer: PublicKey): ByteArray { calls += "ecdh"; return ByteArray(32) { 7 } }
         override fun seal(plain: ByteArray, aad: ByteArray): ByteArray { calls += "seal"; return byteArrayOf(9) }
+        override fun open(sealed: ByteArray, aad: ByteArray): ByteArray { calls += "open"; return byteArrayOf(5, 6) }
         /** this phone's owner_enc public key (bindInput binds exactly this one) */
         override fun ownerEncPub(): ByteArray = ByteArray(65) { 4 }
-        val used get() = calls.filter { it != "levels" }
+        val used get() = calls.filter { it != "levels" && !it.startsWith("level ") }
     }
 
     private val tee = KeyRole.values().associateWith<KeyRole, Int?> { TRUSTED_ENVIRONMENT }
@@ -149,5 +162,76 @@ class KeyHandlersTest {
         assertEquals(KeyAnswer.Err("keystore", "IllegalArgumentException: no input", null), KeyHandlers(k, true).signOwner(null))
         assertEquals(KeyAnswer.Err("keystore", "IllegalArgumentException: no plain", null), KeyHandlers(k, true).seal(null, byteArrayOf()))
         assertEquals(emptyList<String>(), k.used)
+    }
+
+    // #329 PR 7 T1: `open` (record decryption) passes the gate on the record AES key's level ONLY, with the same error
+    // codes as the other uses (X26 on the Dart side reads `keyLevel`). Negative controls: KeyHandlers.open without the
+    // gate (the record AES rows FAIL), or gated on all four levels / KeyOp with more keys (the other-key rows FAIL).
+    private val sealedRec = ByteArray(40) { 3 }
+
+    @Test fun open_recordAesFits_opened_onlyItsLevelRead() {
+        for (dev in listOf(true, false)) for (l in listOf(STRONGBOX, TRUSTED_ENVIRONMENT, Level.UNKNOWN_SECURE)) {
+            val k = FakeKeys(tee + (KeyRole.RECORD_AES to l))
+            val a = KeyHandlers(k, dev).open(sealedRec, byteArrayOf(1))
+            assertArrayEquals("dev=$dev aes=$l", byteArrayOf(5, 6), (a as KeyAnswer.Ok).value as ByteArray)
+            assertEquals("dev=$dev aes=$l", listOf("level RECORD_AES", "open"), k.calls)
+        }
+    }
+
+    @Test fun open_recordAesNotAllowedOrMissing_refusedAsKeyLevel_neverOpened() {
+        for (l in listOf<Int?>(SOFTWARE, Level.UNKNOWN, null, 99)) for (dev in listOf(true, false)) {
+            val k = FakeKeys(tee + (KeyRole.RECORD_AES to l))
+            assertEquals("aes=$l dev=$dev", KeyAnswer.Err("keyLevel", "RECORD_AES", l), KeyHandlers(k, dev).open(sealedRec, byteArrayOf(1)))
+            assertEquals("aes=$l dev=$dev", listOf("level RECORD_AES"), k.calls)
+        }
+    }
+
+    // the review's case (owner_console.dart:544, owner.rs:1294): another key unreadable, missing or not allowed must not
+    // make a record unopenable — the Dart callers would take a failed open for "no record" and write over it
+    @Test fun open_anotherKeyUnreadableMissingOrNotAllowed_stillOpens() {
+        val others = KeyRole.values().filter { it != KeyRole.RECORD_AES }
+        val cases = listOf(
+            "all three unreadable" to FakeKeys(tee, unreadable = others.toSet()),
+            "all three missing" to FakeKeys(tee + others.associateWith { null }),
+            "all three SOFTWARE" to FakeKeys(tee + others.associateWith { SOFTWARE }),
+        ) + others.map { "$it unreadable" to FakeKeys(tee, unreadable = setOf(it)) }
+        for ((what, k) in cases) for (dev in listOf(true, false)) {
+            k.calls.clear()
+            val a = KeyHandlers(k, dev).open(sealedRec, byteArrayOf(1))
+            assertTrue("$what dev=$dev: $a", a is KeyAnswer.Ok)
+            assertEquals("$what dev=$dev", listOf("level RECORD_AES", "open"), k.calls)
+        }
+    }
+
+    @Test fun open_recordAesUnreadable_errorKeystore_notKeyLevel_neverOpened() {
+        val k = FakeKeys(tee, unreadable = setOf(KeyRole.RECORD_AES))
+        assertEquals(KeyAnswer.Err("keystore", "IllegalStateException: keystore busy: RECORD_AES", null), KeyHandlers(k, true).open(sealedRec, byteArrayOf(1)))
+        assertEquals(emptyList<String>(), k.used)
+    }
+
+    @Test fun open_missingArgument_errorKeystore_neverOpened() {
+        val k = FakeKeys(tee)
+        assertEquals(KeyAnswer.Err("keystore", "IllegalArgumentException: no record", null), KeyHandlers(k, true).open(null, byteArrayOf(1)))
+        assertEquals(KeyAnswer.Err("keystore", "IllegalArgumentException: no aad", null), KeyHandlers(k, true).open(sealedRec, null))
+        assertEquals(emptyList<String>(), k.used)
+    }
+
+    // #329 PR 7 T2 (white box): KeyAnswer.deliver hands the answer to success, THEN zeroes a wiped ByteArray (the codec
+    // encoded it inside success). Negative control: the fill(0) removed -> the "zeroed after" assertion FAILs.
+    @Test fun deliver_wipe_zeroesTheBytesAfterSuccess_notBefore() {
+        val plain = ByteArray(16) { (it + 1).toByte() }
+        var seen: ByteArray? = null
+        KeyAnswer.deliver(KeyAnswer.Ok(plain), wipe = true, success = { seen = (it as ByteArray).copyOf() }, error = { _, _, _ -> error("no error") })
+        assertArrayEquals("success saw the plaintext", ByteArray(16) { (it + 1).toByte() }, seen)
+        assertArrayEquals("zeroed after success", ByteArray(16), plain)
+    }
+
+    @Test fun deliver_noWipe_leavesTheBytes_errorsPassedThrough() {
+        val sig = byteArrayOf(0x30, 1, 2)
+        KeyAnswer.deliver(KeyAnswer.Ok(sig), wipe = false, success = {}, error = { _, _, _ -> error("no error") })
+        assertArrayEquals(byteArrayOf(0x30, 1, 2), sig)
+        val got = mutableListOf<Any?>()
+        KeyAnswer.deliver(KeyAnswer.Err("keyLevel", "RECORD_AES", 0), wipe = true, success = { error("no success") }, error = { c, m, d -> got.addAll(listOf(c, m, d)) })
+        assertEquals(listOf<Any?>("keyLevel", "RECORD_AES", 0), got)
     }
 }

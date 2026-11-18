@@ -44,13 +44,15 @@ class Keys(private val prefix: String = "batman") {
 
     /**
      * The platform channel's key handlers over these keys: the only way to a private-key use from outside this class
-     * (sign / ecdh / seal are private), so every use passes KeyHandlers' level gate.
+     * (sign / ecdh / seal / open are private), so every use passes KeyHandlers' level gate.
      */
     fun handlers(devTrust: Boolean) = KeyHandlers(object : KeyUses {
         override fun levels() = this@Keys.levels()
+        override fun level(role: KeyRole) = this@Keys.level(role)
         override fun sign(role: KeyRole, input: ByteArray) = this@Keys.sign(role, input)
         override fun ecdh(peer: PublicKey) = this@Keys.ecdh(peer)
         override fun seal(plain: ByteArray, aad: ByteArray) = this@Keys.seal(plain, aad)
+        override fun open(sealed: ByteArray, aad: ByteArray) = this@Keys.open(sealed, aad)
         override fun ownerEncPub() = publicKey65(KeyRole.OWNER_ENC)
     }, devTrust)
 
@@ -128,7 +130,8 @@ class Keys(private val prefix: String = "batman") {
         return c.iv + ct
     }
 
-    fun open(sealed: ByteArray, aad: ByteArray): ByteArray {
+    /** #329 PR 7 T1: private — the app opens a record only through KeyHandlers.open (the record AES key's level first). */
+    private fun open(sealed: ByteArray, aad: ByteArray): ByteArray {
         require(sealed.size > 12 + 16) { "sealed record too short" }
         val c = Cipher.getInstance("AES/GCM/NoPadding").apply {
             init(Cipher.DECRYPT_MODE, ks.getKey(alias(KeyRole.RECORD_AES), null), GCMParameterSpec(128, sealed, 0, 12)); updateAAD(aad)

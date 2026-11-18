@@ -25,6 +25,11 @@ class KeysWiringLintTest {
         // round 4: the key a sig_enc may bind is owner_enc's (MK3, OWNER_SIGN, passed every JVM and emulator test)
         assertTrue("ownerEncPub must be OWNER_ENC's: $body", Regex("""\n\s*override fun ownerEncPub\(\) = publicKey65\(KeyRole\.OWNER_ENC\)(?:\n|$)""").containsMatchIn(body))
         assertTrue("exactly one ownerEncPub override: $body", Regex("""fun ownerEncPub\(""").findAll(body).count() == 1)
+        // #329 PR 7 T1: open's gate reads the record AES key's own live level (Keys.level unchanged), and open is Keys'
+        assertTrue("level must be Keys.level(role): $body", Regex("""\n\s*override fun level\(role: KeyRole\) = this@Keys\.level\(role\)\n""").containsMatchIn(body))
+        assertTrue("exactly one level override: $body", Regex("""fun level\(""").findAll(body).count() == 1)
+        assertTrue("open must be Keys.open: $body", Regex("""\n\s*override fun open\(sealed: ByteArray, aad: ByteArray\) = this@Keys\.open\(sealed, aad\)\n""").containsMatchIn(body))
+        assertTrue("Keys.open is private (only KeyHandlers reaches it)", Regex("""\n    private fun open\(sealed: ByteArray, aad: ByteArray\): ByteArray \{""").containsMatchIn(src))
     }
 
     // round 4 (A MK5): Keys.levels() is each key's own live level, not a mapped one

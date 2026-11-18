@@ -92,6 +92,7 @@ class KeyPolicyTest {
         KeyOp.SIGN_ADMIN to setOf(KeyRole.RECORD_AES, KeyRole.ADMIN_SIGN),
         KeyOp.ECDH to setOf(KeyRole.RECORD_AES, KeyRole.OWNER_ENC),
         KeyOp.SEAL to setOf(KeyRole.RECORD_AES),
+        KeyOp.OPEN to setOf(KeyRole.RECORD_AES),
     )
 
     @Test fun gateTableOperationKeyLevelFlavor() {
@@ -108,7 +109,7 @@ class KeyPolicyTest {
             }
             rows++
         }
-        assertEquals(5 * 4 * 9 * 2, rows)
+        assertEquals(6 * 4 * 9 * 2, rows)
     }
 
     @Test fun gateRefusesAKeyWithNoEntry() {
