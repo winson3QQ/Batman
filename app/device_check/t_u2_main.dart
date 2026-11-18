@@ -1,7 +1,10 @@
 // #329 T-U2 end to end (design :146; 2026-11-17 audit: only fake Rust before): the real record store (Rust), the real
 // Keystore (seal / open) and UiState together. A device-only check program (not `flutter test`, which uninstalls apps on
 // failure). It needs a hardware-backed RECORD_AES: an emulator's keystore is software level 0, which the key policy
-// refuses (PlatformException(keyLevel, RECORD_AES, 0)), so every premise fails there. Run it on a phone under a package
+// refuses (PlatformException(keyLevel, RECORD_AES, 0)) for `seal` and, since #329 PR 7 T1, for `open` too (gated on
+// the RECORD_AES level only), so every premise fails there. Kotlin's `firstRun` deliberately has no "keys already
+// there" guard (#329 PR 7 T14: the app's _install calls it only when the record store reads as holding no record, and
+// an unreadable store stops it); the guard below is this program's own. Run it on a phone under a package
 // of its own that has NEVER held keys or records (the program refuses otherwise, t_u2_guard.dart — on 2026-11-18 it was
 // run under dev3, which held node 7C31, and its `firstRun` destroyed that node's owner key). `tu2` is NOT in
 // build.gradle.kts: add it for the run only (a copy of the dev block with applicationIdSuffix ".tu2"), never commit it:

@@ -66,4 +66,38 @@ class KeyHandlersDeviceTest {
             if (!dev) assertEquals(KeyAnswer.Err("ecdh", "dev builds only", null), h.ecdh(keys.publicKey65(KeyRole.OWNER_SIGN)))
         }
     }
+
+    // #329 PR 7 T1: `open` goes through the gate on the record AES key's live level only. On the emulator (every key
+    // SOFTWARE) that is error keyLevel RECORD_AES 0; on a device whose record AES key is hardware, a sealed record opens.
+    // Then: another key deleted -> the same answer (only RECORD_AES is read); the record AES key deleted -> keyLevel
+    // RECORD_AES null. Negative controls: Keys.handlers' level override returning a constant, or KeyHandlers.open
+    // ungated -> FAIL.
+    @Test fun open_gatedOnTheLiveRecordAesLevelOnly() {
+        keys.firstRun()
+        val aes = direct(KeyRole.RECORD_AES)
+        android.util.Log.i("BMTEST", "open: RECORD_AES level $aes")
+        assertTrue("the test record AES key exists", aes != null)
+        val aad = "node/test".toByteArray()
+        val plain = "record".toByteArray()
+        for (dev in listOf(false, true)) {
+            val h = keys.handlers(dev)
+            val no = KeyPolicy.refused(KeyOp.OPEN, mapOf(KeyRole.RECORD_AES to aes), dev)
+            fun check(what: String) {
+                if (no == null) {
+                    val sealed = (h.seal(plain, aad) as KeyAnswer.Ok).value as ByteArray
+                    val a = h.open(sealed, aad)
+                    assertTrue("$what dev=$dev: $a", a is KeyAnswer.Ok && (a.value as ByteArray).contentEquals(plain))
+                } else {
+                    assertEquals("$what dev=$dev", KeyAnswer.Err("keyLevel", "RECORD_AES", aes), h.open(ByteArray(40), aad))
+                }
+            }
+            check("every key there")
+            if (!dev) {
+                keys.delete(KeyRole.OWNER_SIGN)
+                check("owner key deleted")
+            }
+        }
+        keys.delete(KeyRole.RECORD_AES)
+        assertEquals(KeyAnswer.Err("keyLevel", "RECORD_AES", null), keys.handlers(true).open(ByteArray(40), aad))
+    }
 }
