@@ -602,7 +602,7 @@ mod tests {
         assert!(store_keep_copy(dir.clone(), "net/abc".into()).is_err());
         s.remove(&node_path(&id)).unwrap();
         s.remove(&pending_path(&id)).unwrap();
-        assert!(crate::api::simple::store_has_records(dir), "copies are records");
+        assert!(crate::api::simple::store_has_records(dir).unwrap(), "copies are records");
         let _ = std::fs::remove_dir_all(d);
     }
 

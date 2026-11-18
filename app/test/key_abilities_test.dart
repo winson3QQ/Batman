@@ -72,8 +72,12 @@ class FakeRust implements RustLibApi {
   Future<String?> crateApiSimpleStoreReadMarker({required String dir}) async =>
       markerError == null ? marker : throw markerError!;
 
+  /// #329 PR 7 T14: storeHasRecords' error (Rust: the record store could not be read)
+  Object? hasRecordsError;
+
   @override
-  Future<bool> crateApiSimpleStoreHasRecords({required String dir}) async => false;
+  Future<bool> crateApiSimpleStoreHasRecords({required String dir}) async =>
+      hasRecordsError == null ? false : throw hasRecordsError!;
 
   List<String> nodes = ['0000000000000c4f2a'];
   bool uiWelcomed = false; // ui/state-v1 holds 「看過歡迎頁」
@@ -111,6 +115,7 @@ void main() {
     rust.marker = 'marker';
     rust.sweepError = null;
     rust.markerError = null;
+    rust.hasRecordsError = null;
   });
   final calls = <String>[];
 
@@ -677,6 +682,54 @@ void main() {
         expect(live(t).length, 2, reason: '#329 PR 6 D1: 認領節點 and (dev) 附近的節點');
       });
     }
+
+    // #329 PR 7 T14: no install marker and the record store cannot be read (Rust storeHasRecords -> Err: a kind's path
+    // is a plain file, a folder or an entry unreadable). Records may be there: firstRun is not called (it would make
+    // them unopenable for good), the app stays off even though every key fits, the reason with the store's technical
+    // part folded, the next step that warns against clearing data, and a retry. The negative controls of the root fix
+    // are the Rust tests (simple.rs t14_*); here the negative control is the dedicated branch in _install removed (the
+    // error then reaches _run's catch: 「啟動檢查失敗」 without 「金鑰保持原樣」 or the next step) -> FAIL.
+    testWidgets('T14: no marker, the record store unreadable -> no firstRun, keys kept, retry; never home', (t) async {
+      rust.marker = null;
+      rust.hasRecordsError = '讀不到手機裡的紀錄\u001erecord store unreadable: node: Not a directory (os error 20)\u001f';
+      mock(t, answer()); // every key fits (RECORD_AES too): only the store keeps the app off
+      AppLink.forgetForTest();
+      addTearDown(() {
+        AppLink.instance?.link.dispose();
+        AppLink.forgetForTest();
+      });
+      await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: _ScanBle())));
+      await t.pumpAndSettle();
+      expect(calls, isNot(contains('firstRun')), reason: 'no key is made over records the store could not show');
+      expect(find.byType(HomePage), findsNothing);
+      expect(AppLink.instance, isNull, reason: 'no NodeLink: the app is off');
+      expect(find.text('啟動檢查：讀不到手機裡的紀錄$recordsUnreadKept'), findsOneWidget);
+      expect(find.text('啟動檢查：讀不到手機裡的紀錄，金鑰保持原樣，沒有重建'), findsOneWidget, reason: 'the words themselves');
+      expect(find.text('關掉 App 再開、重開手機；仍然如此請找維修人員，不要清除資料或重裝'), findsOneWidget);
+      expect(find.textContaining('請清除'), findsNothing, reason: 'never advice to clear the data');
+      expect(find.textContaining('啟動檢查失敗'), findsNothing);
+      expect(find.widgetWithText(FilledButton, '再試一次'), findsOneWidget);
+      // the hero's own fold: the store's technical part
+      await t.tap(find.descendant(of: find.byKey(const Key('hero-tech')), matching: find.byType(InkWell)));
+      await t.pumpAndSettle();
+      expect(find.textContaining('record store unreadable: node: Not a directory'), findsWidgets);
+      // the retry checks again: the store reads now (no record) -> the first run, as on a first install (this mock's
+      // firstRun fails and Kotlin deletes what it made: no key)
+      rust.hasRecordsError = null;
+      mock(
+          t,
+          answer(
+              appUsable: false,
+              claim: false,
+              login: false,
+              recover: false,
+              makeNetwork: false,
+              gone: {'RECORD_AES', 'OWNER_SIGN', 'ADMIN_SIGN', 'OWNER_ENC'}));
+      await t.tap(find.widgetWithText(FilledButton, '再試一次'));
+      await t.pumpAndSettle();
+      expect(calls, contains('firstRun'));
+      expect(find.textContaining('啟動檢查：金鑰沒有建立成功'), findsOneWidget);
+    });
 
     testWidgets('claim not allowed: 「認領節點」 is off with its reason; the restart line stays', (t) async {
       await start(t, answer(claim: false, recover: false));
