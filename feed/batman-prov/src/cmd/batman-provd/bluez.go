@@ -51,7 +51,7 @@ type bleSide struct {
 	appOK     bool
 	advOn     bool
 	links     map[dbus.ObjectPath]*bleLink
-	devConn   map[dbus.ObjectPath]bool // Device1.Connected as BlueZ reports it (a link without Acquire*, e.g. a STATUS read)
+	devConn   map[dbus.ObjectPath]*devEnt // Device1.Connected as BlueZ reports it (a link without Acquire*, e.g. a STATUS read)
 	nextRPA   time.Time
 	foreign   int
 	advAt     time.Time // last register / withdraw
@@ -61,7 +61,7 @@ type bleSide struct {
 }
 
 func newBLE(srv *provd.Server, te provd.TestEnv, logf func(string, ...any)) *bleSide {
-	return &bleSide{srv: srv, te: te, logf: logf, links: map[dbus.ObjectPath]*bleLink{}, devConn: map[dbus.ObjectPath]bool{},
+	return &bleSide{srv: srv, te: te, logf: logf, links: map[dbus.ObjectPath]*bleLink{}, devConn: map[dbus.ObjectPath]*devEnt{},
 		quit:  make(chan struct{}),
 		kickc: make(chan struct{}, 1)}
 }
@@ -411,6 +411,9 @@ func (l *bleLink) Close() {
 	if b.links[l.dev] == l {
 		delete(b.links, l.dev)
 	}
+	if e := b.devConn[l.dev]; e != nil {
+		e.since, e.logged = time.Now(), false
+	}
 	c := b.conn
 	b.mu.Unlock()
 	if c != nil {
@@ -488,7 +491,7 @@ func (b *bleSide) refreshOwner() {
 	b.mu.Lock()
 	if owner != b.bluezName {
 		b.appOK, b.advOn = false, false // a new bluetoothd knows neither
-		b.devConn = map[dbus.ObjectPath]bool{}
+		b.resetDevs()
 	}
 	b.bluezName = owner
 	b.mu.Unlock()
@@ -588,6 +591,13 @@ func (b *bleSide) register(why string) {
 		return
 	}
 	b.staleLinks()
+	b.mu.Lock()
+	n, k := b.countLocked(time.Now())
+	b.mu.Unlock()
+	b.logStale(k)
+	if n > 0 {
+		return
+	}
 	if err := c.Object(bluez, adapter).Call("org.bluez.LEAdvertisingManager1.RegisterAdvertisement", 0, advPath,
 		map[string]dbus.Variant{}).Err; err != nil {
 		b.logLimit("register", fmt.Sprintf("provd: adv register failed: %v", err))
@@ -694,7 +704,9 @@ func (b *bleSide) deviceChanged(s *dbus.Signal) {
 	set := func(p dbus.ObjectPath, props map[string]dbus.Variant) {
 		if v, ok := props["Connected"]; ok {
 			if on, _ := v.Value().(bool); on {
-				b.devConn[p] = true
+				if b.devConn[p] == nil {
+					b.devConn[p] = &devEnt{since: time.Now()}
+				}
 			} else {
 				delete(b.devConn, p)
 			}
@@ -730,8 +742,10 @@ func (b *bleSide) deviceChanged(s *dbus.Signal) {
 
 func (b *bleSide) converge(reason *string) {
 	b.mu.Lock()
-	name, appOK, advOn, nlinks, next := b.bluezName, b.appOK, b.advOn, len(b.links)+len(b.devConn), b.nextRPA
+	name, appOK, advOn, next := b.bluezName, b.appOK, b.advOn, b.nextRPA
+	nlinks, k := b.countLocked(time.Now())
 	b.mu.Unlock()
+	b.logStale(k)
 	if name == "" {
 		return // bluetoothd not on the bus: wait for NameOwnerChanged
 	}
@@ -779,5 +793,52 @@ func (b *bleSide) converge(reason *string) {
 		b.register("rpa_timeout")
 	case !advOn:
 		b.register(*reason)
+	}
+}
+
+// ---- N1: a connected device with no session stops counting after linkGrace (#329) ------------------------------
+
+const linkGrace = 30 * time.Second
+
+type devEnt struct {
+	since  time.Time // Connected turned true, or the device's link was closed
+	logged bool      // the "link without session" line was written for this stale period
+}
+
+// resetDevs: b.mu held
+func (b *bleSide) resetDevs() { b.devConn = map[dbus.ObjectPath]*devEnt{} }
+
+// liveLinks: n = devices with a link + devices BlueZ reports connected that have no link and are younger than
+// linkGrace (each device once); stale = connected, no link, older.
+func liveLinks(links map[dbus.ObjectPath]*bleLink, devConn map[dbus.ObjectPath]*devEnt, now time.Time) (n int, stale []dbus.ObjectPath) {
+	n = len(links)
+	for p, e := range devConn {
+		if _, ok := links[p]; ok {
+			continue
+		}
+		if now.Sub(e.since) < linkGrace {
+			n++
+		} else {
+			stale = append(stale, p)
+		}
+	}
+	return n, stale
+}
+
+// countLocked (b.mu held): liveLinks, and marks each stale entry not yet logged; returns how many it marked
+func (b *bleSide) countLocked(now time.Time) (n, marked int) {
+	n, stale := liveLinks(b.links, b.devConn, now)
+	for _, p := range stale {
+		if e := b.devConn[p]; !e.logged {
+			e.logged = true
+			marked++
+		}
+	}
+	return n, marked
+}
+
+func (b *bleSide) logStale(k int) {
+	for ; k > 0; k-- {
+		b.logf("provd: link without session for 30 s")
 	}
 }
