@@ -83,6 +83,13 @@ jobs:
           printf 'flutter.sdk=%s\nsdk.dir=%s\n' "$HOME/flutter" "$ANDROID_HOME" > app/android/local.properties
           gradle --version | grep -F "Gradle ${{ steps.gradle.outputs.version }}"
 
+      # #329 PR 7: the board tests judge text contrast with a real CJK font (test/retest_s_shot.dart cjkFontPaths);
+      # without one they FAIL (a check that finds nothing is not a pass). Debian / Ubuntu fonts-noto-cjk path.
+      - name: CJK font for the board contrast checks (fonts-noto-cjk)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends fonts-noto-cjk
+          ls -l /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
       - name: test-all.sh — cargo (field + dev-trust, both crates), X3, flutter analyze, flutter test
         if: ${{ !cancelled() }}
         run: bash app/rust/batman-proto/test-all.sh
