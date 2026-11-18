@@ -9,6 +9,7 @@ import 'package:batman_app/scan.dart';
 import 'package:batman_app/src/rust/api/claim.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/ui/theme.dart';
+import 'package:batman_app/ui/widgets.dart' show Btn, Look, LookStyle;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
@@ -71,6 +72,18 @@ Future<void> tapText(WidgetTester t, String s) async {
   await run(t, n: 4);
 }
 
+/// #329 PR 7 (p1p2-check 3.3 / 3.4 / 3.7): the claim page's status area shows [look] (its icon) and [words] (each).
+void expectHero(Look look, List<String> words) {
+  final hero = find.byKey(claimHeroKey);
+  expect(find.descendant(of: hero, matching: find.byIcon(look.icon)), findsOneWidget, reason: 'status area look $look');
+  for (final w in words) {
+    expect(find.descendant(of: hero, matching: find.textContaining(w)), findsWidgets, reason: 'status area says $w');
+  }
+}
+
+bool isDanger(Finder f) =>
+    [BatTheme.light.danger, BatTheme.dark.danger].contains(f.evaluate().isEmpty ? null : (f.evaluate().first.widget as FilledButton).style?.backgroundColor?.resolve({}));
+
 /// 掃描 QR, then 認領, then the claim runs (wall-clock search of 800 ms).
 Future<void> claim(WidgetTester t) async {
   await tapText(t, '掃描 QR');
@@ -98,6 +111,8 @@ void main() {
         ..statusLast4 = '4f2a';
     }, (ble, f) => page(_SilentBle(), f), act: claim, check: (t) {
       expect(find.textContaining('已送出認領要求'), findsOneWidget);
+      expectHero(Look.busy, ['正在新增節點 …4F2A', '已經過', '等節點回應最多 90 秒']);
+      expect(find.textContaining('4F2A…'), findsNothing, reason: 'no 「…」 after the hex (rendered as three dots)');
       expect(t.widget<FilledButton>(find.widgetWithText(FilledButton, '認領')).onPressed, isNull, reason: 'busy');
     }),
     // 3.4: no unclaimed node with this tail, a claimed node nearby (the common field case)
@@ -109,6 +124,9 @@ void main() {
     }, (ble, f) => page(ble, f), act: claim, check: (t) {
       expect(find.textContaining('秒內沒找到編號後四碼'), findsOneWidget);
       expect(find.textContaining('已經被認領的節點不能再認領'), findsOneWidget);
+      expectHero(Look.bad, ['沒有新增節點 …4F2A', '確認之後再按「認領」']);
+      expect(find.textContaining('----'), findsNothing, reason: 'no placeholder for a last four the node does not publish');
+      expect(find.textContaining('找到一台節點（已認領的節點不公開後四碼）'), findsOneWidget);
     }),
     // 3.4: the node refused the claim (its case under 技術資訊)
     '3.4_refused': C((r, f) {
@@ -120,16 +138,25 @@ void main() {
     }, (ble, f) => page(ble, f), act: claim, check: (t) {
       expect(find.textContaining('認領沒有完成：節點拒絕開始認領'), findsOneWidget);
       expect(find.textContaining('BeginRefused'), findsNothing, reason: 'the case only under 技術資訊');
+      expectHero(Look.bad, ['沒有新增節點 …4F2A', '可以再按「認領」試一次']);
     }),
     // 3.7 (dev builds with a claim-pending): the entry, the pick, the confirmation, recovering
     '3.7_entry': C((r, f) => r.pendingIds.add(deviceId), (ble, f) => page(ble, f),
         check: (t) => expect(find.text('從認領暫存恢復'), findsOneWidget)),
     '3.7_pick': C((r, f) => r.pendingIds.add(deviceId), (ble, f) => page(ble, f),
-        act: (t) => tapText(t, '從認領暫存恢復'), check: (t) => expect(find.text('節點 …0c4f2a'), findsOneWidget)),
+        act: (t) => tapText(t, '從認領暫存恢復'), check: (t) {
+      expect(find.text('節點 …4F2A'), findsOneWidget);
+      expect(find.textContaining('0c4f2a'), findsNothing, reason: 'the standard last four, upper case');
+      expect(find.widgetWithText(TextButton, Btn.cancel), findsOneWidget, reason: 'a 取消 text button, not only a tap outside');
+    }),
     '3.7_confirm': C((r, f) => r.pendingIds.add(deviceId), (ble, f) => page(ble, f), act: (t) async {
       await tapText(t, '從認領暫存恢復');
-      await tapText(t, '節點 …0c4f2a');
-    }, check: (t) => expect(find.text('要恢復節點 …0c4f2a 嗎？'), findsOneWidget)),
+      await tapText(t, '節點 …4F2A');
+    }, check: (t) {
+      expect(find.text('要恢復節點 …4F2A 嗎？'), findsOneWidget);
+      expect(isDanger(find.widgetWithText(FilledButton, Btn.recoverCut)), isTrue, reason: 'it cuts the node off: danger, its consequence in its words');
+      expect(find.widgetWithText(TextButton, Btn.cancel), findsOneWidget);
+    }),
     '3.7_recovering': C((r, f) {
       r.pendingIds.add(deviceId);
       for (var i = 0; i < 3; i++) {
@@ -137,12 +164,14 @@ void main() {
       }
     }, (ble, f) => page(ble, f), act: (t) async {
       await tapText(t, '從認領暫存恢復');
-      await tapText(t, '節點 …0c4f2a');
-      await tapText(t, '恢復');
+      await tapText(t, '節點 …4F2A');
+      await tapText(t, '恢復，中斷它所有的連線');
       await run(t, n: 8);
     }, check: (t) {
       expect(find.widgetWithText(FilledButton, '停止恢復'), findsOneWidget);
-      expect(find.textContaining('從認領暫存恢復節點 …0c4f2a'), findsOneWidget);
+      expect(find.textContaining('從認領暫存恢復節點 …4F2A'), findsOneWidget);
+      expectHero(Look.busy, ['正在恢復節點 …4F2A', '已經過', '恢復最多 5 分鐘']);
+      expect(find.textContaining('0c4f2a'), findsNothing, reason: 'the standard last four, upper case');
     }),
     // developer options: 附近的節點 (the older BLE test page), before and after 搜尋
     'dev_scan': C((r, f) {}, (ble, f) => ScanPage(ble: SlowBle()), check: (t) => expect(find.text('搜尋'), findsOneWidget)),

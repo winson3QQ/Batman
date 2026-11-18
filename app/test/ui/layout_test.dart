@@ -41,10 +41,15 @@ import '../support/font_levels.dart';
 
 const id = '0000000000000c4f2a7d2c';
 
+/// rust/batman-proto/src/statuspage.rs S9C, word for word (a red node in a network that has not linked to the others).
+const kRedS9C = '還沒連上其他隊員 — 請確認隊員的節點已開機、在附近；等一分鐘再按「重新整理」，仍然如此請重新開機；仍然如此請找維修人員';
+
 StatusView sv(String color, {int nodeState = 2, bool canLeave = false}) => StatusView(
     color: color,
     row: '3',
-    sentence: color == 'green' ? '已連上隊伍網路' : '沒有連上隊伍網路',
+    // #329 PR 7 (p1p2-check node_page_red): a red node in a network says what Rust says (statuspage.rs S9C: the reason
+    // and its next step), not an invented 「沒有連上隊伍網路」 without one
+    sentence: color == 'green' ? '已連上隊伍網路' : (nodeState == 1 ? '沒有連上隊伍網路' : kRedS9C),
     lagNote: '',
     warning: '',
     nodeState: nodeState,

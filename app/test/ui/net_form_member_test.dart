@@ -132,7 +132,7 @@ void main() {
     final (a, _) = await open(t, snap(mnets: [m1]), ticked: {other}, nodes: [id, other]);
     expect(find.text(Btn.makeNetwork), findsNothing);
     expect(find.text('網路名稱'), findsNothing);
-    expect(find.text('用節點 …7d2c 加入「山隊」'), findsOneWidget);
+    expect(find.text('用節點 …7D2C 加入「山隊」'), findsOneWidget);
     await start(t);
     expect(runPage(t).ids, [id], reason: 'not the ticked node');
     await finish(t, a);
@@ -176,7 +176,7 @@ void main() {
   testWidgets('two mnets: picked first, same names told apart; memberNet (from 7.10) is not picked again', (t) async {
     const m2 = MnetEntry('ab99', name: '山隊', entryLast4: '7d2c');
     var (a, _) = await open(t, snap(mnets: [m1, m2]));
-    expect(find.text('山隊（代號 …ab99）'), findsOneWidget);
+    expect(find.text('山隊（代號 …AB99）'), findsOneWidget);
     expect(t.widget<FilledButton>(find.widgetWithText(FilledButton, Btn.start)).onPressed, isNull);
     await finish(t, a);
     (a, _) = await open(t, snap(mnets: [m1, m2]), memberNet: 'ab99');

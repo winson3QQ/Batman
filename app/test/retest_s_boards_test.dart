@@ -20,7 +20,7 @@ import 'package:batman_app/src/rust/api/owner.dart' show StatusView, TeamView;
 import 'package:batman_app/src/rust/api/rekey.dart' show OwnNodeView, RecipientView;
 import 'package:batman_app/src/rust/api/swupdate.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
-import 'package:batman_app/swupdate.dart' show SwFlow, SwHold, SwUpdatePage, swChannel, swPrepared;
+import 'package:batman_app/swupdate.dart' show SwFlow, SwHold, SwUpdatePage, swChannel, swPrepared, swRevertedNext;
 import 'package:batman_app/ui/add_pages.dart';
 import 'package:batman_app/ui/home_page.dart';
 import 'package:batman_app/ui/intro_pages.dart';
@@ -38,7 +38,7 @@ import 'package:batman_app/ui/team_pages.dart';
 import 'package:batman_app/ui/team_status_page.dart' show TeamPage;
 import 'package:batman_app/ui/theme.dart';
 import 'package:batman_app/ui/ui_state.dart';
-import 'package:batman_app/ui/widgets.dart' show Btn, Look, LookStyle;
+import 'package:batman_app/ui/widgets.dart' show BatButton, Btn, Look, LookStyle;
 import 'package:flutter/material.dart' hide Page;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -48,7 +48,7 @@ import 'retest_s_shot.dart';
 import 'support/a11y.dart';
 import 'support/font_levels.dart';
 import 'ui/layout_test.dart' as lt show app;
-import 'ui/layout_test.dart' show busy, id, keys, sv;
+import 'ui/layout_test.dart' show busy, id, keys, kRedS9C, sv;
 import 'ui/team_pages_test.dart' as tp;
 import 'ui/ui_state_test.dart' show MemStore;
 
@@ -224,6 +224,12 @@ void main() {
       final a = app(sv('green'));
       a.reg.unsavedTodos.add('上一個操作可能沒有存完：新增節點');
       return HomePage(app: a, ui: ui, devTrust: true, keys: keys());
+    }, check: (t) {
+      // #329 PR 7 (p1p2-check home_todo_banner): 「知道了」 is the tip card's button — BtnKind.text, centred, no underline
+      final b = find.widgetWithText(TextButton, Btn.gotIt);
+      expect(b, findsOneWidget);
+      expect(find.ancestor(of: b, matching: find.byType(BatButton)), findsOneWidget, reason: 'the BatButton text kind');
+      expect(t.widget<Text>(find.descendant(of: b, matching: find.text(Btn.gotIt))).style?.decoration, isNot(TextDecoration.underline));
     }),
     'home_offline_todo_banner': B((ui) {
       final a = app(sv('green'));
@@ -260,7 +266,11 @@ void main() {
       expect(find.text(Btn.addNode), findsOneWidget);
       expect(find.text('可以做的事'), findsNothing);
     }),
-    'node_page_red': B((ui) => NodePage(app: app(sv('red')), id: id, ui: ui)),
+    // #329 PR 7 (p1p2-check node_page_red): Rust's red sentence carries its next step (statuspage.rs S9C), shown whole
+    'node_page_red': B((ui) => NodePage(app: app(sv('red')), id: id, ui: ui), check: (t) {
+      expect(find.text(kRedS9C), findsOneWidget);
+      expect(find.text('沒有連上隊伍網路'), findsNothing);
+    }),
     'node_page_green': B((ui) => NodePage(app: app(sv('green')), id: id, ui: ui)),
     // every group of the node page (網路 / 隊員 show only with a network record on the phone, 隊員 in a dev build)
     'node_page_all_groups': B((ui) {
@@ -281,7 +291,11 @@ void main() {
     'intro_1': B((ui) => IntroPages(onDone: () {})),
     'permissions': B((ui) => PermissionsPage(ask: () async => false)),
     'more': B((ui) => MorePage(app: app(sv('green', canLeave: true)), ui: ui, id: id)),
-    'phone_wifi': B((ui) => WifiPage(app: app(sv('green')), ui: ui, id: id, deps: busy)),
+    // #329 PR 7 (p1p2-check phone_wifi): one colon (the country page's form); no red rule before the user types
+    'phone_wifi': B((ui) => WifiPage(app: app(sv('green')), ui: ui, id: id, deps: busy), check: (t) {
+      expect(find.text('讀不到目前的名稱（另一個操作還在進行：建立網路）'), findsOneWidget);
+      expect(find.text('名稱要 1–32 個字元'), findsNothing);
+    }),
     'country': B((ui) => CountryPage(app: app(sv('red', nodeState: 1)), ui: ui, id: id, deps: busy),
         // #329 PR 6 T6-11: one colon (was 「讀不到目前的國家：另一個操作還在進行：建立網路」)
         check: (t) => expect(find.text('讀不到目前的國家（另一個操作還在進行：建立網路）'), findsOneWidget)),
@@ -326,6 +340,8 @@ void main() {
         hold: SwHold(_Flow()), ask: (_) async => _sw(kind: SwKind.done, text: '新版不健康，已退回原本的版本'), onSetAp: () {}), check: (t) {
       expect(find.descendant(of: find.byKey(const Key('sw-hero')), matching: find.text('更新沒有成功，已回到原本的版本')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('sw-hero')), matching: find.byIcon(Look.bad.icon)), findsOneWidget);
+      // #329 PR 7 (p1p2-check 9.x_reverted): what to do now
+      expect(find.descendant(of: find.byKey(const Key('sw-hero')), matching: find.text(swRevertedNext)), findsOneWidget);
     }),
     'team_hub': B((ui) => TeamHubPage(app: app(null), ui: ui), check: (t) {
       // #329 PR 6 T6-11 (P2-1): each side's steps numbered, in order, before 「其他」
@@ -337,12 +353,23 @@ void main() {
       expect(y('收隊員的申請'), lessThan(y('隊員名單')));
       expect(y('讓我的節點加入隊長的網路'), lessThan(y('再顯示申請')));
     }),
-    '8.1_members': B((ui) => MembersPage(app: app(sv('green')), netId: 'nn')),
+    // #329 PR 7 (p1p2-check P1-3): the last four upper case (the a11y 'words' rule checks every board for it too)
+    '8.1_members': B((ui) => MembersPage(app: app(sv('green')), netId: 'nn'), check: (t) {
+      expect(find.textContaining('…7D2C'), findsOneWidget);
+      expect(find.textContaining('…BB02（加入中）'), findsOneWidget);
+    }),
     '8.2_person': B((ui) => PersonPage(app: app(sv('green')), netId: 'nn', person: people[1], all: people)),
-    '8.2_me': B((ui) => PersonPage(app: app(sv('green')), netId: 'nn', person: people[0], all: people)),
+    '8.2_me': B((ui) => PersonPage(app: app(sv('green')), netId: 'nn', person: people[0], all: people),
+        check: (t) => expect(find.text('排除 …7D2C（遺失／被抓；換全隊密碼）'), findsOneWidget)), // P1-3; S6 full-width 「／」
     '8.3_remove': B((ui) => RemoveConfirmPage(
         app: app(sv('green')), netId: 'nn', person: people[1], owner: 'OWNERBOB', node: '', same: const ['另有同名的一組：aaaa1111'])),
-    '8.4_new_secrets': B((ui) => RekeyPage(app: app(sv('green')), netId: 'nn', removal: true)),
+    '8.4_new_secrets': B((ui) => RekeyPage(app: app(sv('green')), netId: 'nn', removal: true), check: (t) {
+      // P1-3: upper case; the member's nodes on their own line as 「節點 …XXXX」 (「...bb02」 after the fingerprint was
+      // drawn with three low dots)
+      expect(find.text('王小明（aaaa1111）'), findsOneWidget);
+      expect(find.text('節點 …BB02\n已交出'), findsOneWidget);
+      expect(find.text('節點 …7D2C'), findsOneWidget);
+    }),
     '7.1_invite': B((ui) => InvitePage(app: app(sv('green')), netId: 'nn')),
     '7.3_invite_code': B((ui) => InviteCodePage(app: app(sv('green')), netId: 'nn', hex: code, inPerson: false)),
     '7.4_request': B((ui) => RequestPage(app: app(sv('green')), netId: 'nn'), check: (t) {
@@ -367,7 +394,7 @@ void main() {
       a.nets.setForTest(const NetSnapshot(
           anyMnet: true, mnetIds: ['m1'], mnets: [MnetEntry('m1', name: '山隊', entryLast4: '7d2c')]));
       return NetFormPage(app: a, ui: ui, mode: NetMode.member);
-    }),
+    }, check: (t) => expect(find.text('用節點 …7D2C 加入「山隊」'), findsOneWidget)), // P1-3
     // the flow pages layout_test does not open
     '3.1_claim_dev': B((ui) {
       dev = true;
@@ -391,7 +418,12 @@ void main() {
     }),
     '4.1_make_mode': B((ui) => makeForm(World())),
     '4.x_working': B((ui) => makeForm(World()..script('make', [ans('[NET_MADE] 網路已建立', rel: 'net/n1')]), gate: gate),
-        act: start, check: (t) => expect(find.textContaining('最多 6 分鐘'), findsOneWidget)), // #329 PR 6 T6-11 (S5): the limit once, on the step's line
+        act: start, check: (t) {
+      // #329 PR 6 T6-11 (S5): the limit once; #329 PR 7 (p1p2-check): the connect step's own (§5.4: 60 s), not 6 minutes
+      expect(find.textContaining('正在連到節點'), findsWidgets); // the status area and the node's row
+      expect(find.textContaining('這一步最多 1 分鐘'), findsOneWidget);
+      expect(find.textContaining('6 分鐘'), findsNothing);
+    }),
     '4.x_done': B((ui) => makeForm(World()..script('make', [ans('[NET_MADE] 網路已建立', rel: 'net/n1')])), act: (t) async {
       await start(t);
       await settle(t);
@@ -399,7 +431,12 @@ void main() {
     '4.x_failed': B((ui) => makeForm(failed()), act: (t) async {
       await start(t);
       await settle(t);
-    }, check: (t) => expect(find.text('建立網路沒有成功：節點拒絕'), findsOneWidget)),
+    }, check: (t) {
+      expect(find.text('建立網路沒有成功：節點拒絕'), findsOneWidget);
+      // #329 PR 7 (p1p2-check 4.x_failed, design §3.1): a failure is bad (red), not 注意
+      expect(find.byIcon(Look.bad.icon), findsOneWidget);
+      expect(find.byIcon(Look.warn.icon), findsNothing);
+    }),
     '4.x_check_network': B((ui) => CheckNetPage(app: app(sv('green')), ui: UiState(MemStore()..ids = [id]), preselect: id)),
     '10.3_leave': B((ui) => LeavePage(app: app(sv('green', canLeave: true)), ui: ui, id: id, deps: busy)),
     'pick_network': B((ui) {

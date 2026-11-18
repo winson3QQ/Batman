@@ -56,10 +56,18 @@ void main() {
       await tapText(t, Btn.next);
       await tapText(t, Btn.next);
     }),
-    '5.7_remove_dialog': P((ui) => MorePage(app: app(sv('green', canLeave: true)), ui: ui, id: id),
-        act: (t) => tapText(t, '從這支手機移除這台節點')),
-    '5.5_more_tech_opened_long': P((ui) => MorePage(app: app(sv('green', canLeave: true, long: true)), ui: ui, id: id),
-        act: (t) => tapText(t, '技術資訊（給維修人員看）')),
+    '5.7_remove_dialog': P((ui) => MorePage(app: app(sv('green', canLeave: true)), ui: ui, id: id), act: (t) async {
+      await tapText(t, '從這支手機移除這台節點');
+      // #329 PR 7 T16 (p1p2-check 5.7): a space between the last four and 「嗎」, as the other sentences
+      expect(t.widget<Text>(find.byKey(const Key('remove-title'))).data, '要從這支手機移除節點 7D2C 嗎？');
+    }),
+    '5.5_more_tech_opened_long': P((ui) => MorePage(app: app(sv('green', canLeave: true, long: true)), ui: ui, id: id), act: (t) async {
+      await tapText(t, '技術資訊（給維修人員看）');
+      // #329 PR 7 (p1p2-check 5.5): an opened fold shows 「expand_less」, not a page's chevron
+      final row = find.byKey(const Key('more-tech'));
+      expect(find.descendant(of: row, matching: find.byIcon(Icons.expand_less)), findsOneWidget);
+      expect(find.descendant(of: row, matching: find.byIcon(Icons.chevron_right)), findsNothing);
+    }),
     'long_home_problem': P((ui) => HomePage(app: app(sv('red', long: true)), ui: longNamed(), devTrust: true, keys: keys())),
     'long_home_not_read': P((ui) => HomePage(app: app(null), ui: longNamed(), devTrust: true, keys: keys())),
     'long_node_page': P((ui) => NodePage(app: app(sv('red', long: true)), id: id, ui: longNamed())),

@@ -78,7 +78,7 @@ class TeamHubPage extends StatelessWidget {
 String netPickLabel(NetEntry n, List<NetEntry> all) {
   final name = n.view.netName.isEmpty ? '網路' : n.view.netName;
   final same = all.where((x) => x.view.netName == n.view.netName).length > 1;
-  return '$name ${n.view.meshId}${same ? '（代號 …${rustLast4(n.id)}）' : ''}';
+  return '$name ${n.view.meshId}${same ? '（代號 …${rustLast4(n.id).toUpperCase()}）' : ''}';
 }
 
 /// R13 / S-m7: the leader's rows list only applied networks (nodes.dart:802, :1313).

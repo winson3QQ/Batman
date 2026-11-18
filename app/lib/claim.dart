@@ -29,6 +29,9 @@ const _platform = MethodChannel('dev.batman/platform');
 /// The card of the lines the page has said (tests: 「no line said」 = no card).
 const claimLinesKey = Key('claim-lines');
 
+/// #329 PR 7: the claim page's status area (a run working, or its failure).
+const claimHeroKey = Key('claim-hero');
+
 /// The folded 「開發用」 inputs (dev builds only; tests open it).
 const claimDevFoldKey = Key('claim-dev-fold');
 
@@ -40,15 +43,22 @@ class ClaimDone {
 
 void _log(String s) => debugPrint('BMAPP claim ${logText(s)}'); // #329 PR 6 D7: the technical marks as 〔 〕
 
-/// 254-app-replay v6.1 §19.2-7: how the T4 list and confirmation name each pending — the last 6 characters of the
-/// device id, or the whole id where two ids share them.
+/// 254-app-replay v6.1 §19.2-7: how the T4 list and confirmation name each pending — #329 PR 7 (p1p2-check P1-3):
+/// the standard 「…XXXX」 (the last four, upper case, as every other screen), or the whole id where two ids share them.
 Map<String, String> pendingLabels(List<String> ids) {
-  String tail(String s) => s.length > 6 ? s.substring(s.length - 6) : s;
+  String tail(String s) => (s.length > 4 ? s.substring(s.length - 4) : s).toLowerCase();
   final count = <String, int>{};
   for (final id in ids) {
     count[tail(id)] = (count[tail(id)] ?? 0) + 1;
   }
-  return {for (final id in ids) id: count[tail(id)]! > 1 ? id : '…${tail(id)}'};
+  return {for (final id in ids) id: count[tail(id)]! > 1 ? id : '…${tail(id).toUpperCase()}'};
+}
+
+/// #329 PR 7 (p1p2-check 3.3 / 3.7): the claim page's status area while a claim or a recovery runs — how long it has
+/// run (design §3.2 回饋: elapsed time + limit).
+String elapsedText(Duration d) {
+  final s = d.inSeconds;
+  return s < 60 ? '已經過 $s 秒' : '已經過 ${s ~/ 60} 分 ${s % 60} 秒';
 }
 
 /// R4 / R7 (254-app-claim-noover v2.1)
@@ -100,6 +110,47 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
   List<String> _pending = const []; // 254-app-replay T4: claim-pending/ file names (dev builds only)
   bool _dev = false; // a dev build (devTrust): the typed / pasted QR
 
+  // #329 PR 7 (p1p2-check 3.3 / 3.4 / 3.7, design §3.2 回饋 / §5.3): the status area of a run. While a claim or a
+  // recovery runs: busy, what, elapsed time and the current step's limit. After a run that failed: its failure line
+  // (bad; unk where the end is not known or the user stopped it) and the next step.
+  String? _runWhat; // 「正在新增節點 …XXXX」 / 「正在恢復節點 …XXXX」 while a run works
+  String _runLimit = ''; // the current step's limit
+  final _runClock = Stopwatch();
+  Timer? _tick; // redraws the elapsed time once a second while a run works
+  String? _fail; // the failure line of the last run (its [CLAIM_FAIL] line), shown in the status area, not in the list
+  Look _failLook = Look.bad;
+  bool _failFromPending = false; // the failed run was a recovery started from 「從認領暫存恢復」 (its next step)
+  String _who = ''; // the node of this run, 「…XXXX」
+  bool _recovering = false; // the run is / was a recovery
+  String? _failHead; // the status area's sentence of a failure that is not the default 「沒有新增 / 恢復節點 …」
+
+  void _runStart(String what, String limit, {bool recovering = false}) {
+    _runWhat = what;
+    _recovering = recovering;
+    _failHead = null;
+    _runLimit = limit;
+    _fail = null;
+    _failLook = Look.bad;
+    _runClock
+      ..reset()
+      ..start();
+    _tick ??= Timer.periodic(const Duration(seconds: 1), (_) => mounted ? setState(() {}) : null);
+    if (mounted) setState(() {});
+  }
+
+  void _runStep(String limit) {
+    _runLimit = limit;
+    if (mounted) setState(() {});
+  }
+
+  void _runEnd() {
+    _runWhat = null;
+    _runClock.stop();
+    _tick?.cancel();
+    _tick = null;
+    if (mounted) setState(() {});
+  }
+
   /// #329 PR 3 §2.7: the node was added -> back to the caller with it (3.2 取名 next). A page that is the first route
   /// (the page alone in a test) stays and shows its lines.
   void _done(String id) {
@@ -119,6 +170,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
   @override
   void dispose() {
     _recovery?.cancel();
+    _tick?.cancel();
     super.dispose();
   }
 
@@ -142,19 +194,41 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
   /// `_busy` for the whole run; asks for the BLE permissions before any connection.
   Future<void> _fromPending() async {
     if (_busy || _pending.isEmpty) return;
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _failFromPending = true;
+      _recovering = true;
+    });
     try {
       final labels = pendingLabels(_pending);
+      final t = BatTheme.of(context);
+      // #329 PR 7 (p1p2-check 3.7_pick): the new screens' dialog look, and a 「取消」 text button (not only a tap outside)
       final id = await showDialog<String>(
           context: context,
-          builder: (c) => SimpleDialog(title: const Text('從認領暫存恢復'), children: [
-                for (final p in _pending)
-                  SimpleDialogOption(onPressed: () => Navigator.pop(c, p), child: Text('節點 ${labels[p]}')),
-              ]));
+          builder: (c) => SimpleDialog(
+                  backgroundColor: t.surf,
+                  title: Text('要恢復哪一台？', style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
+                  children: [
+                    for (final p in _pending)
+                      SimpleDialogOption(
+                          onPressed: () => Navigator.pop(c, p),
+                          child: ConstrainedBox(
+                              constraints: const BoxConstraints(minHeight: 48),
+                              child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text('節點 ${labels[p]}', style: TextStyle(fontSize: Fs.body, color: t.ink))))),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                      child: BatButton(Btn.cancel, key: const Key('pick-cancel'), kind: BtnKind.text, onPressed: () => Navigator.pop(c)),
+                    ),
+                  ]));
       if (id == null || !mounted) return;
       final label = labels[id]!;
-      if (!await _ask('要恢復節點 $label 嗎？', '恢復會更換這台節點的 root 密碼，並中斷它目前所有的連線（包含隊友手機的）。', '恢復',
-          '沒有恢復，手機裡的紀錄沒有改動')) {
+      _who = label;
+      // #329 PR 7 (p1p2-check 3.7_confirm, design §3.2): it cuts the node off for the whole team -> danger, its words say so
+      if (!await _ask('要恢復節點 $label 嗎？', '恢復會更換這台節點的 root 密碼，並中斷它目前所有的連線（包含隊友手機的）。', Btn.recoverCut,
+          '沒有恢復，手機裡的紀錄沒有改動',
+          danger: true)) {
         return;
       }
       if (!(await _platform.invokeMethod<bool>('blePermissions') ?? false)) {
@@ -175,6 +249,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
       _say(k != null ? '[CLAIM_FAIL] $k' : '[CLAIM_FAIL] 恢復中斷：${sayErr(e)}');
     } finally {
       rawIdle();
+      _runEnd();
       await _loadPending();
     }
   }
@@ -183,7 +258,17 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
   void _say(String s) {
     _log(s);
     if (mounted) {
-      setState(() => _lines.add(s)); // the whole line: SayLine shows its main part and its technical part
+      setState(() {
+        _lines.add(s); // the whole line: SayLine shows its main part and its technical part
+        // #329 PR 7 (p1p2-check 3.4): a failure goes to the status area (bad, with its next step)
+        if (s.startsWith('[CLAIM_FAIL]')) {
+          _fail = s;
+          _failHead = null;
+          _failLook = Look.bad;
+        } else if (s.startsWith('[CLAIMED]')) {
+          _fail = null;
+        }
+      });
     } else {
       widget.goneNote?.call(s); // F41: the page was closed while the claim ran (J MINOR-9: the whole line, split where shown)
     }
@@ -229,6 +314,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
       if (!mounted) return;
       setState(() {
         _qr = q;
+        _fail = null; // a new code: the last run's failure goes with its lines
         _lines
           ..clear()
           ..add('已讀取節點（編號後四碼 …${q.deviceId.substring(14)}）的 QR 碼，可以按「認領」');
@@ -284,7 +370,9 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
         }
         _log('found $id');
         // #329 design §3.4 S10 (PR 7 T10): the BLE address under the line's 技術資訊, never in its main words
-        _say('找到節點，後四碼 ${(last4 ?? '----').toUpperCase()}：${stateText(state)}${tech('BLE 位址 $id')}');
+        // #329 PR 7 (p1p2-check 3.4): a claimed node publishes no id tail — said in words, not as a placeholder 「----」
+        final who = last4 == null ? '找到一台節點（已認領的節點不公開後四碼）' : '找到節點，後四碼 ${last4.toUpperCase()}';
+        _say('$who：${stateText(state)}${tech('BLE 位址 $id')}');
         if (state == 'unclaimed' && last4 == want) return (id, conn);
         if (state == 'claimed' || state == 'member') _claimedNear++; // its id tail is not public: it may be this QR's node
         await conn.cancel(); // not ours: its advertising comes back
@@ -335,14 +423,25 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
     }
   }
 
-  Future<bool> _ask(String title, String text, String yes, String no) async {
+  /// #329 PR 7 (p1p2-check 3.7_confirm, design §3.2): the new screens' dialog — the answer as a filled button (danger
+  /// when it cuts the node off), 「取消」 a text button under it.
+  Future<bool> _ask(String title, String text, String yes, String no, {bool danger = false}) async {
     if (!mounted) return false;
+    final t = BatTheme.of(context);
     final ok = await showDialog<bool>(
         context: context,
-        builder: (c) => AlertDialog(title: Text(title), content: Text(text), actions: [
-              TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('取消')),
-              TextButton(onPressed: () => Navigator.pop(c, true), child: Text(yes)),
-            ]));
+        builder: (c) => AlertDialog(
+              backgroundColor: t.surf,
+              title: Text(title, style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
+              content: SingleChildScrollView(child: Text(text, style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink))),
+              actions: [
+                Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  BatButton(yes, kind: danger ? BtnKind.danger : BtnKind.primary, onPressed: () => Navigator.pop(c, true)),
+                  const SizedBox(height: 6),
+                  BatButton(Btn.cancel, kind: BtnKind.text, onPressed: () => Navigator.pop(c, false)),
+                ]),
+              ],
+            ));
     if (ok != true) _say(no);
     return ok == true;
   }
@@ -356,7 +455,13 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
   Future<void> _claim() async {
     final q = _qr;
     if (q == null || _busy) return;
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _failFromPending = false;
+      _recovering = false;
+      _who = '…${q.deviceId.substring(14).toUpperCase()}';
+      _fail = null; // this press's own end only
+    });
     StreamSubscription<ConnectionStateUpdate>? conn;
     StreamSubscription<List<int>>? notify;
     try {
@@ -380,7 +485,11 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
         _say('[CLAIM_FAIL] 沒有藍牙權限（請在手機設定裡允許）');
         return;
       }
-      _say('正在找節點 …${q.deviceId.substring(14)}…');
+      // #329 PR 7 (p1p2-check 3.3): the status area — what runs, elapsed, the step's limit (no 「…」 after the hex:
+      // it rendered as three dots)
+      final tail4 = q.deviceId.substring(14).toUpperCase();
+      _runStart('正在新增節點 …$tail4', '找節點最多 ${(widget.findFor.inMilliseconds / 1000).ceil()} 秒');
+      _say('正在找節點 …$tail4');
       final found = await _find(q);
       if (found == null && _heldPending && mounted) {
         // 254-app-replay §2 T2: an unfinished claim of this QR (K compared again by the recovery) and no unclaimed node
@@ -460,9 +569,14 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
 
       await run(first);
       _say('已送出認領要求，等待節點回應…');
+      _runStep('等節點回應最多 90 秒');
+      var timedOut = false;
       final pump = inbox.stream.asyncMap((f) => run(session.onFrame(frame: f))).listen((_) {},
           onError: (Object e) => done.isCompleted ? null : done.complete(_keyRefused(e) ?? '處理出錯${tech(e)}'));
-      final r = await done.future.timeout(const Duration(seconds: 90), onTimeout: () => '90 秒內節點沒有回應（這次的紀錄先保留，可以稍後再試）');
+      final r = await done.future.timeout(const Duration(seconds: 90), onTimeout: () {
+        timedOut = true;
+        return '90 秒內節點沒有回應（這次的紀錄先保留，可以稍後再試）';
+      });
       await pump.cancel();
       await inbox.close();
       _say(claimed
@@ -470,6 +584,12 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
           : r.startsWith('[KEY_LEVEL] ')
               ? '[CLAIM_FAIL] $r'
               : '[CLAIM_FAIL] 認領沒有完成：$r');
+      if (timedOut && !claimed && mounted) {
+        setState(() {
+          _failLook = Look.unk; // the end is not known: unk, not bad
+          _failHead = '節點 $_who 沒有回應，還不知道有沒有新增成功';
+        });
+      }
       if (claimed && pendingKept != null) _say('[PENDING_KEPT] $pendingKept');
       if (claimed && mounted) setState(() => _qr = null); // R6: claiming again needs a new scan
       if (claimed) _done(q.deviceId);
@@ -502,6 +622,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
       await notify?.cancel();
       await conn?.cancel();
       rawIdle();
+      _runEnd();
       await _loadPending(); // a claim may have written or removed a pending (the T4 entry)
     }
   }
@@ -511,7 +632,11 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
   Future<RecoveryOutcome> _recover(String deviceId, ClaimQr? q, ClaimStore store, ClaimRecords records,
       {String? t1Id, bool after9 = false, bool t3 = false, required String intro}) async {
     final rec = ClaimRecovery(
-        ble: widget.recoveryBle ?? ReactiveRecoveryBle(_ble, onScan: rawScanStarted), platform: _platform, store: store, records: records, deviceId: deviceId, qr: q, say: _say);
+        ble: widget.recoveryBle ?? ReactiveRecoveryBle(_ble, onScan: rawScanStarted), platform: _platform, store: store, records: records, deviceId: deviceId, qr: q, say: (s) {
+      // #329 PR 7 (p1p2-check 3.7_recovering): the run starts when the recovery says its first line (after T3's question)
+      if (s == intro) _runStart('正在恢復節點 …${_tail4(deviceId)}', '恢復最多 ${ClaimRecovery.total.inMinutes} 分鐘', recovering: true);
+      _say(s);
+    });
     if (mounted) setState(() => _recovery = rec);
     try {
       final out = await rec.run(
@@ -519,10 +644,16 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
           after9: after9,
           t3: t3,
           // v6.1 §19.2-6: T4 (no QR) asks without "沒找到未認領的這台"
-          askT3: () => _ask('要恢復這台節點嗎？', q == null ? t3Body : t3Text, '恢復', '沒有恢復，手機裡的紀錄沒有改動'),
+          askT3: () => _ask('要恢復這台節點嗎？', q == null ? t3Body : t3Text, Btn.recoverCut, '沒有恢復，手機裡的紀錄沒有改動', danger: true),
           intro: intro);
       if (out == RecoveryOutcome.recovered && q != null && mounted) setState(() => _qr = null); // R6: a new scan for another claim
       if (out == RecoveryOutcome.recovered) _done(deviceId);
+      if (out == RecoveryOutcome.cancelled && mounted) {
+        setState(() {
+          _failLook = Look.unk; // stopped by the user or Bluetooth: not a failure of the node
+          _failHead = '已停止恢復節點 $_who';
+        });
+      }
       return out;
     } finally {
       _recovery = null;
@@ -530,13 +661,48 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
     }
   }
 
+  /// #329 PR 7 (p1p2-check 3.4_refused): what to do after a failed run — only buttons this page shows (§3.4 rule 3).
+  String? _failNext(String line) {
+    if (line.contains('[KEY_LEVEL]')) return '這支手機的金鑰現在不能用來新增節點，請找維修人員。';
+    if (_qr != null && !_failFromPending) {
+      return line.contains('[NOT_FOUND]') ? '確認之後再按「認領」。' : '可以再按「認領」試一次；仍然如此，把節點重新開機後再試。';
+    }
+    if (_pending.isNotEmpty) return '可以再按「從認領暫存恢復」試一次，或按「掃描 QR」重新認領。';
+    return '請按「掃描 QR」，重新掃這台節點的 QR 碼。';
+  }
+
   /// #329 PR 3 §2.7 (D1): the new screens' look; the claim, its search and its recovery are unchanged.
   @override
   Widget build(BuildContext context) {
     final t = BatTheme.of(context);
+    final fail = _runWhat == null ? _fail : null;
+    // the step list without the failure line (it is the status area's sentence)
+    final shown = [..._lines];
+    if (fail != null) {
+      final i = shown.lastIndexOf(fail);
+      if (i >= 0) shown.removeAt(i);
+    }
     return BatPage(
       title: Btn.addNode,
       body: [
+        // #329 PR 7 (p1p2-check 3.3 / 3.4 / 3.7, design §3.2 / §5.3): the status area of a run — working (elapsed time, the
+        // step's limit) or its failure (bad; unk when the end is not known or it was stopped) with the next step
+        if (_runWhat case final what?)
+          StatusHero(
+              key: claimHeroKey,
+              look: Look.busy,
+              text: what,
+              next: '${elapsedText(_runClock.elapsed)}（$_runLimit）')
+        else if (fail != null)
+          StatusHero(
+              key: claimHeroKey,
+              look: _failLook,
+              text: _failHead ?? '${_recovering ? '沒有恢復' : '沒有新增'}節點${_who.isEmpty ? '' : ' $_who'}',
+              next: fail,
+              extra: [
+                if (_failNext(fail) case final n?)
+                  Text(n, key: const Key('claim-next'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: _failLook.ink(t))),
+              ]),
         // design §5.3 / §3.3: one explanation of 認領, one main action
         Text('掃描節點機身上的 QR code，把它加入這支手機（這一步叫「認領」）。之後這台節點只聽這支手機的設定。',
             style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
@@ -552,9 +718,9 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
           BatButton(Btn.scanQr, onPressed: (_busy || _scanning) ? null : _scan),
         if (_pending.isNotEmpty) // 254-app-replay T4 (§19.2-1): dev builds with a claim-pending only
           BatButton(Btn.fromPending, kind: BtnKind.secondary, onPressed: (_busy || _scanning) ? null : _fromPending),
-        if (_lines.isNotEmpty)
+        if (shown.isNotEmpty)
           BatCard(key: claimLinesKey, children: [
-            for (final l in _lines)
+            for (final l in shown)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                 child: SayLine(l, style: TextStyle(fontSize: Fs.body, height: 1.5, color: t.ink)),
@@ -581,3 +747,6 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
     );
   }
 }
+
+/// A device id's last four as the screens show them (upper case).
+String _tail4(String id) => (id.length > 4 ? id.substring(id.length - 4) : id).toUpperCase();

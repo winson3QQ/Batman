@@ -135,7 +135,9 @@ class _MembersPageState extends State<MembersPage> {
               title: p.isSelf ? '我（隊長）' : p.name,
               sub: [
                 '指紋 ${p.fpr}',
-                if (p.nodes.isNotEmpty) p.nodes.map((n) => '…${n.last4}${n.state == 'joining' ? '（加入中）' : ''}').join('、'),
+                // #329 PR 7 (p1p2-check P1-3): 「節點 …XXXX」 upper case (a 「…」 opening the line was drawn as three low dots)
+                if (p.nodes.isNotEmpty)
+                  '節點 ${p.nodes.map((n) => '…${n.last4.toUpperCase()}${n.state == 'joining' ? '（加入中）' : ''}').join('、')}',
                 ...sameNameLines(p, people),
               ].join('\n'),
               onTap: () => _go(PersonPage(app: a, netId: widget.netId, person: p, all: people)),
@@ -181,7 +183,7 @@ class PersonPage extends StatelessWidget {
             BatRow(
                 icon: Icons.block,
                 danger: true,
-                title: '排除 …${n.last4}（遺失 / 被抓；換全隊密碼）',
+                title: '排除 …${n.last4.toUpperCase()}（遺失／被抓；換全隊密碼）',
                 sub: n.state == 'joining' ? '加入中' : null,
                 onTap: () => go('', n.dacHash)),
         ]),

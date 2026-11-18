@@ -86,6 +86,14 @@ class SwHold {
   return null;
 }
 
+/// #329 PR 7 (p1p2-check 9.x_reverted): the next step of an update that went back to the old version (swupd.rs
+/// T_REVERTED / T_REVERTED_18) — the node runs the version it had, and the same file is not tried again on its own.
+const swRevertedNext = '節點仍是原本的版本，可以照常使用。這個更新檔不要再重試，請找維修人員。';
+
+/// The status area's next step (null = none).
+String? swNext(SwAction? a) =>
+    a != null && a.kind == SwKind.done && (a.text.contains('退回') || a.text.contains('回到原本的版本')) ? swRevertedNext : null;
+
 /// The prepared state's sentence (plan §11 MINOR).
 const swPrepared = '已準備好，還沒套用';
 
@@ -377,7 +385,7 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
       child: BatPage(
         title: '軟體更新',
         body: [
-          if (hero case (final look, final text)) StatusHero(key: const Key('sw-hero'), look: look, text: text),
+          if (hero case (final look, final text)) StatusHero(key: const Key('sw-hero'), look: look, text: text, next: swNext(a)),
           if (a != null && a.text.isNotEmpty && hero?.$2 != a.text) // (said once: not again under the status area)
             SayLine(a.text, style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, height: 1.4, color: t.ink)),
           if (a != null && a.note.isNotEmpty) SayLine(a.note, style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),

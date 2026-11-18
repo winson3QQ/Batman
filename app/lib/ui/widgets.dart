@@ -213,8 +213,12 @@ class BatCard extends StatelessWidget {
 /// A row in a card: icon, title, optional second line, optional value on the right, a chevron when tappable.
 class BatRow extends StatelessWidget {
   const BatRow(
-      {super.key, required this.icon, required this.title, this.sub, this.right, this.onTap, this.danger = false, this.enabled = true});
+      {super.key, required this.icon, required this.title, this.sub, this.right, this.onTap, this.danger = false, this.enabled = true, this.trail});
   final IconData icon;
+
+  /// #329 PR 7 (p1p2-check 5.5): the icon at the end of a tappable row in place of the chevron (a fold: expand_more /
+  /// expand_less)
+  final IconData? trail;
   final String title;
   final String? sub, right;
   final VoidCallback? onTap;
@@ -245,7 +249,7 @@ class BatRow extends StatelessWidget {
                   child: Padding(
                       padding: const EdgeInsets.only(left: 8),
                       child: Text(right!, textAlign: TextAlign.end, style: TextStyle(fontSize: Fs.note, color: t.sub)))),
-            if (onTap != null && enabled) Icon(Icons.chevron_right, size: 20, color: t.sub),
+            if (onTap != null && enabled) Icon(trail ?? Icons.chevron_right, size: 20, color: t.sub),
           ]),
         ),
       ),
@@ -278,14 +282,11 @@ class BatBanner extends StatelessWidget {
               const SizedBox(height: 4),
               SayLine(text!, style: TextStyle(fontSize: Fs.note, height: 1.55, color: ink)), // #329 PR 6 D7
             ],
-            if (action != null)
-              TextButton(
-                onPressed: onAction,
-                style: TextButton.styleFrom(foregroundColor: ink, padding: EdgeInsets.zero, minimumSize: const Size(48, 48), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                child: Text(action!,
-                    style: const TextStyle(
-                        fontSize: Fs.body, fontWeight: FontWeight.w700, decoration: TextDecoration.underline)),
-              ),
+            // #329 PR 7 (p1p2-check home_todo_banner): the same text button as the tip card's 「知道了」 (BtnKind.text, centred)
+            if (action != null) ...[
+              const SizedBox(height: 4),
+              BatButton(action!, kind: BtnKind.text, onPressed: onAction),
+            ],
           ]),
         ),
       ]),
@@ -409,6 +410,8 @@ abstract final class Btn {
   static const pasteText = '貼上文字';
   // #329 PR 7 T7: home rows 7 / 8 with several nodes
   static const showList = '看節點清單';
+  // #329 PR 7 (p1p2-check 3.7_confirm): danger — the button says what it does to the node (design §3.2)
+  static const recoverCut = '恢復，中斷它所有的連線';
 
   static const all = {
     refresh, addNode, makeNetwork, joinNetwork, checkNetwork, seeNode, allowBluetooth, openBluetooth, tryAgain, gotIt,
@@ -416,6 +419,6 @@ abstract final class Btn {
     excludeThis, goOn, claim, seeRequest, joinTeam, openAppSettings, next, skipIntro, start, finishIt,
     nextNode, stopHere, retryNode, checkAgain, otherNode, forgetJoin, done, oldConsole,
     scanQr, pasteQr, stopRecovery, fromPending, addAnother, memberJoin,
-    copyText, clearClip, pasteText, showList,
+    copyText, clearClip, pasteText, showList, recoverCut,
   };
 }

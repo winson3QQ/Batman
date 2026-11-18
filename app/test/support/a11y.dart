@@ -6,6 +6,8 @@
 //   every visible text (Text / RichText and input text), each in its own glyph box;
 // - 'solid': design §3 「實心 ≤ 1」 — at most one solid button (FilledButton, primary or danger) on the surface the user
 //   acts on (the top dialog when one is open, else the page).
+// - 'words' (#329 PR 7, p1p2-check P1-3 / S6): on every visible text that is not technical (monospace) — a node's last four
+//   is upper case (「…7d2c」 is a FAIL), no half-width 「...」, no half-width 「 / 」 between two CJK characters.
 //
 // Why two contrast rules: Flutter's guideline takes the screen at 1× and calls the most frequent "dark" colour the text.
 // A CJK glyph at 13–16 dp is strokes 1–2 px wide at 1×, so the most frequent dark colour is an antialiasing tone,
@@ -225,6 +227,8 @@ Future<Map<String, String>> a11yFailures(WidgetTester t, {List<TextContrast>? me
   if (!tap.passed) out['tap48'] = tap.reason ?? '(no reason)';
   final solid = solidButtons();
   if (solid.length > 1) out['solid'] = '${solid.length} solid buttons: $solid';
+  final words = wordProblems();
+  if (words.isNotEmpty) out['words'] = words.join('; ');
   if (!contrastJudged) return out;
   final c = await textContrastGuideline.evaluate(t);
   if (!c.passed) out['contrast'] = c.reason ?? '(no reason)';
@@ -235,6 +239,29 @@ Future<Map<String, String>> a11yFailures(WidgetTester t, {List<TextContrast>? me
     out['contrast2x'] = 'no text measured (a check that finds nothing is not a pass)';
   } else if (low.isNotEmpty) {
     out['contrast2x'] = '${low.length} of ${texts.length} texts: ${low.join('; ')}';
+  }
+  return out;
+}
+
+/// #329 PR 7 'words': the visible, non-technical texts (RichText, not monospace) that break the display rules —
+/// a lower-case last four after 「…」 (upper case on screen, design §3.4 / say.dart upperLast4), half-width 「...」, a
+/// half-width 「/」 between CJK characters (S6: full-width 「／」).
+List<String> wordProblems() {
+  final lower = RegExp(r'…(?=[0-9a-f]{4}(?![0-9a-fA-F]))(?=[0-9]*[a-f])[0-9a-f]{4}');
+  const cjk = r'[㐀-鿿豈-﫿]';
+  final slash = RegExp('$cjk ?/ ?$cjk');
+  final out = <String>[];
+  for (final e in find.byType(RichText).evaluate()) {
+    final w = e.widget as RichText;
+    if (w.text.style?.fontFamily == 'monospace') continue;
+    final s = w.text.toPlainText();
+    for (final m in lower.allMatches(s)) {
+      out.add('lower-case last four "${m[0]}" in "$s"');
+    }
+    if (s.contains('...')) out.add('half-width "..." in "$s"');
+    for (final m in slash.allMatches(s)) {
+      out.add('half-width "/" in "${m[0]}" ("$s")');
+    }
   }
   return out;
 }

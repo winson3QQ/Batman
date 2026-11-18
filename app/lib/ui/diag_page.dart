@@ -95,7 +95,7 @@ class _DiagPageState extends State<DiagPage> {
     return BatPage(title: '診斷', body: [
       BatCard(children: [
         BatRow(icon: Icons.info_outline, title: 'app 版本', right: _version),
-        BatRow(icon: Icons.build_outlined, title: 'flavor', right: _flavor),
+        BatRow(icon: Icons.build_outlined, title: '安裝版類型', right: _flavor), // #329 PR 7 (p1p2-check 10.5): a Chinese label; the value (dev / field) as is
       ]),
       const BatLabel('金鑰（啟動時的檢查結果）'),
       BatCard(children: [

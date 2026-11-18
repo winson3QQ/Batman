@@ -44,9 +44,17 @@ const goMake = 'make';
 const kRunWait = '請留在這個畫面。';
 
 /// #329 PR 6 (S20 device session 2026-11-18): the running card's line under the step. The step's own line may carry its
-/// limit (「這一步最多 6 分鐘」, 「最多 2 分鐘」); then it is not said again (it showed twice, and 6 contradicted 2). A
-/// step without one (「正在連到節點…」) gets the run's 6 minutes (S5; p1p2 4.x_working).
-String runWaitFor(String stepLine) => stepLine.contains('最多') ? kRunWait : '$kRunWait這一步最多 6 分鐘。';
+/// limit (「這一步最多 6 分鐘」, 「最多 2 分鐘」); then it is not said again (it showed twice, and 6 contradicted 2).
+/// #329 PR 7 (p1p2-check 4.x_working): a step without one says its own limit (design §5.4's table), not the run's 6
+/// minutes — the login (「正在連到節點…」, net_run.dart _one) is 60 s (§5.4; NodeLinkCore LoginFor.budget = 60000,
+/// core.dart). The 6 minutes are the make's and the join's own steps. 「正在確認」 says none: §5.4 gives it 60 s, but
+/// the code's bound is one 15 s request after a possible new login (net_run.dart _make, owner_console.dart _ask), so
+/// no number is said that the code does not keep.
+String runWaitFor(String stepLine) {
+  if (stepLine.contains('最多')) return kRunWait;
+  if (stepLine.startsWith('正在連到節點')) return '$kRunWait這一步最多 1 分鐘。';
+  return kRunWait;
+}
 
 /// The plain line of a reply for the screen (log marks and technical parts off; #329 PR 6 D7: = splitCode's main
 /// part). Lines on screen go through SayLine, which keeps the technical part under 技術資訊.
@@ -359,7 +367,7 @@ class _NetFormPageState extends State<NetFormPage> {
   String _mnetLabel(MnetEntry m, List<MnetEntry> all) {
     final name = m.name.isEmpty ? '隊伍網路' : m.name;
     final same = all.where((x) => x.name == m.name).length > 1;
-    return same ? '$name（代號 …${rustLast4(m.id)}）' : name;
+    return same ? '$name（代號 …${rustLast4(m.id).toUpperCase()}）' : name;
   }
 
   /// R16: the member's join, always on the team network's entry node (P20 / D10), found by its last four (P21, R18).
@@ -424,7 +432,7 @@ class _NetFormPageState extends State<NetFormPage> {
               ]),
             ),
           ],
-          if (entry != null) Text('用節點 …${rustLast4(entry)} 加入「${_mnetLabel(m, s.mnets)}」', key: const Key('member-entry')),
+          if (entry != null) Text('用節點 …${rustLast4(entry).toUpperCase()} 加入「${_mnetLabel(m, s.mnets)}」', key: const Key('member-entry')),
         ],
         if (_note != null) SayLine(_note!, style: TextStyle(fontSize: Fs.body, color: t.ink)),
       ],
@@ -781,7 +789,13 @@ class _NetRunPageState extends State<NetRunPage> {
             StatusHero(look: Look.busy, text: i >= 0 ? '${_name(run.rows[i].id)}：${stripMarkers(run.rows[i].line)}' : '正在進行', next: runWaitFor(i >= 0 ? run.rows[i].line : ''))
           else
             StatusHero(
-                look: run.rows.every((r) => r.state == RowState.ok && r.sendEnd != RekeyEnd.applying) ? Look.ok : Look.warn,
+                // #329 PR 7 (p1p2-check 4.x_failed, design §3.1): a node that failed is an error (bad), not 注意; warn stays for
+                // the rows not done or a new key still being applied
+                look: run.rows.any((r) => r.state == RowState.failed)
+                    ? Look.bad
+                    : run.rows.every((r) => r.state == RowState.ok && r.sendEnd != RekeyEnd.applying)
+                        ? Look.ok
+                        : Look.warn,
                 text: !run.rows.every((r) => r.state == RowState.ok)
                     ? '有節點沒有完成'
                     : run.rows.any((r) => r.sendEnd == RekeyEnd.applying)
