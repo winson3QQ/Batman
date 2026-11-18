@@ -408,6 +408,37 @@ void main() {
       expect(a.ticks.removedThisRun('nn'), isTrue);
       expect(find.byType(RekeyPage), findsOneWidget);
     });
+
+    // #329 PR 6 T19 (test migration 缺口 1): after the removal commits, nothing goes to a node on its own — 10 minutes
+    // later still 0 logins / 0 sends; only the leader's 送出 sends. Negative control: RekeyPage sending its own nodes
+    // by itself after the commit -> FAIL.
+    testWidgets('T19: after the removal commits, 10 minutes on the clock send nothing until 送出 is pressed', (t) async {
+      rust.people = [
+        person(me, '隊長', 'f0', self: true, nodes: [pnode('AA01', 'dA')]),
+      ];
+      final w = leader(['0000aa01'], {'0000aa01': 'nn'})..dacs['0000aa01'] = 'dA';
+      await open(
+        t,
+        w,
+        (a) => RemoveConfirmPage(app: a, netId: 'nn', person: person(bob, '小明', 'a1'), owner: bob, node: ''),
+      );
+      await t.tap(find.byKey(const Key('remove-tick')));
+      await settle(t);
+      final before = [...w.log];
+      await t.tap(find.byKey(const Key('remove-go')));
+      await settle(t);
+      expect(rust.ops, ['remove $bob ticked=true']);
+      expect(find.byType(RekeyPage), findsOneWidget);
+      for (var i = 0; i < 10; i++) {
+        w.clock.advance(const Duration(minutes: 1));
+        await t.pump(const Duration(minutes: 1));
+        await settle(t);
+      }
+      expect(w.log, before, reason: 'T19: no login, no frame to a node after the commit');
+      await t.tap(find.descendant(of: find.byKey(const Key('own-dA')), matching: find.text('送出')));
+      await settle(t);
+      expect(w.log.skip(before.length).where((l) => l.startsWith('send')), ['send 0000aa01 net/nn member=false']);
+    });
   });
 
   group('8.4 new secrets', () {
