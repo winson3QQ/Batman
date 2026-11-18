@@ -38,6 +38,20 @@ FlowDeps deps(World w, Lease l, {Completer<void>? gate, AppLink? app}) {
 }
 
 void main() {
+  // #329 PR 6 (S20 device session 2026-11-18): the running card said 「這一步最多 6 分鐘」 twice, and under
+  // 「正在確認節點連上了，最多 2 分鐘」 it said 6 minutes. The limit is said once: the step's own, else the run's 6 min.
+  // Negative controls: a fixed 6-minute line -> the 6 / 2 minute cases FAIL; kRunWait alone -> the connect case FAILs.
+  test('runWaitFor: the time limit once per step', () {
+    for (final (line, want) in [
+      ('正在連到節點…', '請留在這個畫面。這一步最多 6 分鐘。'),
+      ('正在加入網路，這一步最多 6 分鐘', '請留在這個畫面。'),
+      ('正在確認節點連上了，最多 2 分鐘', '請留在這個畫面。'),
+    ]) {
+      expect(runWaitFor(line), want, reason: line);
+      expect('$line\n${runWaitFor(line)}'.split('最多').length - 1, 1, reason: 'one limit on the card: $line');
+    }
+  });
+
   final rust = FakeRust();
   final screen = <bool>[];
   setUpAll(() => RustLib.initMock(api: rust));
@@ -120,7 +134,7 @@ void main() {
     final l = a.reg.current;
     expect(l, isNotNull);
     expect(l!.busy, isTrue, reason: 'working: a hold');
-    expect(find.text(kRunWait), findsOneWidget); expect(find.textContaining('最多 6 分鐘').evaluate().length, lessThanOrEqualTo(1)); // #329 PR 6 (4.x_working): S5 once, on the step's own line
+    expect(find.textContaining('最多 6 分鐘'), findsOneWidget); // #329 PR 6 (4.x_working): S5 once, on the step's own line
     gate.complete();
     await settle(t);
     expect(find.text('完成'), findsWidgets);
@@ -142,7 +156,7 @@ void main() {
     await start(t);
     await back(t);
     expect(find.byType(NetRunPage), findsOneWidget);
-    expect(find.text(kRunWait), findsOneWidget); expect(find.textContaining('最多 6 分鐘').evaluate().length, lessThanOrEqualTo(1)); // #329 PR 6 (4.x_working): S5 once, on the step's own line
+    expect(find.textContaining('最多 6 分鐘'), findsOneWidget); // #329 PR 6 (4.x_working): S5 once, on the step's own line
     expect(a.reg.current, isNotNull);
     gate.complete();
     await settle(t);

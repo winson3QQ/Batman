@@ -41,7 +41,12 @@ import 'widgets.dart';
 const goMake = 'make';
 
 /// 4.x_working's next step (#329 PR 6, design S5 / F49: the one wait sentence of a join / make).
-const kRunWait = '請留在這個畫面。'; // each step's own line carries its limit (6 / 2 min); here it showed twice and contradicted the 2 min one (device 2026-11-18)
+const kRunWait = '請留在這個畫面。';
+
+/// #329 PR 6 (S20 device session 2026-11-18): the running card's line under the step. The step's own line may carry its
+/// limit (「這一步最多 6 分鐘」, 「最多 2 分鐘」); then it is not said again (it showed twice, and 6 contradicted 2). A
+/// step without one (「正在連到節點…」) gets the run's 6 minutes (S5; p1p2 4.x_working).
+String runWaitFor(String stepLine) => stepLine.contains('最多') ? kRunWait : '$kRunWait這一步最多 6 分鐘。';
 
 /// The plain line of a reply for the screen (log marks and technical parts off; #329 PR 6 D7: = splitCode's main
 /// part). Lines on screen go through SayLine, which keeps the technical part under 技術資訊.
@@ -773,7 +778,7 @@ class _NetRunPageState extends State<NetRunPage> {
         title: title,
         body: [
           if (working)
-            StatusHero(look: Look.busy, text: i >= 0 ? '${_name(run.rows[i].id)}：${stripMarkers(run.rows[i].line)}' : '正在進行', next: kRunWait)
+            StatusHero(look: Look.busy, text: i >= 0 ? '${_name(run.rows[i].id)}：${stripMarkers(run.rows[i].line)}' : '正在進行', next: runWaitFor(i >= 0 ? run.rows[i].line : ''))
           else
             StatusHero(
                 look: run.rows.every((r) => r.state == RowState.ok && r.sendEnd != RekeyEnd.applying) ? Look.ok : Look.warn,

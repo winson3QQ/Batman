@@ -103,7 +103,7 @@ class MainActivity : FlutterActivity() {
                 "devTrust" -> result.success(BuildConfig.DEV_TRUST)
                 // #329 §5.8 10.6 (A5): the version the build carries (pubspec version)
                 "appVersion" -> result.success(BuildConfig.VERSION_NAME)
-                // #329 PR 6 D6 (10.5 診斷): the product flavor's name (dev / dev2 / field), display only
+                // #329 PR 6 D6 (10.5 診斷): the product flavor's name (dev / dev2 / field); also the T-U2 device check's guard (t_u2_guard.dart)
                 "flavor" -> result.success(BuildConfig.FLAVOR)
                 // #329 §5.1 rows 1 / 2: open the system's own settings page (nothing is changed by the app)
                 "bluetoothSettings" -> result.success(openSettings(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)))

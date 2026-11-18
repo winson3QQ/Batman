@@ -25,8 +25,8 @@ void main() {
     expect(tu2Refusal(flavor: 'tu2', levels: levels(), hasRecords: true), contains('records'));
   });
 
-  test("one of the app's own flavors (dev, dev2, field) or no flavor -> refused, even when empty", () {
-    for (final f in ['dev', 'dev2', 'field', null]) {
+  test("any flavor but tu2 (the app's own, another temporary one such as dev3, none) -> refused, even when empty", () {
+    for (final f in ['dev', 'dev2', 'field', 'dev3', 'tu3', null]) { // dev3: the incident's temporary flavor
       expect(tu2Refusal(flavor: f, levels: levels(), hasRecords: false), isNotNull, reason: '$f');
     }
   });

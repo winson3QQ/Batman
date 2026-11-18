@@ -10,10 +10,14 @@ const keyRoles = ['RECORD_AES', 'OWNER_SIGN', 'ADMIN_SIGN', 'OWNER_ENC'];
 /// made for it.
 const appFlavors = {'dev', 'dev2', 'field'};
 
+/// The one flavor it runs under (review pr6-delta-E / F MINOR-1: an allow-list, not only the app's names — dev3 was a
+/// temporary flavor too, and it held a node).
+const tu2Flavor = 'tu2';
+
 /// Why T-U2 must not run, or null when it may. Fail-closed: no flavor, no levels, a missing role name or any key
 /// present all refuse.
 String? tu2Refusal({required String? flavor, required Map<String, dynamic>? levels, required bool hasRecords}) {
-  if (flavor == null || appFlavors.contains(flavor)) return 'flavor ${flavor ?? '?'} is one of the app\'s own';
+  if (flavor != tu2Flavor || appFlavors.contains(flavor)) return 'flavor ${flavor ?? '?'} is not $tu2Flavor';
   if (levels == null) return 'key levels could not be read';
   final held = [for (final r in keyRoles) if (!levels.containsKey(r) || levels[r] != null) r];
   if (held.isNotEmpty) return 'this package already has keys (${held.join(', ')})';

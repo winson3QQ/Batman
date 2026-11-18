@@ -1290,7 +1290,7 @@ fn v042_a_vpn_stops_before_anything_is_sent_and_offers_retry_or_cancel() {
     assert_eq!((text(&a), buttons(&a)), (su::T_VPN.to_string(), vec![Button::Retry, Button::Cancel]));
     assert!(!r.f.uploading(), "the upload stage ends: no network is held");
     assert!(!r.waits.contains(&31_000), "not a PUT failure: no 31 s wait, not counted");
-    assert_eq!(verb(&r.press(Button::Retry)), Verb::BulkOpen, "再試一次： bulk/open again， then the check again");
+    assert_eq!(verb(&r.press(Button::Retry)), Verb::BulkOpen, "再試一次: bulk/open again, then the check again");
     assert!(matches!(r.reply(w("bulk-open-ok")), Action::Upload { .. }));
     // three VPN stops in a row are not "傳送一直中斷"
     for _ in 0..3 {

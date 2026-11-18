@@ -272,7 +272,7 @@ class _NodeSettingsPageState extends State<NodeSettingsPage> {
           ),
         ]),
     ], foot: [
-      BatButton(_reading ? '讀取中…' : '讀取設定', key: const Key('settings-read'), onPressed: _id == null || _reading ? null : _read),
+      BatButton(_reading ? '讀取中…' : '讀取設定', key: const Key('settings-read'), onPressed: _id == null || !widget.app.link.core.states.containsKey(_id) || _reading ? null : _read),
       if (_ok)
         BatButton('複製',
             key: const Key('settings-copy'),

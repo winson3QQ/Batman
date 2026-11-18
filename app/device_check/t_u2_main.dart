@@ -28,12 +28,12 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const MaterialApp(home: Scaffold(body: Center(child: Text('T-U2 running')))));
   await RustLib.init();
-  final files = (await platform.invokeMethod<String>('filesDir'))!;
-  final dir = '$files/t-u2-records'; // its own directory: never the app's records
   // 2026-11-18 (#329 PR 6): `firstRun` REGENERATES all four keys, so this runs only under a temporary flavor that has
-  // never held a key or a record (t_u2_guard.dart; fail-closed on any doubt).
+  // never held a key or a record (t_u2_guard.dart; fail-closed on any doubt, filesDir included).
+  var files = '';
   String? refusal;
   try {
+    files = (await platform.invokeMethod<String>('filesDir'))!;
     refusal = tu2Refusal(
       flavor: await platform.invokeMethod<String>('flavor'),
       levels: await platform.invokeMapMethod<String, dynamic>('keyLevels'),
@@ -47,6 +47,7 @@ Future<void> main() async {
     debugPrint('T-U2 DONE pass=0 fail=1');
     return;
   }
+  final dir = '$files/t-u2-records'; // its own directory: never the app's records
   try {
     await platform.invokeMethod<Object?>('firstRun'); // no key yet: the four keys
   } catch (e) {
