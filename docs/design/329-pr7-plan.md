@@ -1,4 +1,4 @@
-# #329 PR 7 計畫（v3）：可遠端完成的剩餘項目
+# #329 PR 7 計畫（v4）：可遠端完成的剩餘項目
 
 基準（已審過、不重審）：`docs/design/329-app-uiux.md` v12.1、PR 1–6 已合併的行為（main 3020374）。本計畫只列新範圍。
 
@@ -143,3 +143,21 @@ T-U2 檔頭、KeyHandlers / MainActivity 提到 open / firstRun 的註解、設�
 | A-M4 / B-M5（T6） | T6 |
 | B-M4（字級） | T8 (b) |
 | C / D MINOR | T1 只查 RECORD_AES（避免覆寫）+ Dart 2.4 測試；T2 白箱；T3 例外清單完整、先空跑；T6 PermissionsPage；T8 每台 roundsEnded、生命週期；T9 B-m12；T16 標點；§4 對比方法寫死；§5 btsnoop、只用 install -r、沒有 instrumented；N1 寫成接受；§7 註解清單；T17 主機待確認 |
+
+## 10. v3 → v4（第三輪 E 0 / 0 / 12、F 0 / 2 / 12，都 APPROVE-WITH-CHANGES）
+
+**F-M1 btsnoop**：移出本 PR。#329:194 改為「要使用者同意或在場」（bugreport 含通知、帳號、SSID、完整 logcat 與所有藍牙流量；方法也要先查證 S20 是 `persist.bluetooth.btsnooplogmode` 還是 settings）。§1 表 194 的類別改「場 / 同意（另一場）」；§5 刪掉這一列。
+
+**F-M2 節點重開中斷**（取代 §5「SSH 重開 04」那一列）：只在**畫面閒置、沒有送出中的請求**時重開 04（情境 8 停在國家頁或改暱稱頁、情境 9 停在離開確認頁與加回後的節點頁），不在送出途中重開（送出途中的中斷屬 X13 / X14，已在 PR 6 做背景那種）。每次重開前後用唯讀 SSH 記錄：`uname -n`、`uci -q get wireless.radio1.country`、`batctl n | wc -l`、mesh id（`uci -q get wireless.*mesh_id` 之類，唯讀）。還原：國家應仍是 US；網路應仍是 bm-94676ef40105；不符 → 停下回報，不自己修。**04 重開後 5 分鐘內 SSH 回不來 → 停止整個場次並回報**（不再做任何會改 04 的步驟）。情境 9 的離開 / 加回照 PR 6 已走過的步驟，加回失敗 → 停下回報。
+
+**MINOR 併入實作**：
+- T14：§6 改正「今天」的描述——種類目錄讀不到時 `store_sweep` 先擋（store.rs:216），今天真正被當成「沒有紀錄」的是種類路徑不是目錄（ENOTDIR）與目錄中某一項讀取錯誤；Rust 測試含 ENOTDIR（`records/node` 是一般檔案 → Err）與「有效紀錄 + 一項錯誤 → true」（先掃完、看到有效紀錄就回 true）。錯誤句雙語（主句中文 + 技術段），加下一步「關掉 App 再開、重開手機；仍然如此請找維修人員，**不要清除資料或重裝**」。Dart 測試斷言新的那句字，並斷言 RECORD_AES 正常時也不會進首頁（main 上會 FAIL）。#329:220 關單時寫明 firstRun 刻意不加防呆（理由：確定沒有紀錄時重產能從中斷恢復）。PR body 標 T14 真機 ⚠️（S20 有 marker，走不到）。
+- T1：`KeyUses` 加 `level(role)`；Kotlin open 的六個呼叫點（claim_records:37、app_link:35 / :115 / :183 / :204、ui_state:228）寫進 §6——新錯誤只在 RECORD_AES 等級不符時，那時 app 本來就停用；`KeysWiringLintTest` 鎖新的 override；模擬器 `KeyHandlersDeviceTest` 加 open 案例（等級 0 → `keyLevel RECORD_AES`），只用 `am instrument -w`，絕不用 connectedAndroidTest。#329:105 的 D-4 那一半（其他 Keystore 錯誤顯示成連不到、要重開才恢復）是 review pr1 B-M5 刻意的設計 → 寫成接受，§1 表 105 改「做一半 + 接受」。
+- T2：白箱測試要能在拿掉 `fill(0)` 時 FAIL（不靠 lint 的 `wipe = true`）。
+- T3：鎖比對識別字（含 tear-off 與生成碼直接呼叫）；例外是「檔案 + 允許的呼叫數」，新增一個呼叫就 FAIL。
+- T6：開 PermissionsPage 回來後同首頁呼叫 `link.radio(permission: true)`。
+- T8：core 的函式是 `startup()`；一輪結束時是 queued（還沒輪到）的目標不算讀過；首頁彙總用「有任何一台 firstRounds」；2.0 倍字級先在 main 空跑記 FAIL 數。
+- T20：`hold()` 在佔用被收回時會丟例外 → 接住、顯示「另一個操作還在進行」；重按搜尋、stream 結束都釋放。
+- §1：合計改正（做 17、勾 / 決定 9）；128 子項附證據（首頁兩顆按鈕已開新頁 home_page.dart:203-206；「手機 Wi-Fi」已在節點頁 node_page.dart:192）。
+- §4：開場前先試一次 `uiautomator dump` 看得到 Flutter 文字節點（看不到 → 對比改用畫板 PNG 的已知 bounds，真機只做抽樣並標 ⚠️）。
+- §5：開場前把 main（3020374）的 dev APK 留一份當還原用。
