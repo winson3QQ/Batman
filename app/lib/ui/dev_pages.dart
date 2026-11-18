@@ -366,9 +366,11 @@ class _OrphanJoinsPageState extends State<OrphanJoinsPage> {
                 Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                   BatButton(Btn.forgetJoin, key: const Key('orphan-forget'), onPressed: () => Navigator.pop(c, 'forget')),
                   // remove-member §3.6: a node that may be lost / captured is excluded instead (the old console's choice)
-                  if (a.devTrust)
+                  if (a.devTrust) ...[
+                    const SizedBox(height: 8),
                     BatButton(Btn.excludeThis,
                         key: const Key('orphan-exclude'), kind: BtnKind.danger, onPressed: () => Navigator.pop(c, 'exclude')),
+                  ],
                   const SizedBox(height: 6),
                   BatButton(Btn.cancel, kind: BtnKind.text, onPressed: () => Navigator.pop(c)),
                 ]),
