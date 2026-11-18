@@ -1,4 +1,4 @@
-# #329 PR 7 計畫（v4）：可遠端完成的剩餘項目
+# #329 PR 7 計畫（v4，凍結）：可遠端完成的剩餘項目
 
 基準（已審過、不重審）：`docs/design/329-app-uiux.md` v12.1、PR 1–6 已合併的行為（main 3020374）。本計畫只列新範圍。
 
@@ -20,7 +20,7 @@ v1 → v2：第一輪 A（1 / 4 / 11）、B（1 / 5 / 12），都 REJECT（T14�
 | 91 | 每條情境的三種中斷 | 同意 + 場 | 本 PR 真機：情境 8（改暱稱、國家頁）與 9（離開、加回）各做關藍牙、04 重開、切背景（要同意）；1、2、3、6、7 要 02 重燒或使用者在場 |
 | 92 | 一致性檢查表逐畫面 | 做 | §4 |
 | 104 | 舊 ClaimPage 返回 | 勾 | 已打勾 |
-| 105 | X26 只認 keyLevel；open 不經閘門 | 做 | T1 |
+| 105 | X26 只認 keyLevel；open 不經閘門 | 做一半 + 接受 | T1 做 open 經政策；D-4 那一半（其他 Keystore 錯誤顯示成連不到、要重開才恢復）是 review pr1 B-M5 刻意設計 → 接受 |
 | 106 | 明文無法在 Dart 端清零 | 做一半 + 接受 | T2（Kotlin 自己那份清零）；Dart 端寫成接受的殘項 |
 | 110 | 舊頁不走 BleGate / RecordWriter；T-G5 | 做 | T3 |
 | 111 | BleGate 藍牙關閉不另外拒絕 | 接受 | T4 理由 |
@@ -49,7 +49,7 @@ v1 → v2：第一輪 A（1 / 4 / 11）、B（1 / 5 / 12），都 REJECT（T14�
 | 185 | 未看過 app 的人實測 | 場 | — |
 | 188 | 第二支手機 | 硬 | — |
 | 189 | 第三台節點、其他 Android | 硬 | — |
-| 194 | BLE 133 根因（btsnoop） | 同意 | 可遠端：`adb` 開 HCI snoop（改手機開發者設定）→ 重現 133 → 拉 log 分析。**本 PR 真機場次一起問**；不同意就留著 |
+| 194 | BLE 133 根因（btsnoop） | 場 / 同意（另一場） | 移出本 PR（§10 F-M1）：bugreport 含個資，方法也要先查證；留著 |
 | 199 | 首頁待辦競爭 | 做 | T11 |
 | 201 | 02 擁有者金鑰毀 | 場 | 重燒 |
 | 216 | 02 重燒後情境 1 / 2 / 3 / 6 | 場 | — |
@@ -60,7 +60,7 @@ v1 → v2：第一輪 A（1 / 4 / 11）、B（1 / 5 / 12），都 REJECT（T14�
 | 221 | 30 s 記憶位址等待 | 接受 | N4 |
 | 222 | 中英混排 | 做 | T16 |
 
-合計：做 19（87、88、92、105、106 半、110、112、113、114、125–129、199、220、222）· 勾 / 決定 10（84、85、104、120、122、130、147、177 隨 147 / 148、90 一半）· 接受 5（106 半、111、115、219、221）· 場 / 硬 / 同意 其餘。逐行各屬一列，共 49 行。
+合計：做 17 · 勾 / 決定 9 · 其餘為接受、場、硬、同意（逐行見上表，共 49 行）。
 
 ## 2. 本 PR 做的
 
@@ -108,12 +108,11 @@ v1 → v2：第一輪 A（1 / 4 / 11）、B（1 / 5 / 12），都 REJECT（T14�
 | `adb install -r` 本 PR 的 dev APK | 換程式，資料與金鑰保留 | — |
 | 截圖、操作 app | 無 | — |
 | 關開藍牙（`cmd bluetooth_manager`）：T6 節點頁按鈕、91 的中斷 | 手機藍牙關開數次 | 開回 |
-| SSH 重開 04（91：情境 8 / 9 的節點重開中斷） | 04 斷線約 1.5 分鐘 | 自己回來 |
+| SSH 重開 04（91：情境 8 / 9 的節點重開中斷） | 04 斷線約 1.5 分鐘 | 依 §11 的步驟與停止條件 |
 | 情境 9 再走一次（04 離開、加回 bm-94676ef40105） | 04 網路暫時變動 | 加回 |
-| btsnoop（194）：`settings put secure bluetooth_hci_log 1` + 藍牙關開 → 重現 133 → `adb bugreport` 取 log → 關回 | 改手機開發者設定、bugreport 檔很大 | 設定關回 |
 | T1 open 耗時 | 讀 log | — |
 
-只用 `adb -s RFCN30HMRAR install -r`；不跑 `flutter install` / `flutter run` / `connectedAndroidTest`；本 PR 沒有 instrumented 測試。04 在網路中，節點頁「還沒加入網路」的分支真機看不到 → ⚠️ 只有 widget 測試。
+只用 `adb -s RFCN30HMRAR install -r`；不跑 `flutter install` / `flutter run` / `connectedAndroidTest`。模擬器的 KeyHandlersDeviceTest（T1）只在 `emulator-5554`：只建不裝（gradle assemble），`adb -s emulator-5554 install -r`、`am instrument -w`，不准用 gradle 的 install / connected 任務。04 在網路中，節點頁「還沒加入網路」的分支真機看不到 → ⚠️ 只有 widget 測試。
 
 ## 6. 契約、生命週期、安全
 
@@ -129,7 +128,7 @@ T-U2 檔頭、KeyHandlers / MainActivity 提到 open / firstRun 的註解、設�
 
 ## 8. 測試總表
 
-每項各有測試與負向對照（§2）。全套 = WSL `test-all.sh` + Windows `flutter test` + `flutter analyze lib test device_check` + Kotlin JVM 測試（`app/tools/kotlin-unit-tests.sh`）。
+每項各有測試與負向對照（§2）。全套 = WSL `test-all.sh` + Windows `flutter test` + `flutter analyze lib test device_check` + Kotlin JVM 測試（`app/tools/kotlin-unit-tests.sh`）。 + 模擬器 `am instrument`（KeyHandlersDeviceTest）。
 
 ## 9. 審查對應
 
@@ -161,3 +160,14 @@ T-U2 檔頭、KeyHandlers / MainActivity 提到 open / firstRun 的註解、設�
 - §1：合計改正（做 17、勾 / 決定 9）；128 子項附證據（首頁兩顆按鈕已開新頁 home_page.dart:203-206；「手機 Wi-Fi」已在節點頁 node_page.dart:192）。
 - §4：開場前先試一次 `uiautomator dump` 看得到 Flutter 文字節點（看不到 → 對比改用畫板 PNG 的已知 bounds，真機只做抽樣並標 ⚠️）。
 - §5：開場前把 main（3020374）的 dev APK 留一份當還原用。
+
+## 11. 凍結（第四輪 G 0 / 0 / 7、H 0 / 0 / 9，都 APPROVE-WITH-CHANGES）——真機場次的確切做法與其餘 MINOR
+
+**真機場次（取代 §5 / §10 F-M2 的細節）**
+1. 開場前：留一份 main（3020374）的 dev APK；比對 PR APK 與手機上 dev 的簽章（apksigner）；`install -r` 失敗 → 停下，絕不解除安裝。裝好後先唯讀確認 app 讀得到 04，才做任何會改 04 的步驟。
+2. 04 的唯讀檢查指令（開場前在 04 上先試、確定輸出不是空的）：`uname -n`；`uci -q get wireless.radio1.country`；`uci show wireless | grep '\.mesh_id='`（只取這一行，不印金鑰）；`batctl n`（鄰居數只當參考）。任何一個回空或出錯 → ❓ 停下。
+3. 每次重開 04 之前：節點頁沒有「未完成的網路變更」（k10 存在且 k11 = true 時，254-app-leave.md:25）——有就等，最多 10 分鐘，仍有就跳過這次重開並記錄。
+4. 每次重開之後：SSH 回來（5 分鐘內，否則停整場）**而且** app 重新讀到 04（BLE），才做下一個中斷；國家仍是 US、mesh_id 不變，不符 → 停下回報。
+5. 截圖、`uiautomator dump` 只放 scratchpad，不進 repo。
+
+**其餘 MINOR（實作時處理）**：T2 兩樣都要——回覆後清零的純函式 JVM 測試，加 lint 要求 open / ecdh 帶 `wipe = true`（MainActivityKeyUseLintTest.kt:27 的正則改成必填）；T1 lint 頻道清單加 `open`（:25），MainActivity.kt:73-74「Not gated: open」註解改；T14 新句子不放寬 key_abilities_test.dart:617；§10 寫的「Kotlin open 的六個呼叫點」是 Dart 端的六個呼叫點；T1 / T14 的負向對照在 Kotlin / Rust 測試（Dart 測試在 main 上也會過，只當正向）；KeyHandlersDeviceTest 的前提：模擬器上先有一把 RECORD_AES 測試別名。
