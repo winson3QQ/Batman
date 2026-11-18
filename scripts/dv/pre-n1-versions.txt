@@ -1,0 +1,9 @@
+# scripts/dv/pre-n1-versions.txt — #329 N1 (docs/design/329-n1-plan.md §5.2): the image versions known to be BEFORE
+# provd's 30 s rule for a link without a session (one BATMAN_VERSION per line). prov-boot-provd-254's link-without-session
+# arm prints "no 'link without session' line in 70 s (pre-N1 image)" — the only known-failure line — only for a version
+# on this list; on any other version a missing line is a plain FAIL, so an rc that lost the change is never KNOWN.
+# A version alone is enough: every image listed here was built before the change existed. Add a line with every pin
+# bump until N1 ships; the list is frozen after that (same rule as pre-p3-versions.txt).
+1.5.14-wsl.26+5edb755.fw162a4d5.bench
+1.5.14-wsl.28+5079b47.fw108f016
+1.5.14-wsl.29+141a018.fw7781d66.bench

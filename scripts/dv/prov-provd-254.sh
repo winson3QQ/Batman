@@ -82,8 +82,8 @@ boot-provd)
 	[ "$(qr 'grep -q provd.env /etc/init.d/batman-provd && echo test || echo release')" = release ] || no "04 runs a prov_test (wbox) init — boot-provd judges the release image"
 	j boot
 	last4 || { pr_release; pr_result; exit 1; }
-	hmark; c0=$(plog 'adv withdrawn reason=connect')
-	o=$(c02 read "$LAST4"); echo "$o" | sed 's/^/    /'
+	lg_mark; hmark; c0=$(plog 'adv withdrawn reason=connect')
+	o=$(c02 read "$LAST4"); echo "$o" | sed 's/^/    /'; lg_age_say "read"; lg_guard "read"
 	cv=$(sed -n 's/^CTRL //p' <<< "$o"); sv=$(sed -n 's/^STATUS //p' <<< "$o"); nm=$(sed -n 's/^NAME //p' <<< "$o"); a=$(sed -n 's/^ADDR //p' <<< "$o")
 	if [ -z "$a" ]; then inv "02 could not read 04 (no advertiser with key 5 = $LAST4 / reads failed): $(echo $o)"
 	else
@@ -96,14 +96,37 @@ boot-provd)
 		case "$sv" in a5*"$(k5 "$LAST4")"*) ok "02 read STATUS with no pairing: a 5-entry map with key 5 = $LAST4 ($sv)" ;; *) no "STATUS [$sv] (want a 5-entry map with key 5 = $LAST4: $(k5 "$LAST4"))" ;; esac
 		[ "$(sed -n 's/^PAIRED //p' <<< "$o")" = no ] && ok "02 not paired after the reads" || no "02 paired [$(sed -n 's/^PAIRED //p' <<< "$o")]"
 	fi
-	hmark; wc0=$(plog 'adv withdrawn reason=connect'); rd0=$(plog 'adv registered reason=disconnect')   # taken right before the hold (review B-m2)
+	lg_mark; hmark; wc0=$(plog 'adv withdrawn reason=connect'); rd0=$(plog 'adv registered reason=disconnect')   # taken right before the hold (review B-m2)
 	if a=$(hold02); then
 		sleep 3
 		[ "$(plog 'adv withdrawn reason=connect')" -gt "$wc0" ] && ok "a held link withdrew the advertisement (reason=connect)" || no "no 'adv withdrawn reason=connect' while 02 holds a link"
 		n=$(ninst); [ "$n" = 0 ] && ok "0 advertising instances on 04 while connected" || no "$n advertising instance(s) while connected"
-		rd0=$(plog 'adv registered reason=disconnect'); o=$(c02 drop "$a"); sleep 5
+		lg_age_say "hold"; rd0=$(plog 'adv registered reason=disconnect'); o=$(c02 drop "$a"); sleep 5
 		[ "$(plog 'adv registered reason=disconnect')" -gt "$rd0" ] && ok "dropping the link registered again (reason=disconnect)" || no "no 'adv registered reason=disconnect' after the drop"
+		lg_guard "hold"
 	else inv "02 could not hold a link to 04 — the connect / withdraw checks did not run"; fi
+	# #329 N1 (docs/design/329-n1-plan.md §5.2): a link that has no session for 30 s is logged once and cut, and 04
+	# advertises again. 02 holds a link and opens nothing for 70 s; 04's log after the mark is read once and judged by
+	# lg_judge (link-grace-329.sh). On a listed pre-N1 image the one fixed FAIL line is the whole verdict. `watch` drops
+	# the link on each of its exits; the drop and the one-instance check below run on every path.
+	lg_mark
+	if a=$(hold02); then
+		o=$(c02 watch "$a" 70); say "02 held a link with no session: $o"
+		L=$(lg_log)
+		if grep -q '^LG-END ' <<< "$L"; then
+			v=$(lg_judge "$ver" "$REPO/scripts/dv/pre-n1-versions.txt" <<< "$L"); st=$(sed -n 's/^LG state=//p' <<< "$v")
+			while IFS= read -r l; do case "$l" in PASS\ *) ok "${l#PASS }" ;; FAIL\ *) no "${l#FAIL }" ;; INVALID\ *) inv "link without session: ${l#INVALID }" ;; esac; done <<< "$v"
+			case "$st" in cut|none|invalid) ;; *) inv "link without session: no verdict from the judge [$v]" ;; esac
+			if [ "$st" = cut ]; then
+				n=$(sed -n 's/^GONE .* after \([0-9]*\) s.*/\1/p' <<< "$o")
+				[ -n "$n" ] && ok "02 saw the link go $n s into its watch (02's clock)" || no "04 logged the cut but 02 still had the link after 70 s: [$o]"
+				o=$(c02 read "$LAST4"); cv=$(sed -n 's/^CTRL //p' <<< "$o")
+				[ -n "$cv" ] && ok "after the cut 02 finds 04 and reads CTRL again ($cv)" || no "after the cut 02 could not read 04: [$(tr '\n' ' ' <<< "$o")]"
+			fi
+		else inv "link without session: 04's log could not be read after the 70 s"; fi
+		c02 drop "$a" >/dev/null; sleep 5
+	else inv "02 could not hold a link to 04 — the link-without-session arm did not run"; fi
+	n=$(ninst); [ "$n" = 1 ] && ok "one advertising instance on 04 after the link-without-session arm" || no "$n advertising instance(s) on 04 after the link-without-session arm"
 	# what provd advertises, from 04's own HCI traffic (btmon, the harness's copy)
 	if [ -f "$BTT/btmon" ] && pr_pc_place; then
 		scp -q $SSHO "$BTT/btmon" root@$NODE:$PCD/btmon.up && q "mv $PCD/btmon.up $PCD/btmon && chmod 0700 $PCD/btmon"
@@ -122,12 +145,17 @@ respawn)
 	i1=$(timeout 60 ssh $SSHO root@$NODE "$PCD/provclient node info" 2>&1 | tr -d '\r' | grep '^RESULT info.state')
 	[ -n "$i0" ] && [ "$i0" = "$i1" ] && ok "info.state unchanged by the kills ($i1)" || no "info.state before [$i0] after [$i1]"
 	# L80 arm 1 + its control (review A-M5 / B-M3): untouched, the link stays 15 s; killed, the new provd's inventory drops it
+	# #329 N1: provd cuts a link without a session at 30 s, so the control watches 8 s (was 15) and both arms are guarded
+	lg_mark
 	if a=$(hold02); then
-		o=$(c02 watch "$a" 15); say "control (provd untouched): $o"
-		if grep -q '^STILL' <<< "$o"; then ok "L80 control: with provd untouched 02's link stays up 15 s"
+		o=$(c02 watch "$a" 8); say "control (provd untouched): $o"; lg_age_say "L80 control"
+		if ! lg_guard "L80 control"; then :
+		elif grep -q '^STILL' <<< "$o"; then ok "L80 control: with provd untouched 02's link stays up 8 s"
+			lg_mark
 			if a=$(hold02); then
-				hmark; d0=$(plog 'disconnected [0-9]* stale link'); q "$KILLPROVD"
+				hmark; d0=$(plog 'disconnected [0-9]* stale link'); lg_age_say "L80 kill (at the kill)"; q "$KILLPROVD"
 				o=$(c02 watch "$a" 30); say "after the kill: $o"; n=$(sed -n 's/^GONE .* after \([0-9]*\) s.*/\1/p' <<< "$o")
+				lg_guard "L80 kill"
 				[ -n "$n" ] && [ "$n" -le 15 ] && ok "L80: 02 saw Connected=no $n s after the kill (02's clock, <= 15)" || no "L80: [$o] (want GONE <= 15 s)"
 				t=0; while [ $t -lt 10 ] && [ "$(plog 'disconnected [0-9]* stale link')" = "$d0" ]; do sleep 2; t=$((t + 1)); done
 				[ "$(plog 'disconnected [0-9]* stale link')" -gt "$d0" ] && ok "L80: the new provd logged '$(qr "logread | grep 'batman-provd\[' | grep 'stale link' | tail -1" | sed 's/.*provd: //')'" || no "L80: the new provd logged no 'disconnected <n> stale link(s)' — the link went down some other way"
@@ -187,14 +215,15 @@ sec-dbus)
 	deny DBus.UpdateActivationEnvironment --dest=org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus.UpdateActivationEnvironment dict:string:string:DV,1
 	# ---- tier B (02 connected)
 	if last4; then
-		o=$(c02 read "$LAST4"); say "02 read: $(tr '\n' ' ' <<< "$o")"; cv=$(sed -n 's/^CTRL //p' <<< "$o")
+		lg_mark; o=$(c02 read "$LAST4"); say "02 read: $(tr '\n' ' ' <<< "$o")"; cv=$(sed -n 's/^CTRL //p' <<< "$o"); lg_guard "tier B read"
 		[ -n "$cv" ] && ok "bluetoothd -> provd: 02's GATT read of CTRL answered ($cv)" || no "bluetoothd -> provd: 02 read of CTRL: [$(tr '\n' ' ' <<< "$o")]"
+		lg_mark
 		if a=$(hold02); then
 			x=$(qr 'bluetoothctl devices Connected 2>/dev/null' | sed 's/\x1b\[[0-9;]*m//g' | sed -n 's/^Device \([0-9A-F:]\{17\}\).*/\1/p' | head -1)
 			if [ -n "$x" ]; then
 				o=$(as471 --dest=org.bluez "/org/bluez/hci0/dev_${x//:/_}" org.bluez.Device1.Disconnect)
 				grep -q '^method return' <<< "$o" && ok "471 Device1.Disconnect $x -> method return (allowed: provd's L80 path)" || no "471 Device1.Disconnect $x: [$(head -2 <<< "$o" | tr '\n' ' ')]"
-				o=$(c02 watch "$a" 15); say "02 after the 471 Disconnect: $o"
+				o=$(c02 watch "$a" 8); say "02 after the 471 Disconnect: $o"; lg_age_say "471 Disconnect"; lg_guard "471 Disconnect"
 				grep -q '^GONE ' <<< "$o" && ok "the link really dropped: $o" || no "02 still connected after the 471 Disconnect: $o"
 			else no "04 lists no connected device while 02 holds [$a]"; c02 drop "$a" >/dev/null; fi
 		else no "02 could not hold a link to 04"; fi

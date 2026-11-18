@@ -184,5 +184,47 @@ rpa_case nothing-seen s_none FAIL "no address observed at all"
 o=$(echo 1000 > "$CLK"; SCEN=s_none; bchk_ble_rpa_254 p c 2>&1)
 grep -q 'c == a' <<< "$o" && tbad "rpa nothing-seen: printed the misleading 'c == a'" || tok "rpa nothing-seen: no 'c == a' when nothing was observed (2026-10-21 s15)"
 
+# ---------------------------------------------------------------- link without session (#329 N1, scripts/dv/link-grace-329.sh)
+# lg_judge on canned logread text: every exit of prov-boot-provd-254's link-without-session arm
+# shellcheck source=scripts/dv/link-grace-329.sh
+. "$REPO/scripts/dv/link-grace-329.sh"
+printf '# c\n1.5.14-wsl.26+5edb755.fw162a4d5.bench\n' > "$W/pre-n1"
+lgl() { printf 'Sun Jul 27 %s 2025 daemon.info batman-provd[1234]: provd: %s\n' "$1" "$2"; }   # <HH:MM:SS> <text>
+LGW='adv withdrawn reason=connect'; LGS='link without session for 30 s'; LGD='adv registered reason=disconnect'
+# lg_case <name> <version> <want state> <want ERE in the output> <unwanted ERE or -> ; the log in $W/lg
+lg_case() {
+	local o; o=$(lg_judge "$2" "$W/pre-n1" < "$W/lg")
+	if [ "$(sed -n 's/^LG state=//p' <<< "$o")" = "$3" ] && grep -qE "$4" <<< "$o" && { [ "$5" = - ] || ! grep -qE "$5" <<< "$o"; }; then tok "link-grace $1: state=$3"
+	else tbad "link-grace $1: want state=$3 with /$4/ and without /$5/, got [$(tr '\n' '|' <<< "$o")]"; fi
+}
+RC=1.5.14-wsl.30+1f74d28.fw689266b.bench; OLD=1.5.14-wsl.26+5edb755.fw162a4d5.bench
+{ lgl 22:44:15 "$LGW"; lgl 22:44:48 "$LGS"; lgl 22:44:49 "disconnected 1 stale link(s)"; lgl 22:44:50 "$LGD"; } > "$W/lg"; lg_case good "$RC" cut '^PASS 04 logged the link as stale 33 s' '^(FAIL|INVALID)'
+{ lgl 22:44:15 "$LGW"; lgl 22:44:48 "$LGS"; lgl 22:44:50 "$LGD"; } | lg_judge "$RC" "$W/pre-n1" | grep -q '^PASS 04 advertises again 2 s' && tok "link-grace good: the advert is back 2 s after the line" || tbad "link-grace good: no PASS for the advert coming back"
+{ lgl 22:44:15 "$LGW"; lgl 22:44:44 "$LGS"; lgl 22:44:45 "$LGD"; } > "$W/lg"; lg_case edge-29 "$RC" cut '^PASS 04 logged the link as stale 29 s' '^FAIL'
+{ lgl 22:44:15 "$LGW"; lgl 22:44:52 "$LGS"; lgl 22:44:53 "$LGD"; } > "$W/lg"; lg_case edge-37 "$RC" cut '^PASS 04 logged the link as stale 37 s' '^FAIL'
+{ lgl 22:44:15 "$LGW"; lgl 22:44:43 "$LGS"; lgl 22:44:44 "$LGD"; } > "$W/lg"; lg_case under-29 "$RC" cut '^FAIL .* only 28 s .*cut before 30 s' '^PASS 04 logged'
+{ lgl 22:44:15 "$LGW"; lgl 22:44:53 "$LGS"; lgl 22:44:54 "$LGD"; } > "$W/lg"; lg_case over-37 "$RC" cut '^FAIL .* 38 s .*later than 30 s \+ one tick' '^PASS 04 logged'
+{ lgl 22:44:15 "$LGW"; lgl 22:44:48 "$LGS"; lgl 22:44:53 "$LGS"; lgl 22:44:54 "$LGD"; } > "$W/lg"; lg_case two-lines "$RC" none "^FAIL 2 'link without session' lines" '^PASS'
+{ lgl 22:44:15 "$LGW"; lgl 22:44:30 "adv registered reason=health"; lgl 22:44:48 "$LGS"; } > "$W/lg"; lg_case adv-in-between "$RC" invalid '^INVALID the advertisement was registered \(22:44:30 reason=health\)' '^(PASS|FAIL)'
+{ lgl 22:44:15 "$LGW"; lgl 22:44:21 "$LGD"; } > "$W/lg"; lg_case self-drop "$RC" invalid '^INVALID the advertisement came back 6 s after the connection' '^(PASS|FAIL)'
+{ lgl 22:44:15 "$LGW"; lgl 22:44:21 "$LGD"; } > "$W/lg"; lg_case self-drop-on-old "$OLD" invalid '^INVALID the advertisement came back 6 s' '^(PASS|FAIL)'
+{ lgl 22:44:10 "adv registered reason=start"; } > "$W/lg"; lg_case no-connection "$RC" invalid '^INVALID 04 logged no connection' '^(PASS|FAIL)'
+: > "$W/lg"; lg_case empty-log "$RC" invalid '^INVALID 04 logged no connection' '^(PASS|FAIL)'
+{ lgl 22:44:48 "$LGS"; lgl 22:44:50 "$LGD"; } > "$W/lg"; lg_case line-without-connect "$RC" invalid '^INVALID a .link without session. line at 22:44:48 with no connection' '^(PASS|FAIL)'
+# the pre-N1 line is the known-failures entry's text, whole; an image off the list gets a different FAIL
+o=$({ lgl 22:44:15 "$LGW"; lgl 22:45:30 "$LGD"; } | lg_judge "$OLD" "$W/pre-n1")
+[ "$o" = "$(printf "FAIL no 'link without session' line in 70 s (pre-N1 image)\nLG state=none")" ] && tok "link-grace pre-N1: the one fixed line, nothing else" || tbad "link-grace pre-N1: got [$(tr '\n' '|' <<< "$o")]"
+kf=$(awk -F'\t' '$1 == "prov-boot-provd-254" && /pre-N1/ { print $2 }' "$REPO/scripts/validation-known-failures.txt")
+[ -n "$kf" ] && grep -qE "$kf" <<< "FAIL prov-boot-provd-254: $(head -1 <<< "$o" | sed 's/^FAIL //')" && tok "link-grace pre-N1: the known-failures entry matches the line as the unit prints it" || tbad "link-grace pre-N1: known-failures ERE [$kf] does not match the unit's line"
+o=$({ lgl 22:44:15 "$LGW"; lgl 22:45:30 "$LGD"; } | lg_judge "$RC" "$W/pre-n1")
+grep -q "^FAIL 04 ($RC) kept a link that has no session for 70 s" <<< "$o" && ! grep -q 'pre-N1' <<< "$o" && ! grep -qE "$kf" <<< "FAIL prov-boot-provd-254: $(head -1 <<< "$o" | sed 's/^FAIL //')" && tok "link-grace rc without the rule: a plain FAIL the known-failures entry does not match" || tbad "link-grace rc without the rule: got [$(tr '\n' '|' <<< "$o")]"
+o=$({ lgl 22:44:15 "$LGW"; lgl 22:45:30 "$LGD"; } | lg_judge "$RC" "$W/nonexistent")
+grep -q '^FAIL 04 (' <<< "$o" && tok "link-grace: no versions file -> not pre-N1 (plain FAIL)" || tbad "link-grace without a versions file: [$o]"
+{ lgl 23:59:45 "$LGW"; lgl 00:00:17 "$LGS"; lgl 00:00:19 "$LGD"; } > "$W/lg"; lg_case midnight "$RC" cut '^PASS 04 logged the link as stale 32 s' '^FAIL'
+# an earlier link's connect / disconnect before the held one: t0 is the last connect before the line
+{ lgl 22:43:00 "$LGW"; lgl 22:43:05 "$LGD"; lgl 22:44:15 "$LGW"; lgl 22:44:47 "$LGS"; lgl 22:44:49 "$LGD"; } > "$W/lg"; lg_case earlier-link "$RC" cut '^PASS 04 logged the link as stale 32 s' '^(FAIL|INVALID)'
+{ lgl 22:44:15 "$LGW"; lgl 22:44:47 "$LGS"; } > "$W/lg"; lg_case no-advert-after "$RC" cut "^FAIL no 'adv registered reason=disconnect' after" '^PASS 04 advertises'
+{ lgl 22:44:15 "$LGW"; lgl 22:44:47 "$LGS"; lgl 22:45:10 "$LGD"; } > "$W/lg"; lg_case advert-late "$RC" cut '^FAIL 04 advertised again 23 s' '^PASS 04 advertises'
+[ "$({ lgl 22:43:00 "$LGW"; lgl 22:44:15 "$LGW"; lgl 22:44:20 "$LGD"; } | lg_last_w)" = 22:44:15 ] && [ "$(lg_age 22:44:15 22:44:36)" = 21 ] && [ "$(lg_age 23:59:50 00:00:05)" = 15 ] && tok "link-grace: lg_last_w / lg_age (midnight too)" || tbad "link-grace: lg_last_w / lg_age"
 echo "$P passed, $F failed"
 [ "$F" = 0 ] && [ "$P" -gt 0 ]
