@@ -2,11 +2,11 @@
 // Keystore (seal / open) and UiState together. A device-only check program (not `flutter test`, which uninstalls apps on
 // failure). It needs a hardware-backed RECORD_AES: an emulator's keystore is software level 0, which the key policy
 // refuses (PlatformException(keyLevel, RECORD_AES, 0)), so every premise fails there. Run it on a phone under a package
-// of its own that holds no real records (2026-11-18: S20 under a temporary `dev3` flavor, `install -r` only; the
-// normal dev3 build was put back after), never over the dev / field package:
-//   flutter build apk --debug --flavor dev3 -t device_check/t_u2_main.dart
-//   adb -s <phone> install -r build/app/outputs/flutter-apk/app-dev3-debug.apk
-//   adb -s <phone> shell am start -n dev.batman.app.dev3/dev.batman.batman_app.MainActivity
+// of its own that has NEVER held keys or records (a brand-new applicationId; the program refuses otherwise — on
+// 2026-11-18 it was run under dev3, which held node 7C31, and its `firstRun` destroyed that node's owner key):
+//   flutter build apk --debug --flavor tu2 -t device_check/t_u2_main.dart
+//   adb -s <phone> install -r build/app/outputs/flutter-apk/app-tu2-debug.apk
+//   adb -s <phone> shell am start -n dev.batman.app.tu2/dev.batman.batman_app.MainActivity
 //   adb -s <phone> logcat -d | grep T-U2
 // Four broken files — length 0, an unknown header version, a ciphertext byte flipped, a body of version 2 — must each
 // read as 「no saved state」 (defaults, no exception), and the next write after each must work and read back.
@@ -27,10 +27,22 @@ Future<void> main() async {
   await RustLib.init();
   final files = (await platform.invokeMethod<String>('filesDir'))!;
   final dir = '$files/t-u2-records'; // its own directory: never the app's records
+  // 2026-11-18 (#329 PR 6): `firstRun` REGENERATES all four keys (Keys.kt firstRun), so running this over a package
+  // that holds records destroys them for good — it did, on the S20's dev3 (the owner key of node 7C31 was lost; only a
+  // re-flash brings that node back). Refuse when the package has any key or any app record; generate keys only when
+  // there are none.
+  final levels = await platform.invokeMapMethod<String, dynamic>('keyLevels');
+  final hasKey = levels != null && levels.values.any((v) => v != null);
+  final hasRecords = Directory('$files/records').existsSync();
+  if (hasKey || hasRecords) {
+    debugPrint('T-U2 REFUSED: this package already has ${hasKey ? 'keys' : 'records'} — run it under a fresh package');
+    debugPrint('T-U2 DONE pass=0 fail=1');
+    return;
+  }
   try {
-    await platform.invokeMethod<Object?>('firstRun'); // the emulator's first run: the four keys
+    await platform.invokeMethod<Object?>('firstRun'); // no key yet: the four keys
   } catch (e) {
-    debugPrint('T-U2 diag firstRun: $e'); // already there, or the reason
+    debugPrint('T-U2 diag firstRun: $e');
   }
   try {
     debugPrint('T-U2 diag keyLevels: ${await platform.invokeMethod<Object?>('keyLevels')}');
