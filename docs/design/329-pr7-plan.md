@@ -100,6 +100,8 @@ v1 → v2：第一輪 A（1 / 4 / 11）、B（1 / 5 / 12），都 REJECT（T14�
 - 補從沒渲染的畫板：3.3、3.4、3.7、9.x 完成 / 退回、10.5、開發者各頁、6.x（假 visible）。
 - 淺、深兩色**全部**打開看過，重寫 `p1p2-check.md`；沒看的格寫「沒看」。
 - 真機對比（方法寫死，用 Dart 小程式在電腦上算，不用 python）：`uiautomator dump` 取每個文字元素的 bounds → `screencap` → 在 bounds 內取顏色直方圖，背景 = 最多的顏色，前景 = 和背景亮度差最大、且佔 ≥ 2% 的顏色 → WCAG 對比公式。列每個元素的數字；< 4.5:1 的逐一歸因。FLAG_SECURE 頁截出全黑 → ❓，不算過。
+  - **實作的前景規則（e611f9d 起；程式碼審查 A-m4 要求寫回）**：`app/tool/device_contrast.dart` 的 `measure()`，前景 = 和背景亮度差最大、且**同時**佔框內**非背景像素** ≥ 2 %（`minShare`）與**整個框** ≥ 0.2 %（`minAbs`）的顏色。改的原因：S20 上一個大卡片列配一個短標籤，按整個框算 2 % 時，卡片 1 px 的邊框贏過標籤的字；按非背景像素算，字的顏色才是前景，而 0.2 % 的下限讓單一雜點不會變成前景。真機（uiautomator 的框）在框夠大時（寬、高都 > 24 px）先**內縮 6 px**，避開卡片自己的邊框；畫板（contrast2x）用每段文字自己的字形框，不內縮。
+  - **這個規則偏樂觀，明說**：取「亮度差最大」的顏色，等於假設框裡對比最高的東西就是字。框裡如果另有黑色 icon、分隔線或其他高對比元素，一段淡灰色的字也可能被判 PASS。所以真機表格要附前景佔比（report 的 `fg (share)` 欄已有），佔比低的 PASS 要人工看截圖確認；畫板那邊每段文字一個字形框、跳過 icon，這個風險小得多。
 
 ## 5. 真機（S20 + 04）與副作用——開場前一次問
 
@@ -171,3 +173,15 @@ T-U2 檔頭、KeyHandlers / MainActivity 提到 open / firstRun 的註解、設�
 5. 截圖、`uiautomator dump` 只放 scratchpad，不進 repo。
 
 **其餘 MINOR（實作時處理）**：T2 兩樣都要——回覆後清零的純函式 JVM 測試，加 lint 要求 open / ecdh 帶 `wipe = true`（MainActivityKeyUseLintTest.kt:27 的正則改成必填）；T1 lint 頻道清單加 `open`（:25），MainActivity.kt:73-74「Not gated: open」註解改；T14 新句子不放寬 key_abilities_test.dart:617；§10 寫的「Kotlin open 的六個呼叫點」是 Dart 端的六個呼叫點；T1 / T14 的負向對照在 Kotlin / Rust 測試（Dart 測試在 main 上也會過，只當正向）；KeyHandlersDeviceTest 的前提：模擬器上先有一把 RECORD_AES 測試別名。
+
+## 12. 程式碼審查（A 0 / 1 / 7、B 0 / 0 / 4，都 APPROVE-WITH-CHANGES）——修了什麼、接受什麼
+
+審查檔：`329-reviews/review-pr7-code-A.md`、`review-pr7-code-B.md`；安全審查 `security-review-pr7.md`。
+
+**修了（每條有測試與負向對照，數字在 PR body）**：A-MAJOR-1（畫板沒有 CJK 字型時兩條對比規則 FAIL，只有 `A11Y_ALLOW_NO_FONT=1` 才印 A11Y-SKIP；字型清單加 Linux 的 Noto Sans CJK 位置；CI 裝不裝 `fonts-noto-cjk` 屬 harness / CI 的 PR，本 PR 不改 workflow）；A-m1（核心結束 3 個完整輪之後沒有節點還在「頭兩輪」，每輪都排隊中的節點不會永遠「正在找」；第 10 列問的是它點名的那台）；A-m2 / B-m3（ScanPage：「搜尋」與「停止」各取一個號碼，await 之後號碼不是最後一個就不掃描 / 不交回，絕不在沒有佔用時掃描）；A-m3（`_fromPending` 等選好並確認之後才改狀態區旗標，取消時上一次的失敗原樣保留）；A-m4（§4 寫回實作的前景規則，並明說偏樂觀）；A-m6 的格式那一半（`s.notYetRun = c == …`）；A-m7（T14 store 的原因也進啟動頁的技術資訊，複製文字裡因此有兩份）；B-m2（T-G5 原始碼鎖加第二張表：`RustClaimStore` / `RecordUiStore` 的建構、`.new`、子類別、型別別名只准出現在今天的位置）。
+
+**接受（不修，理由）**：
+- **A-m5**：StatusHero 主句 21→24、BatButton 17→16、titleLarge 22→18 是全域改動；2.0 倍字級的溢出只在有畫板的頁面驗過。沒有畫板的頁面沒有驗（⚠️），在 PR body 列出；不另寫掃描測試（接受：這是顯示上的溢出風險，畫板之外的頁面在真機場次看過的才算驗過）。
+- **A-m6 的 codegen 一半**：`frb_generated.rs` 的 `use crate::api::*` 順序是 codegen 輸出不固定，只是 diff 雜訊、不影響行為；將來要加「codegen 與 commit 一致」的檢查時再處理。
+- **B-m1**：Keystore 暫時錯誤與 `AEADBadTagException`（真的打不開）在 Kotlin `open` 共用一個錯誤碼 `keystore`，`RecordUiStore.read` 與 `console.readRecord` 把兩者都當「打不開」，下一次 `seal` 成功時會覆寫 ui/state-v1 或 mpend。這是 PR 7 之前就有的同一類問題（`open` 自己的 `getKey` 一樣會這樣失敗，計畫第 105 行 D-4 已接受），T1 只多了一次讀取。分出獨立的錯誤碼會改變 ui_state / mpend 的覆寫語意（哪些錯誤要往上丟、丟了之後畫面與重試怎麼走），需要自己的設計與審查 → 寫進 #329 殘項，不在本 PR 改。KeyHandlers.kt 的註解不宣稱已處理。
+- **B-m4**：`store_has_records` 逐項 `Err(e)` 的分支沒有測試誘發：在 Linux / Android 上沒有可靠的方法讓 `read_dir` 迭代中途回錯（readdir 中途 EIO），而把迭代抽成可注入假錯誤的函式只為了測試會改動已審過的 T14 程式碼。這個分支只有原始碼審查，寫進 #329 殘項。

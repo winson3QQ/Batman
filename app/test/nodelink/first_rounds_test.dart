@@ -1,7 +1,8 @@
 // #329 PR 7 T8 (a) (plan §2 / §10, review E m-11 / F m-8): 「頭兩輪」 per node. `NodeState.roundsEnded` counts this
 // run's rounds that ended normally and reached the node; a cancelled round and a target still 排隊中 at the end do not
 // count; `startup()` sets it to 0. Negative controls (the PR body): firstRounds by `roundsRun < 3` -> the cancelled
-// rounds test FAILs; 排隊中 counted -> the queued test FAILs; no reset in startup() -> the reset test FAILs.
+// rounds test FAILs; 排隊中 counted -> the queued test FAILs; no reset in startup() -> the reset test FAILs; no
+// fullRoundsEnded cap (code review A-m1) -> the 3-full-rounds test FAILs.
 import 'package:batman_app/src/nodelink/core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -57,6 +58,30 @@ void main() {
     expect(ends.length, greaterThanOrEqualTo(2), reason: c.log.join('\n'));
     expect(ends.every((l) => l.contains('Y1: queued')), isTrue, reason: c.log.join('\n'));
     expect(c.states['Y1']!.roundsEnded, 0, reason: c.log.join('\n'));
+  });
+
+  test('T8 (code review A-m1): a node 排隊中 at every round end leaves its first rounds after 3 full rounds', () {
+    final w = World(a1: 100 * s);
+    w.dev('a1', id: 'Y1');
+    final ph = w.phone('p', [const Rec('Y1', 1)]);
+    final c = ph.core;
+    c.isY['a1'] = 'Y1';
+    c.lastSeen['a1'] = 0;
+    c.startup(0, Page.home);
+    final seen = <(int, bool)>[]; // (full rounds ended, firstRounds) after each second
+    for (var t = 1; t <= 900 && c.fullRoundsEnded <= NodeLinkCore.firstRoundsCap; t++) {
+      w.run(t * s);
+      seen.add((c.fullRoundsEnded, c.firstRounds('Y1')));
+    }
+    expect(c.fullRoundsEnded, greaterThan(NodeLinkCore.firstRoundsCap), reason: c.log.join('\n'));
+    expect(c.states['Y1']!.roundsEnded, 0, reason: 'every end was 排隊中: ${c.log.join('\n')}');
+    expect(seen.first.$2, isTrue, reason: 'in its first rounds at the start');
+    for (final (ended, first) in seen) {
+      expect(first, ended < NodeLinkCore.firstRoundsCap, reason: 'after $ended full rounds ended');
+    }
+    // a new run starts the count again
+    c.startup(w.now, Page.home);
+    expect(c.fullRoundsEnded, 0);
     expect(c.firstRounds('Y1'), isTrue);
   });
 

@@ -2,7 +2,8 @@
 // - 'tap48': Flutter's androidTapTargetGuideline (48×48 dp);
 // - 'contrast': Flutter's textContrastGuideline (WCAG AA: 4.5:1, 3:1 for large text);
 // - 'contrast2x': the §4 device method (tool/device_contrast.dart measure(): background = the most frequent colour,
-//   foreground = the colour ≥ 2 % of the box with the largest luminance difference) on the board's 2× pixels, for
+//   foreground = the colour with the largest luminance difference among those covering ≥ 2 % of the box's non-background
+//   pixels and ≥ 0.2 % of the box — an optimistic pick, plan §4) on the board's 2× pixels, for
 //   every visible text (Text / RichText and input text), each in its own glyph box;
 // - 'solid': design §3 「實心 ≤ 1」 — at most one solid button (FilledButton, primary or danger) on the surface the user
 //   acts on (the top dialog when one is open, else the page).
@@ -18,8 +19,9 @@
 // Limits: Flutter's guideline only measures a semantics node whose label is exactly one Text's text (merged nodes are
 // skipped, not passed) and skips disabled nodes; 'contrast2x' skips icons (glyph fonts), texts under a disabled
 // button (WCAG exempts inactive controls), texts not fully on the 412×915 board, and texts whose centre is covered.
-// Without a CJK board font (flutter_test's box font: none of loadFonts' files on the machine) the two contrast rules are not
-// run and each board prints A11Y-SKIP — such a run does not judge contrast (tap48 and solid still run).
+// Without a CJK board font (flutter_test's box font: none of loadFonts' files on the machine) the two contrast rules
+// cannot run: each board FAILs (code review A-MAJOR-1: a check that finds nothing to check is not a pass), unless
+// A11Y_ALLOW_NO_FONT=1 is set, which prints A11Y-SKIP per board instead (tap48, solid and words still run).
 import 'dart:io' show Platform;
 import 'dart:ui' as ui;
 
@@ -270,18 +272,29 @@ List<String> wordProblems() {
 List<String> flutterContrastLabels(String reason) =>
     [for (final m in RegExp(r'label: "([^"]*)"').allMatches(reason)) m.group(1)!.replaceAll(r'\n', '\n')];
 
+/// #329 PR 7 code review A-MAJOR-1: a board run without the board font judges no contrast, and a check that finds
+/// nothing to check is a FAIL, never a pass. Only an explicit `A11Y_ALLOW_NO_FONT=1` turns it into an A11Y-SKIP line
+/// (printed; the contrast rules are then not judged in that run). [judged]: [contrastJudged].
+List<String> noFontProblems(String file, {required bool judged, required Map<String, String> env}) {
+  if (judged) return const [];
+  const why = 'no board font (box font): none of the CJK font files of loadFonts (retest_s_shot.dart cjkFontPaths) '
+      'is on this machine, so contrast and contrast2x cannot be judged';
+  if (env['A11Y_ALLOW_NO_FONT'] == '1') {
+    // ignore: avoid_print
+    print('A11Y-SKIP $file contrast, contrast2x: $why — NOT judged in this run (A11Y_ALLOW_NO_FONT=1)');
+    return const [];
+  }
+  return ['A11Y-FAIL $file contrast: $why (install fonts-noto-cjk, or set A11Y_ALLOW_NO_FONT=1 to skip on purpose)'];
+}
+
 /// Runs the rules on board file [file] (`<board>_<light|dark>`) and fails with every problem at once. An excused
 /// 'contrast' holds only while every node Flutter failed was measured by contrast2x and passed there.
 Future<void> expectA11y(WidgetTester t, String file) async {
   final measured = <TextContrast>[];
   final fails = await a11yFailures(t, measured: measured);
-  if (!contrastJudged) {
-    // ignore: avoid_print
-    print('A11Y-SKIP $file contrast, contrast2x: no board font (box font), NOT judged in this run — they are judged '
-        'where NotoSansTC-VF.ttf is (Windows; WSL through /mnt/c)');
-  }
   final excused = contrastJudged ? a11yExceptions[file] ?? const <String, String>{} : const <String, String>{};
   final problems = <String>[
+    ...noFontProblems(file, judged: contrastJudged, env: Platform.environment),
     for (final f in fails.entries)
       if (!excused.containsKey(f.key)) 'A11Y-FAIL $file ${f.key}: ${f.value}',
     for (final r in excused.keys)

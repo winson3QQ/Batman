@@ -48,7 +48,12 @@ class _ScanPageState extends State<ScanPage> with RawBusy<ScanPage> {
   /// cancel has completed.
   Cancel? _scanHold;
   bool _starting = false; // 「搜尋」 pressed, its scan not started yet
-  Future<void>? _cancelling; // the previous scan's cancel while 「搜尋」 starts a new one
+  Future<void>? _cancelling; // the previous scan's cancel while 「搜尋」 starts a new one (or 「停止」 stops it)
+
+  /// #329 PR 7 T20 (code review A-m2 / B-m3): each 「搜尋」 and 「停止」 takes the next number. A 「搜尋」 whose number is no
+  /// longer the last after its await (停止 pressed meanwhile) starts no scan; a 「停止」 whose number is no longer the
+  /// last after its await (搜尋 pressed meanwhile) leaves the hold to that 搜尋.
+  int _press = 0;
 
   void _dropScanHold() {
     final h = _scanHold;
@@ -100,12 +105,15 @@ class _ScanPageState extends State<ScanPage> with RawBusy<ScanPage> {
         return;
       }
     }
+    final press = ++_press;
     final old = _scan;
     _scan = null;
-    final cancelling = _cancelling = old?.cancel();
+    final cancelling = _cancelling = old?.cancel() ?? _cancelling;
     await cancelling;
-    _cancelling = null;
     if (!mounted) return _dropScanHold();
+    // 停止 pressed while the old scan was being cancelled: it gave the hold back, so no scan (never one without it)
+    if (press != _press || (use != null && _scanHold == null)) return;
+    _cancelling = null;
     setState(() {
       _found.clear();
       _note = '正在搜尋附近的節點…';
@@ -130,8 +138,14 @@ class _ScanPageState extends State<ScanPage> with RawBusy<ScanPage> {
   }
 
   Future<void> _stop() async {
-    await _scan?.cancel();
+    final press = ++_press;
+    final s = _scan;
     _scan = null;
+    final cancelling = s?.cancel();
+    if (cancelling != null) _cancelling = cancelling;
+    await (cancelling ?? _cancelling);
+    if (press != _press) return; // 搜尋 pressed meanwhile: its scan keeps the hold
+    _cancelling = null;
     _dropScanHold();
     if (mounted) setState(() => _note = '已停止搜尋（找到 ${_found.length} 台）');
   }

@@ -227,4 +227,52 @@ void t20() {
     await pop(t);
     await t.runAsync(nl.dispose);
   });
+
+  // code review B-m3: 搜尋 waits for the old scan's cancel; 停止 meanwhile gives the hold back -> no scan at all
+  testWidgets('T20 (code review B-m3): 停止 while 搜尋 waits for the old cancel -> no new scan, nothing held', (t) async {
+    final ble = ScanBle();
+    final lease = await open(t, ble);
+    await search(t);
+    expect(ble.scans.length, 1);
+    ble.cancelDone = Completer<void>(); // the first scan's cancel hangs
+    await t.tap(find.text('搜尋'));
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+    await t.tap(find.text('停止')); // still enabled: no rebuild while 搜尋 waits
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+    ble.cancelDone!.complete();
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+    await t.pumpAndSettle();
+    expect(ble.scans.length, 1, reason: 'stopped: the waiting 搜尋 starts no scan');
+    expect(lease.busy, isFalse, reason: 'the hold was given back');
+    await pop(t);
+    expect(reg.current, isNull);
+    await t.runAsync(nl.dispose);
+  });
+
+  // code review A-m2: 停止 waits for the scan's cancel; 搜尋 meanwhile -> its scan runs under the hold
+  testWidgets('T20 (code review A-m2): 搜尋 while 停止 waits for the cancel -> the new scan holds the lease', (t) async {
+    final ble = ScanBle();
+    final lease = await open(t, ble);
+    await search(t);
+    ble.cancelDone = Completer<void>(); // the scan's cancel hangs
+    await t.tap(find.text('停止'));
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+    await t.pump();
+    await t.tap(find.text('搜尋'));
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+    expect(ble.scans.length, 1, reason: 'the new scan waits for the old cancel');
+    ble.cancelDone!.complete();
+    ble.cancelDone = null;
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+    await t.pumpAndSettle();
+    expect(ble.scans.length, 2, reason: 'the new scan started');
+    expect(lease.busy, isTrue, reason: 'and it runs under the hold (停止 did not give it back)');
+    await t.tap(find.text('停止'));
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+    await t.pumpAndSettle();
+    expect(lease.busy, isFalse);
+    await pop(t);
+    expect(reg.current, isNull);
+    await t.runAsync(nl.dispose);
+  });
 }

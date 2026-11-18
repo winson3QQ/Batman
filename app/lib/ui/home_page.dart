@@ -311,9 +311,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
         a.sw.unfinishedOf(a.link.core.states.containsKey).length +
         pends.length;
     // #329 PR 7 T8 (F m-8): the status area is in its first rounds while any node is (each node counts its own rounds)
-    final firstRounds = ids.any(a.link.core.firstRounds);
+    final firstRoundIds = ids.where(a.link.core.firstRounds).toSet();
     final h = decideHome(
-        HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: nets.records));
+        HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRoundIds: firstRoundIds, todos: todos, records: nets.records));
     // #329 PR 6 D9: 「讀取於」 for a fresh read, 「上次讀取」 for an older one (review r2 C MINOR-8's rule); a row
     // about one node (not a list of several) shows that node's time
     final shownTime = heroTime(infos,

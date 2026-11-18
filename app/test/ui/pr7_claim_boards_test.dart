@@ -182,56 +182,94 @@ void main() {
     }, (ble, f) => ScanPage(ble: SlowBle()), act: (t) => tapText(t, '搜尋'), check: (t) => expect(find.text('AA  訊號 -40 dBm'), findsOneWidget)),
   };
 
+  Future<void> pumpBoard(WidgetTester t, C c, {required bool dev, bool dark = false, double scale = 1.0}) async {
+    sizeView(t);
+    final t0 = t.binding.clock.now();
+    now = () => t.binding.clock.now().difference(t0);
+    rust
+      ..calls.clear()
+      ..disk.clear()
+      ..disk[pendPath] = Uint8List.fromList(pendingBytes)
+      ..target = ClaimTarget.pending
+      ..statusState = 'claimed'
+      ..statusLast4 = null
+      ..due = false
+      ..pendingIds.clear()
+      ..refuse = false;
+    final field = FakeField();
+    final ble = FakeBle();
+    c.setUp(rust, field);
+    devTrust = dev;
+    mockPlatformReadOnly(t, (c) async {
+      switch (c.method) {
+        case 'scanQr':
+          return qrText;
+        case 'devTrust':
+          return devTrust;
+        case 'filesDir':
+          return files;
+        case 'blePermissions':
+          return true;
+        case 'publicKeys':
+          return {'owner': Uint8List(65), 'ownerEnc': Uint8List(65), 'admin': Uint8List(65)};
+        case 'open':
+          return Uint8List.fromList((c.arguments as Map)['sealed'] as Uint8List);
+        case 'seal':
+          return Uint8List.fromList((c.arguments as Map)['plain'] as Uint8List);
+      }
+      return FakePlatform().handle(c);
+    });
+    await t.pumpWidget(frame(MaterialApp(
+      theme: batThemeData(Brightness.light),
+      darkTheme: batThemeData(Brightness.dark),
+      themeMode: dark ? ThemeMode.dark : ThemeMode.light,
+      debugShowCheckedModeBanner: false,
+      builder: (c, child) => MediaQuery(data: MediaQuery.of(c).copyWith(textScaler: scale == 1.0 ? TextScaler.noScaling : TextScaler.linear(scale)), child: child!),
+      home: c.build(ble, field),
+    )));
+    await run(t, n: 4);
+  }
+
+  Future<void> settleAway(WidgetTester t) async {
+    await t.pumpWidget(const SizedBox());
+    for (var i = 0; i < 40; i++) {
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 5)));
+      await t.pump(const Duration(seconds: 30));
+    }
+  }
+
+  // code review A-m3: 「從認領暫存恢復」 then 取消 (in the pick or in the confirmation) leaves the last claim's failure as it
+  // was — its sentence 「沒有新增節點 …4F2A」 and its next step — not a recovery's. Negative control: the flags set before
+  // the pick (the code before the fix) -> FAIL.
+  for (final how in ['pick', 'confirm']) {
+    testWidgets('A-m3: a failed claim, then 從認領暫存恢復 and 取消 in the $how -> the claim\'s failure as it was', (t) async {
+      final failed = C((r, f) {
+        r
+          ..target = ClaimTarget.nothing
+          ..statusState = 'member'
+          ..statusLast4 = null
+          ..pendingIds.add('0000000000000c9b1e');
+      }, (ble, f) => page(ble, f), check: (t) {});
+      await pumpBoard(t, failed, dev: true);
+      await claim(t);
+      expectHero(Look.bad, ['沒有新增節點 …4F2A', '確認之後再按「認領」']);
+      await tapText(t, '從認領暫存恢復');
+      if (how == 'confirm') await tapText(t, '節點 …9B1E');
+      await tapText(t, Btn.cancel);
+      expect(find.byType(Dialog), findsNothing);
+      expectHero(Look.bad, ['沒有新增節點 …4F2A', '確認之後再按「認領」']);
+      expect(find.descendant(of: find.byKey(claimHeroKey), matching: find.textContaining('恢復')), findsNothing,
+          reason: 'not a recovery\'s sentence or next step');
+      await settleAway(t);
+    });
+  }
+
   for (final (dark, scale) in const [(false, 1.0), (true, 1.0), (false, 2.0), (true, 2.0)]) {
     for (final e in boards.entries) {
       final file = '${e.key}_${dark ? 'dark' : 'light'}';
       testWidgets('pr7 claim board $file${scale == 1.0 ? '' : ' ×2.0'}', (t) async {
-        sizeView(t);
         final sem = t.ensureSemantics();
-        final t0 = t.binding.clock.now();
-        now = () => t.binding.clock.now().difference(t0);
-        rust
-          ..calls.clear()
-          ..disk.clear()
-          ..disk[pendPath] = Uint8List.fromList(pendingBytes)
-          ..target = ClaimTarget.pending
-          ..statusState = 'claimed'
-          ..statusLast4 = null
-          ..due = false
-          ..pendingIds.clear()
-          ..refuse = false;
-        final field = FakeField();
-        final ble = FakeBle();
-        e.value.setUp(rust, field);
-        devTrust = e.key.startsWith('3.7') || e.key.startsWith('dev_');
-        mockPlatformReadOnly(t, (c) async {
-          switch (c.method) {
-            case 'scanQr':
-              return qrText;
-            case 'devTrust':
-              return devTrust;
-            case 'filesDir':
-              return files;
-            case 'blePermissions':
-              return true;
-            case 'publicKeys':
-              return {'owner': Uint8List(65), 'ownerEnc': Uint8List(65), 'admin': Uint8List(65)};
-            case 'open':
-              return Uint8List.fromList((c.arguments as Map)['sealed'] as Uint8List);
-            case 'seal':
-              return Uint8List.fromList((c.arguments as Map)['plain'] as Uint8List);
-          }
-          return FakePlatform().handle(c);
-        });
-        await t.pumpWidget(frame(MaterialApp(
-          theme: batThemeData(Brightness.light),
-          darkTheme: batThemeData(Brightness.dark),
-          themeMode: dark ? ThemeMode.dark : ThemeMode.light,
-          debugShowCheckedModeBanner: false,
-          builder: (c, child) => MediaQuery(data: MediaQuery.of(c).copyWith(textScaler: scale == 1.0 ? TextScaler.noScaling : TextScaler.linear(scale)), child: child!),
-          home: e.value.build(ble, field),
-        )));
-        await run(t, n: 4);
+        await pumpBoard(t, e.value, dev: e.key.startsWith('3.7') || e.key.startsWith('dev_'), dark: dark, scale: scale);
         expect(t.takeException(), isNull, reason: 'no overflow');
         final act = e.value.act;
         if (act != null) {

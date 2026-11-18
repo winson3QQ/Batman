@@ -148,6 +148,11 @@ class NodeLinkCore {
   Set<String> _earlyTargets = {};
   int earlyCount = 0;
   int roundsRun = 0;
+  /// #329 PR 7 T8 (code review A-m1): full rounds of this run that ended (any targets, any conclusions; a cancelled
+  /// round never ends). Once [firstRoundsCap] of them ended no node is in its first rounds, so a node that is 排隊中 at
+  /// every round end (its login always longer than the cap) cannot hold 「正在找」 for ever. [startup] sets it to 0.
+  int fullRoundsEnded = 0;
+  static const firstRoundsCap = 3;
   int scanStarts = 0;
   int _nextId = 0;
   _Round? _round;
@@ -175,8 +180,9 @@ class NodeLinkCore {
   }
 
   /// #329 PR 7 T8 (review B-M4 / F m-8): 「頭兩輪」 per node — fewer than two rounds that tried [id] have ended in this
-  /// run. An id without a state (its record went) is not in its first rounds.
-  bool firstRounds(String id) => (states[id]?.roundsEnded ?? 2) < 2;
+  /// run, and fewer than [firstRoundsCap] full rounds of this run have ended (code review A-m1). An id without a state
+  /// (its record went) is not in its first rounds.
+  bool firstRounds(String id) => fullRoundsEnded < firstRoundsCap && (states[id]?.roundsEnded ?? 2) < 2;
 
   bool get roundIsEarly => _round?.early ?? false;
   Attempt? get running => _round?.running;
@@ -200,6 +206,7 @@ class NodeLinkCore {
 
   void startup(int now, Page pg, {String? node}) {
     started = true;
+    fullRoundsEnded = 0; // #329 PR 7 T8 (code review A-m1)
     for (final s in states.values) {
       s.roundsEnded = 0; // #329 PR 7 T8: the first rounds are this run's
     }
@@ -573,6 +580,7 @@ class NodeLinkCore {
 
   void _end(int now, _Round r) {
     _round = null;
+    if (!r.early) fullRoundsEnded++; // #329 PR 7 T8 (code review A-m1)
     _noRespLast = r.noResp;
     final trigger = <String>{};
     for (final id in r.targets) {
@@ -582,7 +590,7 @@ class NodeLinkCore {
       // #329 PR 7 T8 (review E m-11): a target still 排隊中 at the end was not reached by this round; 還沒輪到 counts
       // (the round looked for it among the devices it saw; its sentence is the one shown after the first rounds)
       if (c != Concl.queued) s.roundsEnded++;
-      s.notYetRun =c == Concl.notYet ? s.notYetRun + 1 : (c == Concl.queued ? s.notYetRun : 0);
+      s.notYetRun = c == Concl.notYet ? s.notYetRun + 1 : (c == Concl.queued ? s.notYetRun : 0);
       switch (c) {
         case Concl.read:
           break;

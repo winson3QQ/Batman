@@ -12,6 +12,16 @@
 //   src/rust/**                  -  the generated bridge itself (not scanned)
 // A new file with such a call, or one more call in an allowed file, FAILs; so does one fewer (edit the table on purpose).
 // It FAILs too when it scans nothing. Negative control: a direct storeRemove added to a new lib/ file -> FAIL.
+// #329 PR 7 code review B-m2: the two public wrappers that write through those calls with any `rel` — RustClaimStore
+// (claim_records.dart: sealWrite / remove / keepCopy) and RecordUiStore (ui/ui_state.dart: write / remove) — are locked
+// the same way: their construction (a call, `.new` tear-off, `extends` or a typedef of the class counts) may appear in
+// lib/ only in the files of [wrapperAllowed], each exactly that many times:
+//   claim_records.dart  1  RustClaimStore's own constructor declaration
+//   claim.dart          2  the claim (_claim) and the recovery from a claim-pending (_fromPending)
+//   ui/ui_state.dart    1  RecordUiStore's own constructor declaration
+//   main.dart           1  the app's one UiState (ui/state-v1, §4.6)
+// (device_check/ is a separate on-device check program, not lib/.) Negative control: a new lib/ file constructing
+// either wrapper -> FAIL.
 // TG5_LIB=<dir> scans another lib/ tree (the dry run on main before this lock was added).
 import 'dart:io';
 
@@ -37,6 +47,20 @@ String codeOnly(String src) => src
 
 int writes(String src) => _write.allMatches(codeOnly(src)).length;
 
+const wrapperAllowed = {
+  'claim_records.dart': 1,
+  'claim.dart': 2,
+  'ui/ui_state.dart': 1,
+  'main.dart': 1,
+};
+
+/// A construction of a record-writing wrapper (code review B-m2): a call (also `new` / `const`), a `.new` tear-off, a
+/// subclass or a type alias of RustClaimStore / RecordUiStore.
+final _wrapper = RegExp(
+    r'(?<![A-Za-z0-9$_])(?:(?:RustClaimStore|RecordUiStore)\s*(?:\(|\.new\b)|(?:extends|=)\s*(?:RustClaimStore|RecordUiStore)\b)');
+
+int wrappers(String src) => _wrapper.allMatches(codeOnly(src)).length;
+
 void main() {
   test('the scanner counts calls, tear-offs and generated calls, not comments or imports', () {
     expect(writes("import 'a.dart' show storeRemove, storeWriteCas;\n// storeRemove(dir: d)\n/* storeKeepCopy */"), 0);
@@ -46,20 +70,33 @@ void main() {
     expect(writes('storeWriteMarker(dir: d); _storeWriteX(); storeSweep(dir: d); storeReadSealed(dir: d);'), 2);
   });
 
+  test('B-m2: the wrapper scanner counts constructions, tear-offs, subclasses and aliases, not types or comments', () {
+    expect(wrappers("import 'claim_records.dart' show RustClaimStore;\n// RustClaimStore(dir)\nfinal RustClaimStore s; RecordUiStore? u;"), 0);
+    expect(wrappers('final s = RustClaimStore(dir); final u = RecordUiStore(d, p);'), 2);
+    expect(wrappers('final s = new RustClaimStore (dir); const x = RecordUiStore.new;'), 2);
+    expect(wrappers('class X extends RustClaimStore { X() : super(d); } typedef Y = RecordUiStore;'), 2);
+    expect(wrappers('class X implements RustClaimStore {} final MyRustClaimStore z = MyRustClaimStore(d);'), 0);
+  });
+
   test('T-G5: direct record writes only in the allowed files, exactly the allowed number of times', () {
     final root = Directory(Platform.environment['TG5_LIB'] ?? 'lib');
     expect(root.existsSync(), isTrue, reason: '${root.absolute.path} not found');
     final found = <String, int>{};
+    final made = <String, int>{}; // code review B-m2: the wrappers' constructions
     var scanned = 0;
     for (final f in root.listSync(recursive: true).whereType<File>().where((f) => f.path.endsWith('.dart'))) {
       final rel = f.path.substring(root.path.length + 1).replaceAll(r'\', '/');
       if (rel.startsWith('src/rust/')) continue; // the generated bridge
       scanned++;
-      final n = writes(f.readAsStringSync());
+      final src = f.readAsStringSync();
+      final n = writes(src);
       if (n > 0 || allowed.containsKey(rel)) found[rel] = n;
+      final m = wrappers(src);
+      if (m > 0 || wrapperAllowed.containsKey(rel)) made[rel] = m;
     }
     expect(scanned, greaterThan(40), reason: 'the scan found (almost) nothing to check');
     expect(found, allowed);
+    expect(made, wrapperAllowed, reason: 'RustClaimStore / RecordUiStore constructed outside the allowed files');
     // design §4.4: UiState writes `ui/state-v1` only — each of its two write calls takes the constant uiRel
     final ui = codeOnly(File('${root.path}/ui/ui_state.dart').readAsStringSync());
     expect(RegExp(r"const uiRel = 'ui/state-v1';").hasMatch(ui), isTrue);

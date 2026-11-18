@@ -38,13 +38,16 @@ class HomeInputs {
   const HomeInputs({
     required this.nodes,
     required this.blocked,
-    required this.firstRounds,
+    this.firstRoundIds = const {},
     required this.todos,
     this.records = NetRecords.none,
   });
   final List<NodeInfo> nodes;
   final Why? blocked; // Bluetooth off / no permission / keys
-  final bool firstRounds; // some node's first two rounds of this run are not over (#329 PR 7 T8)
+  /// #329 PR 7 T8: the nodes whose first rounds of this run are not over (NodeLinkCore.firstRounds). Row 5 asks
+  /// whether any node is; row 10 asks it of the node it names (code review A-m1).
+  final Set<String> firstRoundIds;
+  bool get firstRounds => firstRoundIds.isNotEmpty;
   final int todos;
   final NetRecords records; // row 6's button
 }
@@ -141,7 +144,7 @@ HomeHero decideHome(HomeInputs i) {
   if (stale.isNotEmpty) {
     // §5.1 row 10 (review A-m5): the first rounds -> 正在找; devices not recognised yet -> say so; else not read yet
     final unknownNear = stale.where((n) => n.state.last == Concl.notYet).toList();
-    final text = i.firstRounds
+    final text = i.firstRoundIds.contains(stale.first.id)
         ? nameIn('正在找', stale.first.name, '…')
         : unknownNear.isNotEmpty
             ? nameIn('附近有還沒認出來的裝置，還在找', unknownNear.first.name, '')

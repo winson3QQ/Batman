@@ -14,7 +14,7 @@ import 'src/nodelink/node_link.dart' show NodeLink;
 import 'src/rust/api/owner.dart' show listNodes, listPending;
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
-import 'say.dart' show SayLine, logText, sayErr;
+import 'say.dart' show SayLine, logText, sayErr, techText;
 import 'ui/home_logic.dart' show last4;
 import 'ui/home_page.dart';
 import 'ui/intro_pages.dart';
@@ -125,6 +125,9 @@ class _StartupCheckState extends State<StartupCheck> {
           // say (the records it could not see would be written over); the store's reason in the technical part
           retry = true;
           lines[0] = '啟動檢查：${sayErr(unread)}$recordsUnreadKept';
+          // code review A-m7: the store's reason in the page's technical info (and so in the copy) as well
+          final why = techText(sayErr(unread));
+          tech.add('紀錄讀取：${why.isEmpty ? sayErr(unread) : why}');
           lines.add(recordsUnreadNext);
         } else {
           // design v8.5.1 §4.1 table: the live key levels decide what is on (record AES not hardware = the whole app off)
