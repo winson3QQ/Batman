@@ -233,6 +233,9 @@ jobs:
     timeout-minutes: 75
     env:
       EMU_IMAGE: "system-images;android-37.0;google_apis;x86_64"
+      # one AVD home for avdmanager and the emulator (run 44304983328: avdmanager wrote elsewhere, the emulator found
+      # no ci.ini in $HOME/.android/avd)
+      ANDROID_AVD_HOME: ${{ github.workspace }}/../avd
       ADB_S: emulator-5554
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
@@ -276,7 +279,10 @@ jobs:
           "$sm" --install emulator platform-tools "$EMU_IMAGE" | tail -3
           ls -d "$ANDROID_HOME/system-images/"*/*/* || { echo "::error::system image $EMU_IMAGE not installed"; exit 1; }
           ls -l /dev/kvm
+          mkdir -p "$ANDROID_AVD_HOME"
           echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n ci -k "$EMU_IMAGE" -d pixel_6 --force
+          "$ANDROID_HOME/emulator/emulator" -list-avds | tee "$RUNNER_TEMP/avds.txt"
+          grep -qx ci "$RUNNER_TEMP/avds.txt" || { ls -la "$ANDROID_AVD_HOME" ~/.android ~/.config/.android 2>&1 | head -20; echo "::error::AVD ci not created where the emulator looks"; exit 1; }
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           nohup "$ANDROID_HOME/emulator/emulator" -avd ci -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect \
             -port 5554 > "$RUNNER_TEMP/emulator.log" 2>&1 &
