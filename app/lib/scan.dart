@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
 import 'say.dart';
+import 'src/nodelink/lease.dart' show Cancel;
 import 'src/nodelink/raw_use.dart';
 import 'src/rust/api/simple.dart';
 
@@ -41,37 +42,97 @@ class _ScanPageState extends State<ScanPage> with RawBusy<ScanPage> {
   bool get _busy => rawBusy; // #329 §4.4: busy = the raw lease is held (it outlives a pop until the work ends)
   set _busy(bool v) => rawBusy = v;
 
+  /// #329 PR 7 T20 (#329:114, review D-M3 / E m-11 / F m-9): the raw lease is held while the scan runs, by its own
+  /// hold — not `_busy`, which `_read` reads (a node tapped while scanning still connects). One hold however often
+  /// 「搜尋」 is pressed; given back when the scan is stopped or ends, and after the page is gone only once the scan's
+  /// cancel has completed.
+  Cancel? _scanHold;
+  bool _starting = false; // 「搜尋」 pressed, its scan not started yet
+  Future<void>? _cancelling; // the previous scan's cancel while 「搜尋」 starts a new one
+
+  void _dropScanHold() {
+    final h = _scanHold;
+    _scanHold = null;
+    h?.call();
+  }
+
   @override
   void dispose() {
-    _scan?.cancel();
+    final h = _scanHold;
+    final cancel = _scan?.cancel() ?? _cancelling;
+    _scan = null;
+    _scanHold = null;
+    if (cancel == null) {
+      h?.call();
+    } else {
+      // the lease goes back once the scan has really stopped (also when its cancel fails)
+      cancel.whenComplete(() => h?.call()).catchError((Object _) {});
+    }
     super.dispose();
   }
 
   Future<void> _start() async {
+    if (_starting) return;
+    _starting = true;
+    try {
+      await _startScan();
+    } finally {
+      _starting = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _startScan() async {
     final ok = await _platform.invokeMethod<bool>('blePermissions') ?? false;
     _log('permissions granted=$ok');
+    if (!mounted) return;
     if (!ok) {
       setState(() => _note = '沒有藍牙權限，無法搜尋（請在手機設定裡允許）');
       return;
     }
-    await _scan?.cancel();
+    final use = widget.use;
+    if (use != null && _scanHold == null) {
+      try {
+        _scanHold = use.lease.hold();
+      } on StateError {
+        // the lease was taken back (900 s after a pop) or given up: no scan without it
+        setState(() => _note = '另一個操作還在進行：這一頁的藍牙已經交回，請關掉這一頁再開一次');
+        return;
+      }
+    }
+    final old = _scan;
+    _scan = null;
+    final cancelling = _cancelling = old?.cancel();
+    await cancelling;
+    _cancelling = null;
+    if (!mounted) return _dropScanHold();
     setState(() {
       _found.clear();
       _note = '正在搜尋附近的節點…';
     });
     rawScanStarted();
-    _scan = _ble.scanForDevices(withServices: [provdService], scanMode: ScanMode.lowLatency).listen((d) {
+    late final StreamSubscription<DiscoveredDevice> sub;
+    void ended(String note) {
+      if (!identical(_scan, sub)) return; // a scan already replaced or stopped
+      _scan = null;
+      _dropScanHold();
+      if (mounted) setState(() => _note = note);
+    }
+
+    sub = _ble.scanForDevices(withServices: [provdService], scanMode: ScanMode.lowLatency).listen((d) {
       if (!_found.containsKey(d.id)) _log('found id=${d.id} rssi=${d.rssi} name=[${d.name}] uuids=${d.serviceUuids}');
-      setState(() => _found[d.id] = d);
+      if (mounted) setState(() => _found[d.id] = d);
     }, onError: (Object e) {
       _log('scan error $e');
-      setState(() => _note = '搜尋出錯：$e');
-    });
+      ended('搜尋出錯：$e');
+    }, onDone: () => ended('搜尋已結束（找到 ${_found.length} 台）'), cancelOnError: true);
+    _scan = sub;
   }
 
   Future<void> _stop() async {
     await _scan?.cancel();
     _scan = null;
+    _dropScanHold();
     if (mounted) setState(() => _note = '已停止搜尋（找到 ${_found.length} 台）');
   }
 
@@ -137,7 +198,7 @@ class _ScanPageState extends State<ScanPage> with RawBusy<ScanPage> {
         Padding(
           padding: const EdgeInsets.all(8),
           child: Row(children: [
-            FilledButton(onPressed: _busy ? null : _start, child: const Text('搜尋')),
+            FilledButton(onPressed: _busy || _starting ? null : _start, child: const Text('搜尋')),
             const SizedBox(width: 8),
             OutlinedButton(onPressed: _scan == null ? null : _stop, child: const Text('停止')),
             const SizedBox(width: 8),
