@@ -37,6 +37,7 @@ import '../nodelink/app_link_test.dart' show StatusBle;
 import 'join_pages_test.dart' as jp;
 import 'team_pages_test.dart' as tp;
 import 'ui_state_test.dart' show MemStore;
+import '../support/font_levels.dart';
 
 const id = '0000000000000c4f2a7d2c';
 
@@ -252,6 +253,7 @@ void main() {
               final s = w.data ?? w.textSpan?.toPlainText() ?? '';
               expect(retired.hasMatch(s), isFalse, reason: 'T-C4a: "$s"');
             }
+            expectSixLevels(t); // #329 PR 7 T8 (b)
             await t.pumpWidget(const SizedBox()); // the pages' timers go with them
             AppLink.forgetForTest();
           });

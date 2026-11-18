@@ -141,7 +141,7 @@ class _AboutPageState extends State<AboutPage> {
         child: Semantics(
             label: '台灣曙豐防災自訓團臂章', child: Image.asset('assets/brand/badge.webp', width: 132, fit: BoxFit.contain)),
       ),
-      Center(child: Text('Batman', style: TextStyle(fontSize: Fs.hero + 2, fontWeight: FontWeight.w700, color: t.ink))),
+      Center(child: Text('Batman', style: TextStyle(fontSize: Fs.welcome, fontWeight: FontWeight.w700, color: t.ink))),
       Center(child: Text('無線電節點設定與狀態', style: TextStyle(fontSize: Fs.note, color: t.sub))),
       BatCard(children: [
         BatRow(icon: Icons.info_outline, title: 'app 版本', right: _version),

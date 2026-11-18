@@ -25,6 +25,7 @@ import 'package:flutter_test/flutter_test.dart';
 import '../flows/op_session_test.dart' show Fx;
 import '../flows/owner_console_pr4_test.dart' show P4Session;
 import '../retest_s_shot.dart';
+import '../support/font_levels.dart';
 import 'pages_test.dart' show app, id, sv;
 import 'pr6_dev_test.dart' show DevRust, f1, f2, k1, k2, member, mockChannels, net;
 import 'ui_state_test.dart' show MemStore;
@@ -166,10 +167,11 @@ void main() {
     }),
   };
 
-  for (final dark in [false, true]) {
+  // #329 PR 7 T8 (b): every board also at text scale 2.0 (design §3.1 T-C2: no overflow; its checks and PNG at 1.0)
+  for (final (dark, scale) in const [(false, 1.0), (true, 1.0), (false, 2.0), (true, 2.0)]) {
     for (final e in boards.entries) {
       final file = '${e.key}_${dark ? 'dark' : 'light'}';
-      testWidgets('pr6 board $file', (t) async {
+      testWidgets('pr6 board $file${scale == 1.0 ? '' : ' ×2.0'}', (t) async {
         sizeView(t);
         mockChannels(t); // appVersion / flavor, the clipboard
         t.binding.defaultBinaryMessenger.setMockMethodCallHandler(secureChannel, (c) async => true);
@@ -187,7 +189,7 @@ void main() {
           darkTheme: batThemeData(Brightness.dark),
           themeMode: dark ? ThemeMode.dark : ThemeMode.light,
           debugShowCheckedModeBanner: false,
-          builder: (c, child) => MediaQuery(data: MediaQuery.of(c).copyWith(textScaler: TextScaler.noScaling), child: child!),
+          builder: (c, child) => MediaQuery(data: MediaQuery.of(c).copyWith(textScaler: scale == 1.0 ? TextScaler.noScaling : TextScaler.linear(scale)), child: child!),
           home: e.value.build(a, f, ui),
         )));
         await settle(t, f);
@@ -197,8 +199,9 @@ void main() {
           await act(t, f);
           expect(t.takeException(), isNull, reason: 'no overflow after the step');
         }
-        e.value.check(t);
-        await shoot(t, file);
+        if (scale == 1.0) e.value.check(t); // the checks look at the 1.0 layout (lazily built lists)
+        expectSixLevels(t);
+        if (scale == 1.0) await shoot(t, file);
         await t.pumpWidget(const SizedBox());
         await a.link.dispose();
         await t.pump(const Duration(seconds: 10)); // NodeLink's round after a release

@@ -189,7 +189,7 @@ class _TeamPageState extends State<TeamPage> {
                 onPressed: a.link.refresh,
                 style: TextButton.styleFrom(foregroundColor: t.ink, minimumSize: const Size(48, 48)),
                 icon: const Icon(Icons.refresh, size: 18),
-                label: const Text(Btn.refresh, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                label: const Text(Btn.refresh, style: TextStyle(fontSize: Fs.body, fontWeight: FontWeight.w700)),
               ),
             ],
           ),

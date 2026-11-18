@@ -45,6 +45,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'flows/net_run_test.dart' show World, ans;
 import 'retest_s_shot.dart';
+import 'support/font_levels.dart';
 import 'ui/layout_test.dart' as lt show app;
 import 'ui/layout_test.dart' show busy, id, keys, sv;
 import 'ui/team_pages_test.dart' as tp;
@@ -399,10 +400,11 @@ void main() {
     'home_team_entry': B((ui) => HomePage(app: _teamApp(fresh: true), ui: ui, devTrust: true, keys: keys())),
   };
 
-  for (final dark in [false, true]) {
+  // #329 PR 7 T8 (b): every board also at text scale 2.0 (design §3.1 T-C2: no overflow; its checks and PNG at 1.0)
+  for (final (dark, scale) in const [(false, 1.0), (true, 1.0), (false, 2.0), (true, 2.0)]) {
     for (final e in boards.entries) {
       final file = '${e.key}_${dark ? 'dark' : 'light'}';
-      testWidgets('retest-s board $file', (t) async {
+      testWidgets('retest-s board $file${scale == 1.0 ? '' : ' ×2.0'}', (t) async {
         sizeView(t);
         final ui = UiState(MemStore());
         await t.pumpWidget(frame(MaterialApp(
@@ -410,7 +412,7 @@ void main() {
           darkTheme: batThemeData(Brightness.dark),
           themeMode: dark ? ThemeMode.dark : ThemeMode.light,
           debugShowCheckedModeBanner: false,
-          builder: (c, child) => MediaQuery(data: MediaQuery.of(c).copyWith(textScaler: TextScaler.noScaling), child: child!),
+          builder: (c, child) => MediaQuery(data: MediaQuery.of(c).copyWith(textScaler: scale == 1.0 ? TextScaler.noScaling : TextScaler.linear(scale)), child: child!),
           home: e.value.build(ui),
         )));
         for (var i = 0; i < 3; i++) {
@@ -424,8 +426,9 @@ void main() {
           await act(t);
           expect(t.takeException(), isNull, reason: 'no overflow after the step');
         }
-        check0?.call(t);
-        await shoot(t, file);
+        if (scale == 1.0) check0?.call(t); // the checks look at the 1.0 layout (lazily built lists)
+        expectSixLevels(t);
+        if (scale == 1.0) await shoot(t, file);
         await t.pumpWidget(const SizedBox()); // the pages' timers go with them
         for (final a in made) {
           await a.link.dispose();

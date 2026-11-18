@@ -64,7 +64,7 @@ class BatPage extends StatelessWidget {
                     child: Image.asset('assets/brand/badge.webp', width: 34, fit: BoxFit.contain)))
             : null,
         leadingWidth: badge ? 52 : null,
-        title: Text(title, style: TextStyle(fontSize: Fs.title + 1, fontWeight: FontWeight.w700, color: t.ink)),
+        title: Text(title, style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
         actions: actions,
       ),
       body: SafeArea(
@@ -117,7 +117,7 @@ class StatusHero extends StatelessWidget {
               Text(look.word,
                   style: TextStyle(fontSize: Fs.meta, fontWeight: FontWeight.w700, letterSpacing: 0.8, color: ink)),
               const SizedBox(height: 2),
-              Text(screenText(text), style: TextStyle(fontSize: Fs.hero - 3, fontWeight: FontWeight.w700, height: 1.35, color: ink)),
+              Text(screenText(text), style: TextStyle(fontSize: Fs.hero, fontWeight: FontWeight.w700, height: 1.35, color: ink)),
             ]),
           ),
         ]),
@@ -132,7 +132,7 @@ class StatusHero extends StatelessWidget {
                 onPressed: onRefresh,
                 style: TextButton.styleFrom(foregroundColor: ink, minimumSize: const Size(48, 48), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
                 icon: const Icon(Icons.refresh, size: 18),
-                label: const Text(Btn.refresh, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                label: const Text(Btn.refresh, style: TextStyle(fontSize: Fs.body, fontWeight: FontWeight.w700)),
               ),
           ]),
       ], 10)),
@@ -170,7 +170,7 @@ class NodeRow extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text(line,
                     style: TextStyle(
-                        fontSize: 15,
+                        fontSize: Fs.note,
                         height: 1.45,
                         color: look == Look.ok ? t.ink : look.ink(t),
                         fontWeight: look == Look.ok ? FontWeight.w400 : FontWeight.w700)),
@@ -239,7 +239,12 @@ class BatRow extends StatelessWidget {
                 if (sub != null) Text(sub!, style: TextStyle(fontSize: Fs.meta, height: 1.5, color: t.sub)),
               ]),
             ),
-            if (right != null) Text(right!, style: TextStyle(fontSize: Fs.note, color: t.sub)),
+            // #329 PR 7 T8 (b): at text scale 2.0 the value wraps instead of running off the row (board country_read)
+            if (right != null)
+              Flexible(
+                  child: Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Text(right!, textAlign: TextAlign.end, style: TextStyle(fontSize: Fs.note, color: t.sub)))),
             if (onTap != null && enabled) Icon(Icons.chevron_right, size: 20, color: t.sub),
           ]),
         ),
@@ -321,7 +326,7 @@ class BatButton extends StatelessWidget {
       Flexible(
           child: Text(text,
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: kind == BtnKind.text ? Fs.body : 17, fontWeight: FontWeight.w700))),
+              style: const TextStyle(fontSize: Fs.body, fontWeight: FontWeight.w700))),
     ]);
     const tall = Size.fromHeight(54);
     return switch (kind) {
