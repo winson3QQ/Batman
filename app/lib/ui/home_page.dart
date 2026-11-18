@@ -172,7 +172,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
       try {
         final p = await listPending(dir: a.records);
         n = p.where((id) => !a.link.core.states.containsKey(id)).length;
-      } catch (_) {}
+      } catch (_) {
+        return; // review misc J m-2: the list unreadable -> keep the todos shown (never hide one on an error)
+      }
     }
     if (mounted) setState(() => _pending = n);
   }

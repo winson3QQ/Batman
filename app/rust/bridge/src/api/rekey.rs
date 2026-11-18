@@ -339,7 +339,12 @@ pub fn update_net_id(hex: String) -> Result<String, String> {
 fn mupdate_text(e: &mupdate::Refusal) -> String {
     use mupdate::Refusal as R;
     match e {
-        R::Format(w) => format!("這不是正確的更新包（{w}）"),
+        // review misc J M-1: the reason in words (the internal English word was on screen); another kind of code told apart
+        R::Format(w) => match *w {
+            "another kind of qr-object" => "這不是更新包（這是另一種碼：邀請碼、申請碼或同意碼貼錯了地方）".into(),
+            "too large" => "這不是 App 產生的更新包（太大），沒有匯入".into(),
+            _ => "這不是正確的更新包（內容不完整或已損壞），請隊長重新產生你的更新包".into(),
+        },
         R::NoNetwork => "請先匯入隊長的同意".into(),
         R::Fork => "⚠️ 這份更新包和你手機裡的網路紀錄不一致（另一份歷史），沒有匯入；請向隊長確認".into(),
         R::TooOld => "你的資料太舊，請隊長讓你的節點離開網路、再重新邀請你".into(),
@@ -587,5 +592,25 @@ mod pr5_rekey_texts {
             update_text(&End::Unfinished, false, "ab12"),
             "[REQ_FAIL] 沒有送出：節點還有沒完成的變更，等一下再按；超過 10 分鐘仍如此，重新開機一次"
         );
+    }
+}
+
+// review misc J M-1: 8.5's refusals in words — an invite pasted here says it is another kind of code; no internal word
+#[cfg(test)]
+mod retest_update_texts {
+    use super::mupdate_text;
+    use batman_proto::mupdate;
+    use batman_proto::invite::{qr_hex, QR_INVITE};
+    use batman_proto::mupdate::Refusal;
+
+    #[test]
+    fn update_format_reasons_are_words() {
+        let invite = qr_hex(QR_INVITE, b"x");
+        assert_eq!(mupdate::update_net_id(&invite).map_err(|e| mupdate_text(&e)).unwrap_err(), "這不是更新包（這是另一種碼：邀請碼、申請碼或同意碼貼錯了地方）");
+        for w in ["not an update", "too large", "steps", "secrets", "net_id", "not deterministic CBOR", "x"] {
+            let t = mupdate_text(&Refusal::Format(w));
+            assert!(t.starts_with("這不是"), "{t}");
+            assert!(!t.contains(w), "the internal word in [{t}]");
+        }
     }
 }

@@ -28,8 +28,10 @@ pub(crate) fn invite_err(e: &Error) -> String {
         // device session 2026-11-17: the reason was shown in English (「another kind of qr-object」 when an invite was
         // pasted into 7.4); the known reasons in words, anything else without the internal word
         Error::Format(w) => match *w {
-            "another kind of qr-object" => "這不是正確的碼（這是另一種碼，例如把邀請碼貼到了收申請）".into(),
+            "another kind of qr-object" => "這不是正確的碼（這是另一種碼：邀請碼、申請碼或同意碼貼錯了地方）".into(),
             "not hex" | "not a qr-object" => "這不是正確的碼（內容不完整或不是 App 產生的碼，請重新複製）".into(),
+            // review misc J m-5: an approval that does not parse -> the next step
+            w if w.starts_with("approval") || w == "not an approval" => "這不是正確的同意碼（內容不完整或已損壞），請隊長重新產生同意碼".into(),
             _ => "這不是正確的碼".into(),
         },
         Error::Invalid(w) => format!("內容驗證沒有通過（{w}）"),
@@ -405,10 +407,10 @@ mod tests {
         let other = invite::qr_hex(invite::QR_INVITE, b"x");
         let e = invite::qr_object(&other, invite::QR_JOINREQ).unwrap_err();
         let t = invite_err(&e);
-        assert_eq!(t, "這不是正確的碼（這是另一種碼，例如把邀請碼貼到了收申請）");
-        for w in ["not hex", "not a qr-object", "approval keys", "x"] {
+        assert_eq!(t, "這不是正確的碼（這是另一種碼：邀請碼、申請碼或同意碼貼錯了地方）");
+        for w in ["not hex", "not a qr-object", "approval keys", "approval secrets", "not an approval", "x"] {
             let t = invite_err(&Error::Format(w));
-            assert!(t.starts_with("這不是正確的碼"), "{t}");
+            assert!(t.starts_with("這不是正確的"), "{t}");
             assert!(!t.contains(w) && !t.contains("qr-object") && !t.contains("hex"), "the internal word in [{t}]");
         }
     }

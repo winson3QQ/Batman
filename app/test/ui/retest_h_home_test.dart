@@ -21,9 +21,11 @@ const other = '00000000000000000beef1';
 class PendingRust extends FakeRust {
   List<String> pending = [];
   int pendingCalls = 0;
+  bool pendingThrows = false;
   @override
   Future<List<String>> crateApiOwnerListPending({required String dir}) async {
     pendingCalls++;
+    if (pendingThrows) throw StateError('store');
     return [...pending];
   }
 }
@@ -33,7 +35,8 @@ void main() {
   setUpAll(() => RustLib.initMock(api: rust));
   setUp(() => rust
     ..pending = []
-    ..pendingCalls = 0);
+    ..pendingCalls = 0
+    ..pendingThrows = false);
 
   Future<AppLink> home(WidgetTester t, {bool devTrust = true, UiState? ui}) async {
     final a = app(); // the phone has node/<id>
@@ -144,5 +147,29 @@ void main() {
     expect(find.text('上一個操作可能沒有存完：新增節點'), findsNothing);
     expect(a.reg.unsavedTodos, isEmpty);
     await done(t, a);
+  });
+
+  testWidgets('review misc J m-2: the pending list unreadable at a release keeps the todo shown (never hides it)',
+      (t) async {
+    rust.pending = [other]; // an unfinished claim
+    final a = await home(t);
+    expect(find.text('上次新增節點沒有做完'), findsOneWidget);
+    rust.pendingThrows = true;
+    final l = (await t.runAsync(() => a.link.acquire('新增節點', LeaseKind.raw)))!;
+    await t.runAsync(() => l.release());
+    await t.pump();
+    await t.pump();
+    expect(rust.pendingCalls, 2, reason: 'premise: the release did read the list again');
+    expect(find.text('上次新增節點沒有做完'), findsOneWidget);
+    await done(t, a);
+  });
+
+  testWidgets('review misc I m1: the home page removes its lease listener when it goes away', (t) async {
+    final a = await home(t);
+    final withHome = a.reg.listeners.length;
+    await t.pumpWidget(const SizedBox());
+    expect(a.reg.listeners.length, withHome - 1);
+    a.link.dispose();
+    AppLink.forgetForTest();
   });
 }
