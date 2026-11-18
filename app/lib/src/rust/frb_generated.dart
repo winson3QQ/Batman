@@ -11,6 +11,7 @@ import 'api/replay.dart';
 import 'api/simple.dart';
 import 'api/ssh.dart';
 import 'api/swupdate.dart';
+import 'api/team_flag.dart';
 
 import 'dart:async';
 import 'dart:convert';
@@ -76,7 +77,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1607694567;
+  int get rustContentHash => -1172584611;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -596,6 +597,8 @@ abstract class RustLibApi extends BaseApi {
   });
 
   String crateApiSwupdateSwSpecifierText();
+
+  bool crateApiTeamFlagTeamEnabled();
 
   String crateApiRekeyUpdateNetId({required String hex});
 
@@ -4374,6 +4377,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "sw_specifier_text", argNames: []);
 
   @override
+  bool crateApiTeamFlagTeamEnabled() {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          return pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 116,
+          )!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiTeamFlagTeamEnabledConstMeta,
+        argValues: [],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiTeamFlagTeamEnabledConstMeta =>
+      const TaskConstMeta(debugName: "team_enabled", argNames: []);
+
+  @override
   String crateApiRekeyUpdateNetId({required String hex}) {
     return handler.executeSync(
       SyncTask(
@@ -4383,7 +4412,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 116,
+            funcId: 117,
           )!;
         },
         codec: SseCodec(

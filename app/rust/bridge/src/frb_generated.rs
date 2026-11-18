@@ -28,11 +28,11 @@
 // Section: imports
 
 use crate::api::claim::*;
+use crate::api::member::*;
+use crate::api::owner::*;
 use crate::api::rekey::*;
 use crate::api::swupdate::*;
-use crate::api::replay::*;
-use crate::api::member::*;
-use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::replay::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -44,7 +44,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
                     default_rust_auto_opaque = RustAutoOpaqueMoi,
                 );
                 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-                pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1607694567;
+                pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1172584611;
             
 
 // Section: executor
@@ -1645,6 +1645,14 @@ let api_sealed = <Vec<u8>>::sse_decode(&mut deserializer);deserializer.end(); mo
                 transform_result_sse::<_, ()>((move || {
                      let output_ok = Ok::<_, ()>(crate::api::swupdate::sw_specifier_text())?;   std::result::Result::Ok(output_ok)
                 })()) })
+            }fn wire__crate__api__team_flag__team_enabled_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "team_enabled", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+                transform_result_sse::<_, ()>((move || {
+                     let output_ok = Ok::<_, ()>(crate::api::team_flag::team_enabled())?;   std::result::Result::Ok(output_ok)
+                })()) })
             }fn wire__crate__api__rekey__update_net_id_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
                 FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "update_net_id", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
             let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
@@ -2571,7 +2579,8 @@ return crate::api::rekey::UpdatePrep{state: var_state, eph_pub: var_ephPub, mnet
 103 => wire__crate__api__ssh__ssh_line_problem_impl(ptr, rust_vec_len, data_len),
 104 => wire__crate__api__owner__status_membership_line_impl(ptr, rust_vec_len, data_len),
 115 => wire__crate__api__swupdate__sw_specifier_text_impl(ptr, rust_vec_len, data_len),
-116 => wire__crate__api__rekey__update_net_id_impl(ptr, rust_vec_len, data_len),
+116 => wire__crate__api__team_flag__team_enabled_impl(ptr, rust_vec_len, data_len),
+117 => wire__crate__api__rekey__update_net_id_impl(ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
                 }
@@ -4078,11 +4087,11 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 // Section: imports
 
 use crate::api::claim::*;
+use crate::api::member::*;
+use crate::api::owner::*;
 use crate::api::rekey::*;
 use crate::api::swupdate::*;
-use crate::api::replay::*;
-use crate::api::member::*;
-use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::replay::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
@@ -4178,11 +4187,11 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 // Section: imports
 
 use crate::api::claim::*;
+use crate::api::member::*;
+use crate::api::owner::*;
 use crate::api::rekey::*;
 use crate::api::swupdate::*;
-use crate::api::replay::*;
-use crate::api::member::*;
-use crate::api::owner::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::replay::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;

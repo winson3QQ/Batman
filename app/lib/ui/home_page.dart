@@ -19,6 +19,7 @@ import 'intro_pages.dart';
 import 'join_pages.dart' show JoinTeamPage, MyRequestPage;
 import 'net_pages.dart' show NetFormPage;
 import 'team_hub.dart' show PickPendPage;
+import 'team_status_page.dart' show TeamPage, anyTeamVisible;
 import 'node_page.dart';
 import 'settings_page.dart';
 import 'theme.dart';
@@ -379,16 +380,27 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
           ]),
         ],
         // #329 PR 6 (home_no_node): one 「新增節點」 on the page — when the status area already offers it, not here too
-        if (h.action != HomeAction.addNode || !widget.keys.claim) ...[ // (a refusal keeps its reason row)
+        // (a refusal keeps its reason row); D5(e) (design §5.1 :703): 「看全隊狀態」 only while some own node's team
+        // section is visible (version N: never)
+        if (h.action != HomeAction.addNode || !widget.keys.claim || anyTeamVisible(a)) ...[
           const BatLabel('可以做的事'),
           BatCard(children: [
-            BatRow(
-              icon: Icons.add,
-              title: Btn.addNode,
-              sub: widget.keys.refusal(KeyUse.claim) ?? '把另一台節點加入這支手機',
-              enabled: widget.keys.claim,
-              onTap: _addNode,
-            ),
+            if (h.action != HomeAction.addNode || !widget.keys.claim)
+              BatRow(
+                icon: Icons.add,
+                title: Btn.addNode,
+                sub: widget.keys.refusal(KeyUse.claim) ?? '把另一台節點加入這支手機',
+                enabled: widget.keys.claim,
+                onTap: _addNode,
+              ),
+            if (anyTeamVisible(a))
+              BatRow(
+                key: const Key('home-team'),
+                icon: Icons.groups_outlined,
+                title: '看全隊狀態',
+                sub: '每台自己的節點看到的隊員',
+                onTap: () => _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => TeamPage(app: a, ui: widget.ui)))),
+              ),
           ]),
         ],
       ],

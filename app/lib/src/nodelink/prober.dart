@@ -9,6 +9,7 @@ import 'dart:typed_data';
 import '../rust/api/claim.dart' show frameLimit;
 import '../rust/api/owner.dart';
 import '../rust/api/rekey.dart' show UpdateHint;
+import '../rust/api/team_flag.dart' as team_flag;
 import 'ble_gate.dart';
 import 'core.dart';
 import 'handoff.dart';
@@ -29,13 +30,20 @@ Outcome loginOutcome(int loginEnd, int code, {required bool loggedIn}) => switch
 /// #329 PR 5 plan v16 §2.4 (R6–R8): what the read needs to work out the remove-member §3.5 line 「這台還在舊密碼」 on the
 /// session that just read the status page. All read-only; injected so tests can fake them.
 class HintSource {
-  const HintSource({required this.wanted, required this.netKnown, required this.openNet, required this.onHint});
+  const HintSource(
+      {required this.wanted, required this.netKnown, required this.openNet, required this.onHint, this.netReady = _yes});
+
+  static bool _yes() => true;
 
   /// R6: a dev build and this node's page is open
   final bool Function(String id) wanted;
 
   /// R6: the phone has a net or mnet record of this network (NetIndex, read-only)
   final bool Function(String netId) netKnown;
+
+  /// #329 PR 6 §14: NetIndex has finished its first computation (before that [netKnown] says no for every network,
+  /// and a team section made from that would wrongly say 「沒有名單」).
+  final bool Function() netReady;
 
   /// `net/<id>` or `mnet/<id>` opened (store + Keystore), null when there is none or it does not open
   final Future<Uint8List?> Function(String rel) openNet;
@@ -44,7 +52,7 @@ class HintSource {
   final void Function(String id, UpdateHint hint) onHint;
 }
 
-/// R7: the hint never holds a read longer than this.
+/// R7: the hint never holds a read longer than this. #329 PR 6 D5(b): one budget for the hint and the team section.
 const hintMax = Duration(seconds: 2);
 
 class SessionProber implements Prober {
@@ -56,10 +64,15 @@ class SessionProber implements Prober {
     this.log,
     this.answerMax = const Duration(seconds: 20),
     this.hint,
+    this.teamEnabled = team_flag.teamEnabled,
   }) : _handoff = false;
 
-  /// #329 PR 5 R6–R8: null = no hint (a flow's login, tests of reads).
+  /// #329 PR 5 R6–R8: null = no hint and no team section (a flow's login, tests of reads).
   final HintSource? hint;
+
+  /// #329 PR 6 D5(a): Rust's `team_enabled()` (teamview::WRITE_MESH_ADDR); false (version N) -> no record is opened
+  /// for the team view and `teamView` is never called. Injected for tests.
+  final bool Function() teamEnabled;
 
   SessionProber._handoff({
     required this.openRecord,
@@ -69,7 +82,10 @@ class SessionProber implements Prober {
     this.log,
     this.answerMax = const Duration(seconds: 20),
   })  : _handoff = true,
+        teamEnabled = _no,
         hint = null; // a flow's login stops at loggedIn: no status page, no hint
+
+  static bool _no() => false;
 
   /// #329 PR 3 §2.2: a login for a flow (HandoffProber) stops at `loggedIn` and hands the session over instead of
   /// reading the status page.
@@ -154,15 +170,18 @@ class SessionProber implements Prober {
             final v = session.statusView(hasNet: false, hasMnet: false);
             // a status answer that is an error code (Rust row 2') is 不變, not a read (§4.3.3-4, round-5 B-M1);
             // E_UNSUPPORTED is row 1, a definite answer
-            final o = v.row == "2'" ? Outcome(Res.errorCode, '', v) : Outcome(Res.body, v.color, v);
+            var o = v.row == "2'" ? Outcome(Res.errorCode, '', v) : Outcome(Res.body, v.color, v);
             read = o;
-            // #329 PR 5 R7: the hint on this session, before done() (done lets the cleanup dispose the session)
+            // #329 PR 5 R7 / PR 6 D5(b): the hint and the team section on this session, before done() (done lets the
+            // cleanup dispose the session); one 2 s budget; over it or cancelled -> no team section (null)
             final hs = hint;
             if (hs != null && o.res == Res.body) {
-              await Future.any([
-                _hint(hs, session, id, v, () => cleaning || result.isCompleted).timeout(hintMax, onTimeout: () {}),
-                cancelled,
+              final team = await Future.any<TeamSeen?>([
+                _afterRead(hs, session, id, v, () => cleaning || result.isCompleted)
+                    .timeout(hintMax, onTimeout: () => null),
+                cancelled.then((_) => null),
               ]);
+              if (team != null && !result.isCompleted) o = Outcome.withTeam(o.res, o.view, o.extra, team);
             }
             done(o);
             st = null;
@@ -246,29 +265,51 @@ class SessionProber implements Prober {
     return o;
   }
 
-  /// #329 PR 5 R6–R8: the hint of [id] from the status page [v] just read on [session]. Every failure is local: this
-  /// read's outcome never depends on it, and the log has the type only. [stop] is true once the cleanup started or the
-  /// read ended (then the session may be disposed: updateHint is synchronous, so the check right before it holds).
-  Future<void> _hint(HintSource hs, OwnerSession session, String id, StatusView v, bool Function() stop) async {
+  /// #329 PR 5 R6–R8 + PR 6 D5(b): after the status page [v] was read on [session]: the hint of [id] (only when
+  /// [HintSource.wanted]) and the team section (only when [teamEnabled]), from ONE opening of this network's record.
+  /// Returns the team section, or null (not enabled, stopped, NetIndex not ready, a failure). Every failure is local:
+  /// this read's outcome never depends on it, and the log has the type only. [stop] is true once the cleanup started
+  /// or the read ended (then the session may be disposed): it is checked after every await and before every call
+  /// into the session (updateHint / teamView are synchronous, so the check right before them holds).
+  Future<TeamSeen?> _afterRead(HintSource hs, OwnerSession session, String id, StatusView v, bool Function() stop) async {
     try {
-      if (!hs.wanted(id)) return;
+      final wantHint = hs.wanted(id);
+      bool wantTeam;
+      try {
+        wantTeam = teamEnabled();
+      } catch (e) {
+        wantTeam = false; // fail-closed: no team section
+        log?.call('probe $id team flag: ${e.runtimeType}');
+      }
+      if (!wantHint && !wantTeam) return null;
+      // 254 v2.4 / the old console (nodes.dart:1165-1176): first the section without a record (NoNet / NoInfo), then
+      // the record's names over it
+      if (stop()) return null;
+      var team = wantTeam ? session.teamView(recordPlain: null, member: false) : null;
+      TeamSeen? seen() => team == null ? null : TeamSeen(v.netId, team);
       if (v.netId.isEmpty) {
         // the node says it is in no network: it really left -> no hint; otherwise (info not read) keep the last one
-        if (v.nodeState == 1) hs.onHint(id, const UpdateHint(line: '', button: false));
-        return;
+        if (wantHint && v.nodeState == 1) hs.onHint(id, const UpdateHint(line: '', button: false));
+        return seen();
       }
-      if (!hs.netKnown(v.netId)) return;
+      // §14: NetIndex not computed yet (cold start): nothing is known about this network yet -> no hint change, and
+      // no team section (a 「沒有名單」 now would be wrong)
+      if (!hs.netReady()) return null;
+      if (!hs.netKnown(v.netId)) return seen();
       // net first, then mnet; the first record that opens is used (the old loop's break, nodes.dart:1167-1175)
       for (final (rel, member) in [('net/${v.netId}', false), ('mnet/${v.netId}', true)]) {
         final p = await hs.openNet(rel);
-        if (stop()) return;
+        if (stop()) return null;
         if (p == null) continue;
-        hs.onHint(id, session.updateHint(recordPlain: p, member: member));
-        return;
+        if (wantHint) hs.onHint(id, session.updateHint(recordPlain: p, member: member));
+        if (wantTeam) team = session.teamView(recordPlain: p, member: member);
+        return seen();
       }
-      hs.onHint(id, const UpdateHint(line: '', button: false));
+      if (wantHint) hs.onHint(id, const UpdateHint(line: '', button: false));
+      return seen();
     } catch (e) {
-      log?.call('probe $id hint: ${e.runtimeType}');
+      log?.call('probe $id after read: ${e.runtimeType}');
+      return null;
     }
   }
 }

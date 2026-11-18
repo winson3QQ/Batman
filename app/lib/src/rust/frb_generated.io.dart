@@ -11,6 +11,7 @@ import 'api/replay.dart';
 import 'api/simple.dart';
 import 'api/ssh.dart';
 import 'api/swupdate.dart';
+import 'api/team_flag.dart';
 
 import 'dart:async';
 import 'dart:convert';
