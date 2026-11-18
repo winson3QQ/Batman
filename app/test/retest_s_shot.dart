@@ -21,7 +21,8 @@ final loadedFonts = <String>[];
 /// on this machine is skipped (then the text shows as boxes; the checks do not depend on it).
 Future<void> loadFonts() async {
   final root = Platform.environment['FLUTTER_ROOT'] ?? 'C:/src/flutter';
-  const cjk = ['C:/Windows/Fonts/NotoSansTC-VF.ttf', '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'];
+  // #329 PR 7 §4: the same Windows font file seen from WSL (the contrast checks and their exceptions are judged on it)
+  const cjk = ['C:/Windows/Fonts/NotoSansTC-VF.ttf', '/mnt/c/Windows/Fonts/NotoSansTC-VF.ttf', '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'];
   Future<void> family(String name, List<String> paths) async {
     for (final p in paths) {
       final f = File(p);
