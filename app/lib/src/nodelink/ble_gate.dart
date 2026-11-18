@@ -23,7 +23,9 @@ abstract class BleBackend {
 
   /// Every link's state, whoever opened it: (address, connected). flutter_reactive_ble: connectedDeviceStream. This
   /// is where "disconnected" after a cancel is seen (§4.2).
-  Stream<(String, bool)> get linkStates;
+  /// The third field: the failure status number when the link went down with a failure (failureCode; -1 = a failure
+  /// without a number), else null. Only the gate reads it, only for the trace (design 329-ble-settle.md §3).
+  Stream<(String, bool, int?)> get linkStates;
 }
 
 /// The provd service's characteristics (the node's BLE contract; ids in ble_backend.dart).
@@ -65,6 +67,9 @@ class GateLink {
   bool _down = false;
   Completer<void>? _gone;
   bool get open => _open;
+
+  /// The failure status the stack reported for this link (failureCode; -1 = no number), null = none. For the trace only.
+  int? failure;
 
   /// true = connected, false = disconnected.
   Stream<bool> get state => _state.stream;
@@ -130,20 +135,30 @@ class GateLink {
 }
 
 class BleGate implements LeaseListener {
-  BleGate(this.backend, this.reg, {required this.now, required this.after}) {
+  BleGate(this.backend, this.reg, {required this.now, required this.after, this.trace}) {
     reg.listeners.add(this);
     _states = backend.linkStates.listen((e) {
       if (e.$2) return;
+      final f = e.$3;
+      if (f != null) {
+        // design 329-ble-settle.md §2.2: one line per reported failure, whether or not the link is still on the table
+        // (the failure may come after the connect stream already ended the attempt); last 2 of the address only
+        final a = e.$1;
+        trace?.call('link …${a.length > 2 ? a.substring(a.length - 2) : a} down fail=${f < 0 ? '?' : f}');
+      }
       for (final l in [..._links.where((l) => l.address == e.$1)]) {
+        l.failure ??= f; // the first failure code while this link is open
         l._downNow();
       }
     });
   }
-  late final StreamSubscription<(String, bool)> _states;
+  late final StreamSubscription<(String, bool, int?)> _states;
 
   Future<void> dispose() => _states.cancel();
   final BleBackend backend;
   final LeaseRegistry reg;
+  /// One line per connect failure the stack reported (status number and the address's last 2 only); null = silent.
+  final void Function(String)? trace;
   final int Function() now;
   final After after;
 

@@ -62,15 +62,15 @@ class HoldOn implements Prober {
 class SlowDiscRadio extends Radio {
   SlowDiscRadio(this.clock);
   final Clock clock;
-  final _st = StreamController<(String, bool)>.broadcast(sync: true);
+  final _st = StreamController<(String, bool, int?)>.broadcast(sync: true);
   @override
-  Stream<(String, bool)> get linkStates => _st.stream;
+  Stream<(String, bool, int?)> get linkStates => _st.stream;
   @override
   Stream<bool> connect(String address, Duration timeout) {
     connects++;
     late StreamController<bool> c;
     c = StreamController<bool>(onCancel: () {
-      clock.after(const Duration(milliseconds: 300), () => _st.add((address, false)));
+      clock.after(const Duration(milliseconds: 300), () => _st.add((address, false, null)));
     });
     scheduleMicrotask(() => c.add(true));
     return c.stream;
@@ -688,11 +688,11 @@ class BusyState extends State<_Busy> with RawBusy<_Busy> {
 
 class _EndingRadio extends Radio {
   final _scan = StreamController<String>();
-  final _st2 = StreamController<(String, bool)>.broadcast(sync: true);
-  void goDown(String a) => _st2.add((a, false));
+  final _st2 = StreamController<(String, bool, int?)>.broadcast(sync: true);
+  void goDown(String a) => _st2.add((a, false, null));
   void endScan() => _scan.close();
   @override
-  Stream<(String, bool)> get linkStates => _st2.stream;
+  Stream<(String, bool, int?)> get linkStates => _st2.stream;
   @override
   Stream<String> scan() => _scan.stream;
 }

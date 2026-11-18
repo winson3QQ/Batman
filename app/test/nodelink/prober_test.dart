@@ -100,13 +100,13 @@ class FakeRust implements RustLibApi {
 class Radio implements BleBackend {
   final tx = StreamController<List<int>>.broadcast();
   final writes = <int>[];
-  final _states = StreamController<(String, bool)>.broadcast(sync: true);
+  final _states = StreamController<(String, bool, int?)>.broadcast(sync: true);
   @override
   Stream<String> scan() => const Stream.empty();
   @override
   Stream<bool> connect(String address, Duration timeout) => (StreamController<bool>()..add(true)).stream; // open while connected
   @override
-  Stream<(String, bool)> get linkStates => _states.stream;
+  Stream<(String, bool, int?)> get linkStates => _states.stream;
   @override
   Future<int> requestMtu(String address, int mtu) async => 247;
   @override

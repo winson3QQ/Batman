@@ -105,7 +105,7 @@ class AppLink {
     if (existing != null) return existing;
     final radio = ble ?? FlutterReactiveBle();
     final reg = LeaseRegistry(after: _after);
-    final gate = BleGate(ReactiveBackend(radio), reg, now: _now, after: _after);
+    final gate = BleGate(ReactiveBackend(radio), reg, now: _now, after: _after, trace: (l) => debugPrint('BMAPP gate $l'));
     final records = '$filesDir/records';
     Future<Uint8List?> openRecord(String id) async {
       final sealed = await storeReadSealed(dir: records, rel: 'node/$id');
