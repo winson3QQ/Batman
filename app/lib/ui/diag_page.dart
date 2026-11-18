@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../key_abilities.dart';
+import '../say.dart' show logText;
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/node_link.dart' show NodeLink;
 import '../src/rust/api/owner.dart' show StatusView;
@@ -44,7 +45,8 @@ Map<String, List<String>> nodeTech(AppLink a) {
   };
 }
 
-/// The copy: whitelisted fields only, every value through [NodeLink.mask] (no long hex run, no address).
+/// The copy: whitelisted fields only, every value through [NodeLink.mask] (no long hex run, no address); a technical
+/// list's markers U+001E / U+001F as 〔 〕 (plan D7: no invisible character in copied text).
 String diagCopy({required String version, required String flavor, required KeyAbilities? keys, required Map<String, List<String>> tech}) => [
       'app 版本：${NodeLink.mask(version)}',
       'flavor：${NodeLink.mask(flavor)}',
@@ -52,7 +54,7 @@ String diagCopy({required String version, required String flavor, required KeyAb
       for (final l in keyLines(keys)) '  $l',
       for (final e in tech.entries) ...[
         '節點 …${e.key}：',
-        for (final l in e.value) '  ${NodeLink.mask(l)}',
+        for (final l in e.value) '  ${logText(NodeLink.mask(l))}',
       ],
     ].join('\n');
 
@@ -107,12 +109,12 @@ class _DiagPageState extends State<DiagPage> {
         Text('這支手機還沒有節點。', style: TextStyle(fontSize: Fs.body, color: t.sub))
       else
         BatCard(children: [
-          for (final e in tech.entries)
+          for (final n in tech.entries)
             Padding(
               padding: const EdgeInsets.all(12),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('節點 …${e.key}', style: TextStyle(fontSize: Fs.body, fontWeight: FontWeight.w600, color: t.ink)),
-                for (final l in e.value) Text(l, style: mono),
+                Text('節點 …${n.key}', style: TextStyle(fontSize: Fs.body, fontWeight: FontWeight.w600, color: t.ink)),
+                for (final l in n.value) Text(logText(l), style: mono),
               ]),
             ),
         ]),

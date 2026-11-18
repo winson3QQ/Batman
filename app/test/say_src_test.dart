@@ -9,8 +9,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 /// Where a sentence would be shown as is.
 final _rules = <String, RegExp>{
-  'Text(<sentence>)': RegExp(r'\bText\(\s*(?!screenText\()[\w!?.]*\b(?:detail|line|text|_line|_note|note)\b(?![\w(])', multiLine: true),
-  'Text(<literal with \$e>)': RegExp(r"""\bText\(\s*'[^']*\$\{?e\b"""),
+  // (Selectable)Text: #329 PR 6's dev pages show node answers in a SelectableText
+  'Text(<sentence>)': RegExp(r'\b(?:Selectable)?Text\(\s*(?!screenText\()[\w!?.]*\b(?:detail|line|text|_line|_note|note|_text)\b(?![\w(])', multiLine: true),
+  'Text(<literal with \$e>)': RegExp(r"""\b(?:Selectable)?Text\(\s*'[^']*\$\{?e\b"""),
   'title: <sentence>': RegExp(r'\btitle:\s*(?!screenText\()[\w!?.]*\.(?:detail|line)\b'),
   'SnackBar(<sentence>)': RegExp(r'SnackBar\([^;]*\.(?:detail|line)\b'),
 };
@@ -62,6 +63,11 @@ void main() {
   test('D7a (3): the files are there (an empty scan is a FAIL)', () {
     final fs = _files();
     expect(fs.length, greaterThanOrEqualTo(20));
+    // #329 PR 6: the new pages that show Rust sentences (dev pages, 診斷, 全隊) are in the scan
+    final names = fs.map((f) => f.path.replaceAll('\\', '/')).toList();
+    for (final p in ['lib/ui/dev_pages.dart', 'lib/ui/diag_page.dart', 'lib/ui/team_status_page.dart', 'lib/ui/settings_pages.dart']) {
+      expect(names.any((n) => n.endsWith(p)), isTrue, reason: p);
+    }
     for (final f in fs) {
       expect(f.existsSync(), isTrue, reason: f.path);
     }
@@ -76,6 +82,8 @@ void main() {
     expect(_rules['Text(<sentence>)']!.hasMatch("Text(r.value.detail, style: x)"), isTrue);
     expect(_rules['Text(<sentence>)']!.hasMatch('Text(_line, key: k)'), isTrue);
     expect(_rules['Text(<sentence>)']!.hasMatch('Text(screenText(_line))'), isFalse);
+    expect(_rules['Text(<sentence>)']!.hasMatch('SelectableText(_text, key: k)'), isTrue);
+    expect(_rules['Text(<sentence>)']!.hasMatch('SelectableText(screenText(_text))'), isFalse);
     expect(_rules['Text(<literal with \$e>)']!.hasMatch("Text('出錯：\$e')"), isTrue);
     expect(_rules['title: <sentence>']!.hasMatch('BatBanner(title: st.detail)'), isTrue);
     expect(_rules['SnackBar(<sentence>)']!.hasMatch('SnackBar(content: Text(r.line))'), isTrue);

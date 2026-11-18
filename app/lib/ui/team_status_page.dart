@@ -7,6 +7,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../say.dart' show SayLine;
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl;
 import '../src/nodelink/node_link.dart' show TeamRead;
@@ -138,7 +139,7 @@ class _TeamPageState extends State<TeamPage> {
           if (v.note.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 4),
-              child: Text(v.note, key: const Key('teamNote'), style: small),
+              child: SayLine(v.note, key: const Key('teamNote'), style: small),
             ),
           if (v.tech.isNotEmpty) ...[
             TextButton(

@@ -4,6 +4,7 @@
 // pages call are faked here (their own rules are Rust tests: api/ssh.rs, owner.rs settings_text).
 
 import 'package:batman_app/key_abilities.dart';
+import 'package:batman_app/say.dart' show techTitle;
 import 'package:batman_app/src/flows/net_index.dart';
 import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/core.dart';
@@ -233,6 +234,87 @@ void main() {
     expect(clip, '目前設定：名稱 BCM2711-6c89');
   });
 
+  // ---- D7 on the dev pages: the technical part under 技術資訊, never a raw control character; a copy shows 〔 〕 ------
+
+  /// Every Text / SelectableText on screen: none may hold U+001E / U+001F.
+  void noControl(WidgetTester t) {
+    final shown = [
+      ...t.widgetList<Text>(find.byType(Text)).map((w) => w.data ?? ''),
+      ...t.widgetList<SelectableText>(find.byType(SelectableText)).map((w) => w.data ?? ''),
+    ];
+    for (final s in shown) {
+      expect(s.contains('\u001e') || s.contains('\u001f'), isFalse, reason: 'raw control character on screen: $s');
+    }
+  }
+
+  // Negative control: NodeSettingsPage back to SelectableText(_text) / copying _text -> the raw characters FAIL.
+  testWidgets('D7: 查看節點設定 with a technical part -> main on screen, the part under 技術資訊; copy with 〔〕', (t) async {
+    mockChannels(t);
+    final f = Fx(rust, logins: 1);
+    (f.rigs[0].session as P4Session).getDetail = '目前設定：名稱 BCM2711-6c89\u001e原因 7\u001f';
+    final a = app()..devTrust = true;
+    await t.pumpWidget(host(NodeSettingsPage(app: a, ui: UiState(MemStore()), deps: f.d)));
+    await t.tap(find.byKey(const Key('pick-$id')));
+    await t.pump();
+    await t.tap(find.byKey(const Key('settings-read')));
+    await settle(t, f);
+    expect(t.widget<SelectableText>(find.byKey(const Key('settings-text'))).data, '目前設定：名稱 BCM2711-6c89');
+    expect(find.text(techTitle), findsOneWidget);
+    expect(find.byKey(const Key('settings-tech')), findsNothing, reason: 'collapsed');
+    noControl(t);
+    await t.tap(find.text(techTitle));
+    await t.pump();
+    expect(t.widget<SelectableText>(find.byKey(const Key('settings-tech'))).data, '原因 7');
+    await t.tap(find.byKey(const Key('settings-copy')));
+    await t.pump();
+    expect(clip, '目前設定：名稱 BCM2711-6c89〔原因 7〕');
+  });
+
+  // Negative control: the SSH result line back to Text(_line) -> the code and the control characters show -> FAIL.
+  testWidgets('D7: an SSH key refusal -> its words on screen, the code only under 技術資訊', (t) async {
+    mockChannels(t);
+    final f = Fx(rust, logins: 1);
+    (f.rigs[0].session as P4Session).sshDetail = '[REQ_FAIL] SSH 金鑰沒有設定：節點不接受\u001e代碼 2，原因 13\u001f';
+    final a = app()..devTrust = true;
+    t.view.physicalSize = const Size(1080, 4000);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    await t.pumpWidget(host(SshKeysPage(app: a, ui: UiState(MemStore()), deps: f.d)));
+    await t.tap(find.byKey(const Key('pick-$id')));
+    await t.pump();
+    await t.enterText(find.byKey(const Key('ssh-lines')), k1);
+    await t.pump();
+    await t.tap(find.byKey(const Key('ssh-send')));
+    await settle(t, f);
+    expect(find.text('SSH 金鑰沒有設定：節點不接受'), findsOneWidget);
+    expect(find.textContaining('代碼'), findsNothing);
+    noControl(t);
+    await t.tap(find.text(techTitle));
+    await t.pump();
+    expect(find.text('代碼 2，原因 13'), findsOneWidget);
+  });
+
+  // Negative control: diagCopy / the page without logText -> the raw characters FAIL.
+  testWidgets('D7: 診斷 shows and copies a technical line\'s markers as 〔〕', (t) async {
+    mockChannels(t);
+    final a = app();
+    a.link.core.states[id]!.extra = StatusView(
+        color: 'green', row: '3', sentence: 'x', lagNote: '', warning: '', nodeState: 2, netId: '', version: '',
+        tech: const ['回覆\u001e代碼 7\u001f'], fresh: true, rateNote: '', unfinished: '', unfinishedUnderVerdict: false,
+        canLeave: false);
+    t.view.physicalSize = const Size(1080, 4000);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    await t.pumpWidget(host(DiagPage(app: a, keys: keys())));
+    await t.pump();
+    expect(find.text('回覆〔代碼 7〕'), findsOneWidget);
+    noControl(t);
+    await t.tap(find.byKey(const Key('diag-copy')));
+    await t.pump();
+    expect(clip, contains('  回覆〔代碼 7〕'));
+    expect(clip!.contains('\u001e') || clip!.contains('\u001f'), isFalse);
+  });
+
   // ---- T6-12 文字紀錄 ------------------------------------------------------------------------------------------------
 
   group('T6-12 text log', () {
@@ -355,7 +437,7 @@ void main() {
       final j = JoinTodo(NetEntry('n1', net(const [])), member('dev0000b', 'dB'));
       rust
         ..records.add('net/n1')
-        ..forgetStep = fake.step(OwnerKind.persistNet, rel: 'net/n1', detail: '[FORGOT] 已忘記 …000B 這次的加入');
+        ..forgetStep = fake.step(OwnerKind.persistNet, rel: 'net/n1', detail: '[FORGOT] 已忘記 …000B 這次的加入\u001eFORGOT\u001f');
       final a = await openPage(t, NetSnapshot(orphanJoins: [j]));
       expect(find.text('「山隊」裡的 …000B'), findsOneWidget);
       await t.tap(find.text('「山隊」裡的 …000B'));
@@ -370,6 +452,9 @@ void main() {
       expect(rust.forgot, ['dB']);
       expect(rust.calls, ['cas net/n1']);
       expect(find.text('已忘記 …000B 這次的加入'), findsOneWidget);
+      // D7: the technical part kept under 技術資訊 (negative control: back to screenText(line) -> no 技術資訊 -> FAIL)
+      noControl(t);
+      expect(find.text(techTitle), findsOneWidget);
       expect(a.reg.current, isNull, reason: 'its lease released');
       await a.link.dispose();
       await t.pumpWidget(const SizedBox());

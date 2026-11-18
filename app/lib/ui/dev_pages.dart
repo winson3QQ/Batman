@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../member_ui.dart' show forgetNotice;
-import '../say.dart' show screenText;
+import '../say.dart' show SayLine, TechFold, logText, screenText, stripMarkers, techText;
 import '../src/flows/net_index.dart' show JoinTodo;
 import '../src/flows/op_session.dart';
 import '../src/flows/owner_console.dart';
@@ -191,7 +191,7 @@ class _SshKeysPageState extends State<SshKeysPage> {
           ])
         else
           Text('沒有任何一行：送出 = 移除 app 加入的全部 SSH 金鑰。', key: const Key('ssh-empty-note'), style: note),
-        if (_line.isNotEmpty) Text(_line, key: const Key('ssh-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+        if (_line.isNotEmpty) SayLine(_line, key: const Key('ssh-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
       ], foot: [
         BatButton(
           _sending ? '正在送出…' : (lines.isEmpty ? sshRemoveButton : sshSetButton),
@@ -236,14 +236,16 @@ class _NodeSettingsPageState extends State<NodeSettingsPage> {
     setState(() {
       _reading = false;
       _ok = r.end == OpEnd.done && reply != null && reply.kind == ReplyKind.answer;
-      // the answer's text is Rust's whitelist (settings_text: no passphrase, node strings through `shown`)
-      _text = _ok ? screenText(reply!.text) : opLine(r);
+      // the answer's text is Rust's whitelist (settings_text: no passphrase, node strings through `shown`); kept with
+      // its technical parts: the screen splits them (SayLine's rule), the copy shows them as 〔 〕
+      _text = _ok ? stripMarkers(reply!.text) : opLine(r);
     });
   }
 
   @override
   Widget build(BuildContext context) {
     final t = BatTheme.of(context);
+    final tech = techText(_text);
     return BatPage(title: '查看節點設定', body: [
       Text('節點回傳的設定（白名單欄位，不含密碼）。', style: TextStyle(fontSize: Fs.note, height: 1.55, color: t.sub)),
       NodePickCard(app: widget.app, ui: widget.ui, picked: _id, enabled: !_reading, onPick: (id) => setState(() => _id = id)),
@@ -251,13 +253,20 @@ class _NodeSettingsPageState extends State<NodeSettingsPage> {
         BatCard(children: [
           Padding(
             padding: const EdgeInsets.all(14),
-            child: SelectableText(_text, key: const Key('settings-text'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+              SelectableText(screenText(_text),
+                  key: const Key('settings-text'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+              if (tech.isNotEmpty) TechFold(tech, techKey: const Key('settings-tech')),
+            ]),
           ),
         ]),
     ], foot: [
       BatButton(_reading ? '讀取中…' : '讀取設定', key: const Key('settings-read'), onPressed: _id == null || _reading ? null : _read),
       if (_ok)
-        BatButton('複製', kind: BtnKind.text, onPressed: () => Clipboard.setData(ClipboardData(text: _text))),
+        BatButton('複製',
+            key: const Key('settings-copy'),
+            kind: BtnKind.text,
+            onPressed: () => Clipboard.setData(ClipboardData(text: logText(_text)))),
     ]);
   }
 }
@@ -267,9 +276,7 @@ class _NodeSettingsPageState extends State<NodeSettingsPage> {
 /// A log line for the screen and the copy: device ids and Bluetooth addresses cut to their last four (the logcat
 /// path's [NodeLink.mask]); the technical-part markers U+001E / U+001F shown as 〔 〕 and any other control character
 /// as a space (no invisible character left, plan D7).
-String logShown(String l) => NodeLink.mask(l)
-    .replaceAll('\u001e', '〔')
-    .replaceAll('\u001f', '〕')
+String logShown(String l) => logText(NodeLink.mask(l))
     .replaceAll(RegExp(r'[\u0000-\u001d\u007f]'), ' ');
 
 class LogPage extends StatefulWidget {
@@ -378,7 +385,7 @@ class _OrphanJoinsPageState extends State<OrphanJoinsPage> {
     final (_, plain) = await d.readRecord(j.net.rel);
     final keys = await d.publicKeys();
     if (!mounted) return;
-    if (plain == null) return setState(() => _line = screenText(recordUnopenedLine));
+    if (plain == null) return setState(() => _line = stripMarkers(recordUnopenedLine));
     try {
       final people = netPeople(recordPlain: plain, ownerPub: keys['owner']!);
       final self = people.where((p) => p.isSelf).firstOrNull;
@@ -422,7 +429,7 @@ class _OrphanJoinsPageState extends State<OrphanJoinsPage> {
     if (mounted) {
       setState(() {
         _busy = false;
-        _line = screenText(line);
+        _line = stripMarkers(line); // technical parts kept: SayLine shows them under 技術資訊
       });
     }
   }
@@ -452,7 +459,7 @@ class _OrphanJoinsPageState extends State<OrphanJoinsPage> {
               onTap: () => _ask(j),
             ),
         ]),
-      if (_line.isNotEmpty) Text(_line, key: const Key('orphan-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+      if (_line.isNotEmpty) SayLine(_line, key: const Key('orphan-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
     ]);
   }
 }

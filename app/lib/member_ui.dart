@@ -9,7 +9,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-import 'say.dart' show SayLine, screenText;
+import 'say.dart' show SayLine;
 import 'src/flows/rekey_send.dart' show sameLast4;
 import 'src/rust/api/member.dart' show MnetView;
 import 'src/rust/api/owner.dart' show OwnerStep, TeamView;

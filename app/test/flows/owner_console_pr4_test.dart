@@ -73,6 +73,8 @@ class P4Session extends Session {
   String leaveMode = 'left'; // left / refused (a non-zero reply, read as NotLeft)
   bool pageSilent = false; // the status page read is never answered
   SettingsView now = view; // #329 PR 6 T6-9: what settings/get answers (a node set to TW)
+  String getDetail = '目前設定：名稱 BCM2711-6c89'; // #329 PR 6: what settings/get says
+  String sshDetail = '[SSH_DONE] SSH 金鑰已設定'; // #329 PR 6 D2: what ssh_keys/set answers
 
   @override
   OwnerStep requestSettings() {
@@ -92,7 +94,6 @@ class P4Session extends Session {
     return st(OwnerKind.write, frame: fSet, sent: true);
   }
 
-  @override
   // #329 PR 6 D2: ssh_keys/set (the lines as sent)
   @override
   OwnerStep requestSshKeys({required List<String> lines}) {
@@ -122,7 +123,7 @@ class P4Session extends Session {
 
   @override
   OwnerStep? onFrame({required List<int> frame}) => switch (frame[0]) {
-        const (fGet + 1) => st(OwnerKind.answer, detail: '目前設定：名稱 BCM2711-6c89', settings: now),
+        const (fGet + 1) => st(OwnerKind.answer, detail: getDetail, settings: now),
         const (fSet + 1) => switch (setAnswer) {
             'ok' => st(OwnerKind.answer, detail: '設定已更新：名稱 BCM2711-6c89', settings: view),
             'ended' => st(OwnerKind.ended, detail: '連線出錯\u001ex\u001f'),
@@ -136,7 +137,7 @@ class P4Session extends Session {
             : st(OwnerKind.answer, detail: '[REQ_FAIL] 沒有離開網路（節點仍在隊伍網路裡）— 請再按一次\u001e代碼 11\u001f'),
         const (fPage + 1) => pageSilent ? null : st(OwnerKind.answer, detail: '[STATUS] 狀態已更新'),
         const (fSw + 1) => st(OwnerKind.answer, sw: true),
-        const (fSsh + 1) => st(OwnerKind.answer, detail: '[SSH_DONE] SSH 金鑰已設定'),
+        const (fSsh + 1) => st(OwnerKind.answer, detail: sshDetail),
         _ => super.onFrame(frame: frame),
       };
 }

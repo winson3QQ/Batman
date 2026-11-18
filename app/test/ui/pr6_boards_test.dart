@@ -11,7 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../flows/op_session_test.dart' show Fx;
-import '../nodes_update_send_test.dart' as nus show FakeRust;
+import '../support/fake_node.dart' as nus show FakeRust;
 import '../retest_s_shot.dart';
 import 'pages_test.dart' show app, id, sv;
 import 'ui_state_test.dart' show MemStore;
