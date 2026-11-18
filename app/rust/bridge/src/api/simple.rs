@@ -41,10 +41,38 @@ pub fn store_read_marker(dir: String) -> Result<Option<String>, String> {
 }
 
 /// Whether any record exists (then keys are never deleted, even without a marker — design §4.1).
-pub fn store_has_records(dir: String) -> bool {
-    // (member-join M15: tests below)
+///
+/// #329 PR 7 T14, three states: a kind's folder that does not exist = none of that kind (a first install); any other
+/// error reading a kind's folder or one of its entries (the kind's path is a plain file: ENOTDIR; a permission or I/O
+/// error) = Err, never "no record" — the caller (`_install`) then generates no key over records it could not see. A
+/// record seen anywhere = true, even when another folder or entry erred (every kind is read before an error counts).
+pub fn store_has_records(dir: String) -> Result<bool, String> {
+    // (member-join M15 / #329 PR 7 T14: tests below)
     let root = std::path::Path::new(&dir);
-    RECORD_KINDS.iter().any(|k| std::fs::read_dir(root.join(k)).map(|mut d| d.any(|e| e.is_ok_and(|e| !e.file_name().to_string_lossy().starts_with('.')))).unwrap_or(false))
+    let mut err: Option<String> = None;
+    for k in RECORD_KINDS {
+        let entries = match std::fs::read_dir(root.join(k)) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                err.get_or_insert(format!("{k}: {e}"));
+                continue;
+            }
+        };
+        for e in entries {
+            match e {
+                Ok(e) if !e.file_name().to_string_lossy().starts_with('.') => return Ok(true),
+                Ok(_) => {}
+                Err(e) => {
+                    err.get_or_insert(format!("{k}/: {e}"));
+                }
+            }
+        }
+    }
+    match err {
+        None => Ok(false),
+        Some(e) => Err(format!("讀不到手機裡的紀錄\u{1E}record store unreadable: {e}\u{1F}")),
+    }
 }
 
 /// Write the marker (atomic, synced). Refused when one already exists.
@@ -100,9 +128,9 @@ mod tests {
             let d = std::env::temp_dir().join(format!("bm-kinds-{kind}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&d);
             let dir = d.to_string_lossy().to_string();
-            assert!(!store_has_records(dir.clone()));
+            assert!(!store_has_records(dir.clone()).unwrap());
             batman_proto::store::Store::new(&d).write(&format!("{kind}/x"), 1, b"s").unwrap();
-            assert!(store_has_records(dir), "{kind}");
+            assert!(store_has_records(dir).unwrap(), "{kind}");
             let _ = std::fs::remove_dir_all(d);
         }
     }
@@ -116,12 +144,86 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         let dir = d.to_string_lossy().to_string();
         batman_proto::store::Store::new(&d).write("ui/state-v1", 1, b"s").unwrap();
-        assert!(!store_has_records(dir.clone()));
+        assert!(!store_has_records(dir.clone()).unwrap());
         assert!(crate::api::owner::list_nodes(dir.clone()).is_empty());
         assert_eq!(store_sweep(dir.clone()).unwrap(), 0);
         assert!(batman_proto::store::Store::new(&d).read("ui/state-v1").unwrap().is_some());
         batman_proto::store::Store::new(&d).write("node/x", 1, b"s").unwrap();
-        assert!(store_has_records(dir));
+        assert!(store_has_records(dir).unwrap());
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    fn fresh(name: &str) -> (std::path::PathBuf, String) {
+        let d = std::env::temp_dir().join(format!("bm-t14-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let s = d.to_string_lossy().to_string();
+        (d, s)
+    }
+
+    /// The Rust error's shape (a Rust sentence: Chinese main part, technical part in U+001E … U+001F) and its kind.
+    fn assert_unreadable(r: Result<bool, String>, kind: &str) {
+        let e = r.expect_err("an unreadable record folder must be an error, never \"no record\"");
+        assert!(e.starts_with("讀不到手機裡的紀錄\u{1E}record store unreadable: "), "{e}");
+        assert!(e.ends_with('\u{1F}'), "{e}");
+        assert!(e.contains(kind), "{kind} in {e}");
+    }
+
+    /// #329 PR 7 T14: the folder of the records does not exist (a first install) -> no record; a record -> true.
+    #[test]
+    fn t14_absent_is_none_a_record_is_true() {
+        let (d, dir) = fresh("absent");
+        assert_eq!(store_has_records(dir.clone()), Ok(false), "no records folder at all");
+        std::fs::create_dir_all(d.join("node")).unwrap();
+        assert_eq!(store_has_records(dir.clone()), Ok(false), "an empty kind folder");
+        batman_proto::store::Store::new(&d).write("node/x", 1, b"s").unwrap();
+        assert_eq!(store_has_records(dir), Ok(true));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// #329 PR 7 T14 (review pr7 E / F: what the old `unwrap_or(false)` read as "no record"): a kind's path that is a
+    /// plain file (ENOTDIR; store_sweep skips it, store.rs:213) -> Err, so `_install` generates no key.
+    /// Negative control: `unwrap_or(false)` back -> FAIL.
+    #[test]
+    fn t14_kind_path_not_a_folder_is_an_error() {
+        for kind in RECORD_KINDS {
+            let (d, dir) = fresh(&format!("enotdir-{kind}"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(kind), b"not a folder").unwrap();
+            assert_unreadable(store_has_records(dir), kind);
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    /// #329 PR 7 T14: a kind folder that cannot be read (mode 000) -> Err. Run as a normal user: root reads it anyway,
+    /// and then this test FAILs (it found nothing to check) instead of passing.
+    #[cfg(unix)]
+    #[test]
+    fn t14_permission_denied_folder_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, dir) = fresh("eacces");
+        batman_proto::store::Store::new(&d).write("net/abc", 1, b"s").unwrap();
+        let net = d.join("net");
+        std::fs::set_permissions(&net, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = std::fs::read_dir(&net).is_ok();
+        let r = store_has_records(dir);
+        std::fs::set_permissions(&net, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(!readable, "the mode-000 folder was still readable (root?): this test checked nothing");
+        assert_unreadable(r, "net");
+    }
+
+    /// #329 PR 7 T14: a record seen in any kind -> true, even when another kind cannot be read (before or after it in
+    /// RECORD_KINDS order): every kind is read before an error counts.
+    #[test]
+    fn t14_a_record_beside_an_error_is_true() {
+        for (bad, good) in [("node", "mpend"), ("forgotten-pending", "node"), ("net", "claim-pending")] {
+            let (d, dir) = fresh(&format!("mixed-{bad}"));
+            batman_proto::store::Store::new(&d).write(&format!("{good}/x"), 1, b"s").unwrap();
+            std::fs::write(d.join(bad), b"not a folder").unwrap();
+            assert_eq!(store_has_records(dir.clone()), Ok(true), "{bad} unreadable, {good}/x there");
+            std::fs::remove_file(d.join(good).join("x")).unwrap();
+            assert_unreadable(store_has_records(dir), bad);
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 }

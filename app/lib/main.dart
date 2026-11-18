@@ -32,6 +32,11 @@ const startupNoRetryNext = '請找維修人員，把下面的技術資訊給他�
 const startupTechAsk = '請把技術資訊給維修人員看（可以按「複製文字」）。';
 /// #329 PR 6 D1: the older start page's instruction when NodeLink did not start (no retry on the same AppLink, F15).
 const restartLine = '請完全關閉 app 再開；仍然如此請找維修人員';
+/// #329 PR 7 T14: the record store could not be read with no install marker: no key is made or touched (the records
+/// may be there), never the home page. The main sentence follows 「啟動檢查：」 and the store's own sentence; the next step
+/// warns against the two things that would lose the records for good.
+const recordsUnreadKept = '，金鑰保持原樣，沒有重建';
+const recordsUnreadNext = '關掉 App 再開、重開手機；仍然如此請找維修人員，不要清除資料或重裝';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -79,6 +84,7 @@ class _StartupCheckState extends State<StartupCheck> {
   bool _retry = false; // the key state could not be read / the first run did not finish: offer to try again
   List<String> _index = []; // app off: the plaintext node index (design §4), one line per node; nothing opened or deleted
   bool _firstRunFailed = false;
+  Object? _recordsUnread; // #329 PR 7 T14: storeHasRecords' error (no marker, the record store could not be read)
 
   @override
   void initState() {
@@ -108,6 +114,7 @@ class _StartupCheckState extends State<StartupCheck> {
     var retry = false;
     var index = <String>[];
     _firstRunFailed = false;
+    _recordsUnread = null;
     try {
       final info = buildInfo();
       final flavorDevTrust = await _platform.invokeMethod<bool>('devTrust');
@@ -122,27 +129,36 @@ class _StartupCheckState extends State<StartupCheck> {
         for (final l in inst) {
           (l.startsWith('安裝紀錄：') ? tech : lines).add(l); // the marker itself is technical; what happened is not
         }
-        // design v8.5.1 §4.1 table: the live key levels decide what is on (record AES not hardware = the whole app off)
-        keys = await KeyAbilities.read(_platform, detail: (d) => tech.add('金鑰保護等級：$d'));
-        if (!keys.appUsable) {
-          // three causes, three messages (design §4 / §4.1): unreadable (may be transient -> retry), lost, not hardware
-          retry = keys.unread || _firstRunFailed;
-          lines[0] = '啟動檢查：${_firstRunFailed && !keys.unread ? '金鑰沒有建立成功，App 暫時不能使用' : keys.offReason}';
-          // design §4: the plaintext index (file names only: nothing is opened or deleted), also while the levels
-          // cannot be read; an unfinished claim is listed as such. A first run happens only with no record at all.
-          if (!_firstRunFailed) {
-            final dir = '${(await _platform.invokeMethod<String>('filesDir'))!}/records';
-            final nodes = await listNodes(dir: dir), pend = await listPending(dir: dir);
-            index = [
-              for (final n in nodes) '節點 ${last4(n)}', // #329 PR 6 P1-3: the last four (the whole id: 技術資訊)
-              for (final n in pend) '節點 ${last4(n)}（認領沒有確認）',
-            ];
-            tech.addAll([for (final n in nodes) '節點紀錄：$n', for (final n in pend) '認領暫存：$n']);
-          }
+        final unread = _recordsUnread;
+        if (unread != null) {
+          // #329 PR 7 T14: fail-closed — no key was made or touched, and the app stays off whatever the key levels
+          // say (the records it could not see would be written over); the store's reason in the technical part
+          retry = true;
+          lines[0] = '啟動檢查：${sayErr(unread)}$recordsUnreadKept';
+          lines.add(recordsUnreadNext);
         } else {
-          // one line per reason (claim and recovery share theirs when the owner key is the cause)
-          lines.addAll({for (final u in KeyUse.values) keys.refusal(u)}.whereType<String>());
-          if (keys.softOwnerEnc) lines.add('注意：這支手機的復原／隊員金鑰只有軟體保護，只適合開發使用');
+          // design v8.5.1 §4.1 table: the live key levels decide what is on (record AES not hardware = the whole app off)
+          keys = await KeyAbilities.read(_platform, detail: (d) => tech.add('金鑰保護等級：$d'));
+          if (!keys.appUsable) {
+            // three causes, three messages (design §4 / §4.1): unreadable (may be transient -> retry), lost, not hardware
+            retry = keys.unread || _firstRunFailed;
+            lines[0] = '啟動檢查：${_firstRunFailed && !keys.unread ? '金鑰沒有建立成功，App 暫時不能使用' : keys.offReason}';
+            // design §4: the plaintext index (file names only: nothing is opened or deleted), also while the levels
+            // cannot be read; an unfinished claim is listed as such. A first run happens only with no record at all.
+            if (!_firstRunFailed) {
+              final dir = '${(await _platform.invokeMethod<String>('filesDir'))!}/records';
+              final nodes = await listNodes(dir: dir), pend = await listPending(dir: dir);
+              index = [
+                for (final n in nodes) '節點 ${last4(n)}', // #329 PR 6 P1-3: the last four (the whole id: 技術資訊)
+                for (final n in pend) '節點 ${last4(n)}（認領沒有確認）',
+              ];
+              tech.addAll([for (final n in nodes) '節點紀錄：$n', for (final n in pend) '認領暫存：$n']);
+            }
+          } else {
+            // one line per reason (claim and recovery share theirs when the owner key is the cause)
+            lines.addAll({for (final u in KeyUse.values) keys.refusal(u)}.whereType<String>());
+            if (keys.softOwnerEnc) lines.add('注意：這支手機的復原／隊員金鑰只有軟體保護，只適合開發使用');
+          }
         }
       }
     } catch (e) {
@@ -217,7 +233,16 @@ class _StartupCheckState extends State<StartupCheck> {
       out.add('安裝紀錄：$marker');
       return out;
     }
-    if (await storeHasRecords(dir: '$dir/records')) {
+    final bool has;
+    try {
+      has = await storeHasRecords(dir: '$dir/records');
+    } catch (e) {
+      // #329 PR 7 T14: the record store could not be read (Rust: a kind's folder or an entry unreadable): records may
+      // be there, so firstRun is NOT called and no key is touched; _run keeps the app off with a retry
+      _recordsUnread = e;
+      return out;
+    }
+    if (has) {
       // marker lost but records exist: never delete or regenerate keys
       out.add('找不到安裝紀錄，但手機裡還有節點資料：金鑰保持原樣，不會重建');
       return out;

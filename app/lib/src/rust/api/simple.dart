@@ -17,6 +17,11 @@ Future<String?> storeReadMarker({required String dir}) =>
     RustLib.instance.api.crateApiSimpleStoreReadMarker(dir: dir);
 
 /// Whether any record exists (then keys are never deleted, even without a marker — design §4.1).
+///
+/// #329 PR 7 T14, three states: a kind's folder that does not exist = none of that kind (a first install); any other
+/// error reading a kind's folder or one of its entries (the kind's path is a plain file: ENOTDIR; a permission or I/O
+/// error) = Err, never "no record" — the caller (`_install`) then generates no key over records it could not see. A
+/// record seen anywhere = true, even when another folder or entry erred (every kind is read before an error counts).
 Future<bool> storeHasRecords({required String dir}) =>
     RustLib.instance.api.crateApiSimpleStoreHasRecords(dir: dir);
 
