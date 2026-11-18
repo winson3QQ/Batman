@@ -273,7 +273,9 @@ jobs:
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
           sm="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$sm" --licenses > /dev/null || true
-          "$sm" --install emulator platform-tools "$EMU_IMAGE" > /dev/null
+          "$sm" --install emulator platform-tools "$EMU_IMAGE" | tail -3
+          ls -d "$ANDROID_HOME/system-images/"*/*/* || { echo "::error::system image $EMU_IMAGE not installed"; exit 1; }
+          ls -l /dev/kvm
           echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n ci -k "$EMU_IMAGE" -d pixel_6 --force
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
           nohup "$ANDROID_HOME/emulator/emulator" -avd ci -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect \
@@ -283,7 +285,7 @@ jobs:
         run: gradle -q -Pemulator-abi=true :app:assembleDevDebug :app:assembleDevDebugAndroidTest
       - name: emulator booted; install both APKs with adb -s
         run: |
-          adb -s "$ADB_S" wait-for-device
+          timeout 300 adb -s "$ADB_S" wait-for-device || { ls -l /dev/kvm; tail -60 "$RUNNER_TEMP/emulator.log"; echo "::error::no emulator device in 300 s"; exit 1; }
           for i in $(seq 1 90); do [ "$(adb -s "$ADB_S" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ] && break; sleep 5; done
           [ "$(adb -s "$ADB_S" shell getprop sys.boot_completed | tr -d '\r')" = 1 ] || { tail -30 "$RUNNER_TEMP/emulator.log"; echo "::error::emulator did not boot"; exit 1; }
           echo "Android $(adb -s "$ADB_S" shell getprop ro.build.version.release | tr -d '\r'), API $(adb -s "$ADB_S" shell getprop ro.build.version.sdk | tr -d '\r')"
