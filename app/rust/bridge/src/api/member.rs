@@ -34,12 +34,12 @@ pub(crate) fn invite_err(e: &Error) -> String {
             w if w.starts_with("approval") || w == "not an approval" => "這不是正確的同意碼（內容不完整或已損壞），請隊長重新產生同意碼".into(),
             _ => "這不是正確的碼".into(),
         },
-        Error::Invalid(w) => format!("內容驗證沒有通過（{w}）"),
+        Error::Invalid(w) => format!("內容驗證沒有通過\u{1E}invalid: {w}\u{1F}"),
         Error::NotApplied => "這個網路還沒確認建立完成，請先在建立網路的節點按「檢查網路」".into(),
         Error::NotAdmin => "這個網路不是這支手機建立的（手機不是它的隊長）".into(),
         Error::Full => format!("這個網路已經有 {} 台節點（App 目前的上限）", netrec::MAX_MEMBERS),
         Error::Name => format!("名稱太長（最多 {} 個位元組）或含有不能顯示的字元", invite::NAME_MAX),
-        Error::NodeCert(c) => format!("申請裡的節點身分沒有通過檢查（{c:?}）"),
+        Error::NodeCert(c) => format!("申請裡的節點身分沒有通過檢查\u{1E}{c:?}\u{1F}"),
         Error::NoNodeCert => "這次連線沒有驗證過節點身分，請重新連線".into(),
         Error::UnknownInvite => "這份申請不是回覆這個網路發出的邀請".into(),
         // remove-member §3.6: a removal makes every unused invite used too
@@ -56,7 +56,7 @@ pub(crate) fn invite_err(e: &Error) -> String {
         Error::Stale => "申請已換新，請重新貼上同意碼".into(),
         Error::SasMismatch => "確認碼不符，沒有匯入".into(),
         Error::Aead => "解不開（不是給這支手機的）".into(),
-        Error::Broken(w) => format!("中斷（{w}）"),
+        Error::Broken(w) => format!("中斷\u{1E}{w}\u{1F}"),
     }
 }
 
@@ -119,11 +119,11 @@ pub fn net_check_joinreq(record_plain: Vec<u8>, hex: String) -> Result<JoinReqVi
 }
 
 fn hash32(s: &str) -> Result<[u8; 32], String> {
-    invite::from_hex(s).ok().and_then(|b| b.try_into().ok()).ok_or_else(|| "App 內部錯誤（hash is not 32 bytes of hex）".to_string())
+    invite::from_hex(s).ok().and_then(|b| b.try_into().ok()).ok_or_else(|| "App 內部錯誤\u{1E}hash is not 32 bytes of hex\u{1F}".to_string())
 }
 
 fn key65(b: Vec<u8>) -> Result<[u8; 65], String> {
-    b.try_into().map_err(|_| "手機金鑰格式不對（not 65 bytes）".to_string())
+    b.try_into().map_err(|_| "手機金鑰格式不對\u{1E}not 65 bytes\u{1F}".to_string())
 }
 
 enum Op {
@@ -154,7 +154,7 @@ fn op_step(a: Option<Action>, what: &str) -> Option<OwnerStep> {
         }
         Action::Done(End::Refused(e)) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：{}", if what == "invite" { "邀請" } else { "同意" }, invite_err(&e))),
         Action::Done(End::PersistFailed(e)) => {
-            let why = e.map_or(STALE_RECORD.to_string(), |x| format!("手機儲存失敗（{x}）"));
+            let why = e.map_or(STALE_RECORD.to_string(), |x| format!("手機儲存失敗\u{1E}{x}\u{1F}"));
             OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {why}（沒有產生任何碼）"))
         }
     })
@@ -166,7 +166,7 @@ impl NetOp {
     pub fn make_invite(record_plain: Vec<u8>, record_gen: u64, admin_pub: Vec<u8>) -> Result<(NetOp, OwnerStep), String> {
         dev_gate()?;
         let (f, a) = InviteFlow::start(&record_plain, record_gen, &key65(admin_pub)?);
-        let st = op_step(Some(a), "invite").ok_or("App 內部錯誤（no first step）")?;
+        let st = op_step(Some(a), "invite").ok_or("App 內部錯誤\u{1E}no first step\u{1F}")?;
         Ok((NetOp { op: Op::Invite(f) }, st))
     }
 
@@ -176,7 +176,7 @@ impl NetOp {
     pub fn approve(record_plain: Vec<u8>, record_gen: u64, hex: String, joinreq_hash: String, admin_pub: Vec<u8>, previous_confirmed: bool) -> Result<(NetOp, OwnerStep), String> {
         dev_gate()?;
         let (f, a) = ApproveFlow::start(&record_plain, record_gen, &hex, &hash32(&joinreq_hash)?, &key65(admin_pub)?, previous_confirmed);
-        let st = op_step(Some(a), "approve").ok_or("App 內部錯誤（no first step）")?;
+        let st = op_step(Some(a), "approve").ok_or("App 內部錯誤\u{1E}no first step\u{1F}")?;
         Ok((NetOp { op: Op::Approve(f) }, st))
     }
 
@@ -287,7 +287,7 @@ pub fn member_import_approval(
     dev_gate()?;
     let zz: Option<[u8; 32]> = z.as_slice().try_into().ok();
     z.iter_mut().for_each(|b| *b = 0);
-    let mut zz = zz.ok_or("App 內部錯誤（z is not 32 bytes）")?;
+    let mut zz = zz.ok_or("App 內部錯誤\u{1E}z is not 32 bytes\u{1F}")?;
     let r = approve::import(&hex, (pend_gen, &pend_plain), expected_pend_gen, mnet_plain.as_deref().map(|p| (p, mnet_gen)), &zz, &confirmed_sas, replace);
     zz.iter_mut().for_each(|b| *b = 0);
     let (plain, net_id, expected) = r.map_err(|e| invite_err(&e))?;

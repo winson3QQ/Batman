@@ -1,0 +1,24 @@
+# #329 PR 6 D7: the shared test vectors of splitCode (app/lib/say.dart) and split_code (Rust,
+# app/rust/batman-proto/tests/support/say_scan.rs). One case per line: input|main|tech.
+# << = U+001E (start of a technical part), >> = U+001F (its end). Technical parts are joined with 「；」.
+# no technical part
+已離開隊伍網路|已離開隊伍網路|
+||
+# one part at the end
+沒有離開網路（節點仍在隊伍網路裡）— 請再按一次<<代碼 11>>|沒有離開網路（節點仍在隊伍網路裡）— 請再按一次|代碼 11
+# one part in the middle: the words after it stay in the main part
+節點不讓改國家：節點拒絕了<<原因 99>><<代碼 11>>，沒有改動任何東西|節點不讓改國家：節點拒絕了，沒有改動任何東西|原因 99；代碼 11
+# several parts
+a<<x>>b<<y>>c|abc|x；y
+# joined sentences (G-M1): every part stays paired, no main words are swallowed
+節點沒有接受這次恢復，已停止；紀錄先保留<<op/replay，代碼 3>>。這筆暫存可能不是這台節點最後一次認領用的，請不要一直重試|節點沒有接受這次恢復，已停止；紀錄先保留。這筆暫存可能不是這台節點最後一次認領用的，請不要一直重試|op/replay，代碼 3
+節點沒有套用這個網路<<回覆碼 11>>；國家已改回 US；需要新的邀請|節點沒有套用這個網路；國家已改回 US；需要新的邀請|回覆碼 11
+第一行<<代碼 1>>\n第二行|第一行\n第二行|代碼 1
+# an empty part is dropped from the technical part
+前<<>>後|前後|
+# unpaired: the control characters go, the whole line is main
+只有開始<<代碼 3|只有開始代碼 3|
+只有結束>>代碼 3|只有結束代碼 3|
+a<<x>>b>>c|axbc|
+# nested: an OPEN inside an open part is unpaired too
+外<<一<<二>>三>>尾|外一二三尾|

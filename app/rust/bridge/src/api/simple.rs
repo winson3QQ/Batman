@@ -36,7 +36,7 @@ pub fn store_read_marker(dir: String) -> Result<Option<String>, String> {
     let s = batman_proto::store::Store::new(dir);
     match s.read(MARKER).map_err(|e| format!("{e:?}"))? {
         None => Ok(None),
-        Some(r) => String::from_utf8(r.sealed).map(Some).map_err(|_| "安裝紀錄不是文字（marker is not UTF-8）".to_string()),
+        Some(r) => String::from_utf8(r.sealed).map(Some).map_err(|_| "安裝紀錄不是文字\u{1E}marker is not UTF-8\u{1F}".to_string()),
     }
 }
 
@@ -51,7 +51,7 @@ pub fn store_has_records(dir: String) -> bool {
 pub fn store_write_marker(dir: String, content: String) -> Result<(), String> {
     let s = batman_proto::store::Store::new(dir);
     if s.read(MARKER).map_err(|e| format!("{e:?}"))?.is_some() {
-        return Err("安裝紀錄已經存在（marker already written）".into());
+        return Err("安裝紀錄已經存在\u{1E}marker already written\u{1F}".into());
     }
     s.write(MARKER, 1, content.as_bytes()).map_err(|e| format!("{e:?}"))
 }

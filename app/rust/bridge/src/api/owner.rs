@@ -151,7 +151,7 @@ pub fn net_forget_joining(record_plain: Vec<u8>, record_gen: u64, dac_hash: Stri
         .map(|i| dac_hash.get(i..i + 2).and_then(|x| u8::from_str_radix(x, 16).ok()))
         .collect::<Option<Vec<u8>>>()
         .and_then(|v| v.try_into().ok())
-        .ok_or("App 內部錯誤（dac_hash is not 32 bytes of hex）")?;
+        .ok_or("App 內部錯誤\u{1E}dac_hash is not 32 bytes of hex\u{1F}")?;
     if r.pending_creator().ok().flatten() == Some(h) {
         return Err("建立網路的節點不能忘記".into());
     }
@@ -167,7 +167,7 @@ pub fn net_forget_joining(record_plain: Vec<u8>, record_gen: u64, dac_hash: Stri
     st.detail = match (gone.state, gone.prev_country) {
         // member-join §3: forgetting an approved node revokes nothing
         (MemberState::Approved, _) => format!("[JOIN_STATE] 已從本機清單移除 {name}（只從本機清單移除，不會撤銷這台已拿到的網路金鑰）"),
-        (_, Some(p)) => format!("[JOIN_STATE] 已忘記加入中的節點 {name}；這台的國家可能仍是 {want}（原本是 {p}）"),
+        (_, Some(p)) => format!("[JOIN_STATE] 已忘記加入中的節點 {name}；這台的國家可能仍是 {}（原本是 {}）", invite::display_name(&want), invite::display_name(&p)),
         (_, None) => format!("[JOIN_STATE] 已忘記加入中的節點 {name}"),
     };
     Ok(st)
@@ -180,11 +180,11 @@ struct Rec {
 }
 
 fn parse_record(plain: &[u8]) -> Result<Rec, String> {
-    let v = cbor::decode(plain).map_err(|e| format!("手機裡的節點資料損壞（{e}）"))?;
+    let v = cbor::decode(plain).map_err(|e| format!("手機裡的節點資料損壞\u{1E}{e}\u{1F}"))?;
     Ok(Rec {
-        device_id: v.get(1).and_then(Value::as_text).ok_or("手機裡的節點資料損壞（no device id）")?.to_string(),
-        owner_tag_key: v.get(5).and_then(Value::as_bytes).and_then(|b| b.try_into().ok()).ok_or("手機裡的節點資料損壞（no owner_tag_key）")?,
-        dac_der: v.get(4).and_then(Value::as_bytes).ok_or("手機裡的節點資料損壞（no DAC）")?.to_vec(),
+        device_id: v.get(1).and_then(Value::as_text).ok_or("手機裡的節點資料損壞\u{1E}no device id\u{1F}")?.to_string(),
+        owner_tag_key: v.get(5).and_then(Value::as_bytes).and_then(|b| b.try_into().ok()).ok_or("手機裡的節點資料損壞\u{1E}no owner_tag_key\u{1F}")?,
+        dac_der: v.get(4).and_then(Value::as_bytes).ok_or("手機裡的節點資料損壞\u{1E}no DAC\u{1F}")?.to_vec(),
     })
 }
 
@@ -486,9 +486,9 @@ fn login_end_text(e: &End) -> String {
     match e {
         End::LoggedIn => "已登入".into(),
         End::Msg2Undecryptable => "不是這台節點（或節點剛認領完還沒準備好）".into(),
-        End::CertRejected(c) => format!("節點的身分證明和手機記錄的不同，已中斷（CertRejected: {c:?}）"),
-        End::AuthRefused(o) => format!("節點拒絕登入（AuthRefused: {o:?}）"),
-        End::Broken(s) => format!("連線出錯（{s}）"),
+        End::CertRejected(c) => format!("節點的身分證明和手機記錄的不同，已中斷\u{1E}CertRejected: {c:?}\u{1F}"),
+        End::AuthRefused(o) => format!("節點拒絕登入\u{1E}AuthRefused: {o:?}\u{1F}"),
+        End::Broken(s) => format!("連線出錯\u{1E}{s}\u{1F}"),
     }
 }
 
@@ -514,7 +514,7 @@ fn confirm_text(c: &Confirm) -> String {
 }
 
 fn country_question(have: &str, want: &str) -> String {
-    format!("[COUNTRY] 這台的國家是 {have}，要改成 {want} 才能加入。要改嗎？")
+    format!("[COUNTRY] 這台的國家是 {}，要改成 {} 才能加入。要改嗎？", invite::display_name(have), invite::display_name(want))
 }
 
 const LATER: &str = "稍後在這台按「加入網路」";
@@ -537,38 +537,38 @@ fn join2_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
             if *save_pending { "（存檔要等這台節點下次開機才完成）" } else { "" },
             if *country_unverified { "；國家未驗證（這台節點的軟體還不能回報國家）" } else { "" }
         ),
-        E::Declined { have, want } => format!("[COUNTRY] 已取消：這台的國家仍是 {have}，沒有加入網路（這個網路用 {want}）"),
+        E::Declined { have, want } => format!("[COUNTRY] 已取消：這台的國家仍是 {}，沒有加入網路（這個網路用 {}）", invite::display_name(have), invite::display_name(want)),
         E::CountryRefused { code, reason } => {
             let why = reason_text(&Value::Map(vec![(Value::Uint(2), Value::Uint(*reason))])).unwrap_or_default();
-            format!("{fail}節點不讓改國家：{why}（代碼 {code}，原因 {reason}），沒有改動任何東西")
+            format!("{fail}節點不讓改國家：{why}\u{1E}代碼 {code}，原因 {reason}\u{1F}，沒有改動任何東西")
         }
         E::SettingsError(o) => match o {
             Outcome::Err { code, detail } => {
                 let why = reason_text(detail).unwrap_or_else(|| code_text(*code).into());
                 let reason = detail.get(2).and_then(Value::as_uint).map(|r| format!("，原因 {r}")).unwrap_or_default();
-                format!("{fail}讀不到這台的國家：{why}（代碼 {code}{reason}）")
+                format!("{fail}讀不到這台的國家：{why}\u{1E}代碼 {code}{reason}\u{1F}")
             }
             Outcome::Ok(_) => format!("{fail}讀不到這台的國家（節點的設定裡沒有國家）"),
         },
         E::Joining(Keep::Unclear7) => format!("[JOIN_STATE] 結果不明（節點可能正在更新或連線中斷），{LATER}"),
         E::Joining(Keep::Unclear) => format!("[JOIN_STATE] 結果不明（節點可能還在處理），{LATER}"),
         E::Joining(Keep::CountryUnknown) => format!("[COUNTRY] 國家狀態不明，{LATER}"),
-        E::Joining(Keep::TwiceRefused) => format!("[JOIN_STATE] 節點連續兩次拒絕（代碼 3），不會再送；{LATER}"),
-        E::Joining(Keep::NonceRefused(c)) => format!("[JOIN_STATE] 還沒送出：節點拒絕準備操作（代碼 {c}），{LATER}"),
+        E::Joining(Keep::TwiceRefused) => format!("[JOIN_STATE] 節點連續兩次拒絕\u{1E}代碼 3\u{1F}，不會再送；{LATER}"),
+        E::Joining(Keep::NonceRefused(c)) => format!("[JOIN_STATE] 還沒送出：節點拒絕準備操作\u{1E}代碼 {c}\u{1F}，{LATER}"),
         E::Failed(f, r) => {
             let head = match f {
-                Fail::Rejected => "節點不接受這份網路設定（回覆碼 4）".to_string(),
+                Fail::Rejected => "節點不接受這份網路設定\u{1E}回覆碼 4\u{1F}".to_string(),
                 Fail::OtherNetwork => "這台已在別的網路".to_string(),
                 Fail::NotApplied(c) => format!(
-                    "節點沒有套用這個網路（回覆碼 {c}）。常見原因：國家或頻道不合、無線電被關、手動改過網路設定、節點剛更新完還沒穩定"
+                    "節點沒有套用這個網路\u{1E}回覆碼 {c}\u{1F}。常見原因：國家或頻道不合、無線電被關、手動改過網路設定、節點剛更新完還沒穩定"
                 ),
-                Fail::NotSent(c) => format!("還沒送出：節點拒絕準備操作（代碼 {c}）"),
+                Fail::NotSent(c) => format!("還沒送出：節點拒絕準備操作\u{1E}代碼 {c}\u{1F}"),
             };
             let tail = match r {
                 Revert::NoChange => String::new(),
-                Revert::Reverted { country } => format!("；國家已改回 {country}"),
+                Revert::Reverted { country } => format!("；國家已改回 {}", invite::display_name(country)),
                 Revert::NotReverted { now, was } => {
-                    format!("；國家可能仍是 {now}，原本是 {was}，未能改回；{LATER}或手動改回")
+                    format!("；國家可能仍是 {}，原本是 {}，未能改回；{LATER}或手動改回", invite::display_name(now), invite::display_name(was))
                 }
             };
             format!("[JOIN_STATE] {head}{tail}")
@@ -580,11 +580,11 @@ fn join2_text(e: &join2flow::End, mesh_id: &str, last4: &str) -> String {
         E::PersistFailed { applied: true, error: None } => {
             format!("[REQ_FAIL] {STALE_RECORD}（節點已套用；重新開啟後在這台按「加入網路」就會補上紀錄）")
         }
-        E::PersistFailed { applied: false, error: Some(why) } => format!("[REQ_FAIL] 手機儲存失敗（{why}）"),
+        E::PersistFailed { applied: false, error: Some(why) } => format!("[REQ_FAIL] 手機儲存失敗\u{1E}{why}\u{1F}"),
         E::PersistFailed { applied: true, error: Some(why) } => {
-            format!("[REQ_FAIL] 節點已套用，手機紀錄沒存好（手機儲存失敗：{why}），請在這台按「加入網路」補上紀錄")
+            format!("[REQ_FAIL] 節點已套用，手機紀錄沒存好（手機儲存失敗\u{1E}{why}\u{1F}），請在這台按「加入網路」補上紀錄")
         }
-        E::Broken(e) => format!("[REQ_FAIL] 加入網路中斷（{e}）"),
+        E::Broken(e) => format!("[REQ_FAIL] 加入網路中斷\u{1E}{e}\u{1F}"),
     }
 }
 
@@ -626,7 +626,7 @@ fn verb_text(verb: &str) -> String {
         "status" => "查看狀態".into(),
         "settings/get" => "查看設定".into(),
         "settings/set" => "更改設定".into(),
-        "ssh_keys/set" => "加入 SSH 金鑰".into(),
+        "ssh_keys/set" => "設定 SSH 金鑰".into(),
         "info" | "info-net" => "檢查網路".into(),
         "info-confirm" => "檢查網路".into(),
         "status-page" | "info-page" => "查看狀態".into(),
@@ -634,7 +634,7 @@ fn verb_text(verb: &str) -> String {
         "network/leave" => "離開網路".into(),
         "network/join" => "建立網路".into(),
         "op/nonce" => "準備操作".into(),
-        v => format!("操作（{v}）"),
+        v => format!("操作\u{1E}{v}\u{1F}"),
     }
 }
 
@@ -646,7 +646,7 @@ fn reason_text(detail: &Value) -> Option<String> {
         13 => "節點不接受這個值，仍保留原本的設定".into(),
         14 => "要先讓節點離開網路才能改國家".into(),
         20 => "這是舊版節點，它的無線電不由 App 管理".into(),
-        r => format!("節點拒絕了（原因 {r}）"),
+        r => format!("節點拒絕了\u{1E}原因 {r}\u{1F}"),
     })
 }
 
@@ -667,8 +667,8 @@ fn code_text(code: u64) -> &'static str {
 fn error_text(asked: &str, code: u64, detail: &Value) -> String {
     let why = reason_text(detail).unwrap_or_else(|| code_text(code).into());
     let reason = detail.get(2).and_then(Value::as_uint).map(|r| format!("，原因 {r}")).unwrap_or_default();
-    let verb = detail.get(1).and_then(Value::as_text).map(|v| format!("，{v}")).unwrap_or_default();
-    format!("[REQ_FAIL] {}沒有成功：{why}（代碼 {code}{reason}{verb}）", verb_text(asked))
+    let verb = detail.get(1).and_then(Value::as_text).map(|v| format!("，{}", statuspage::shown(v))).unwrap_or_default();
+    format!("[REQ_FAIL] {}沒有成功：{why}\u{1E}代碼 {code}{reason}{verb}\u{1F}", verb_text(asked))
 }
 
 fn settings_text(b: &Value) -> String {
@@ -723,7 +723,7 @@ impl OwnerSession {
     #[flutter_rust_bridge::frb(sync)]
     pub fn start(record_plain: Vec<u8>, owner_pub: Vec<u8>, frame_limit: u32) -> Result<(OwnerSession, OwnerStep), String> {
         let r = parse_record(&record_plain)?;
-        let op: [u8; 65] = owner_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_pub is not 65 bytes）")?;
+        let op: [u8; 65] = owner_pub.try_into().map_err(|_| "手機金鑰格式不對\u{1E}owner_pub is not 65 bytes\u{1F}")?;
         let nr = NodeRecord { device_id: &r.device_id, owner_tag_key: &r.owner_tag_key, pinned_dac_der: &r.dac_der, owner_pub: &op };
         let (login, a) = Login::start(&nr, frame_limit as usize);
         let last4 = r.device_id[r.device_id.len().saturating_sub(4)..].to_string();
@@ -749,7 +749,7 @@ impl OwnerSession {
             addr_pending: None,
             sw_reply: None,
         };
-        let step = s.login_step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
+        let step = s.login_step(Some(a)).ok_or("App 內部錯誤\u{1E}no first step\u{1F}")?;
         Ok((s, step))
     }
 
@@ -789,7 +789,7 @@ impl OwnerSession {
                     self.leave = Some((false, None));
                     return Some(leave_info(conn, asked, false, None));
                 }
-                Err(e) => return Some(OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：手機簽章出錯（{e:?}）", verb_text(verb)))),
+                Err(e) => return Some(OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：手機簽章出錯\u{1E}{e:?}\u{1F}", verb_text(verb)))),
             };
             let req = sig::with_owner_op(&body, verb, &raw).map_err(|e| format!("{e:?}")).and_then(|b| conn.request(verb, b).map_err(|e| format!("{e:?}")));
             return Some(match req {
@@ -798,7 +798,7 @@ impl OwnerSession {
                     // #329 PR 4 §2.1 (a): a settings/set write may change the node too: a lost link after it is "outcome unknown"
                     OwnerStep { frames: f, sent: verb == LEAVE || verb == SETTINGS_SET, ..OwnerStep::new(OwnerKind::Write) }
                 }
-                Err(e) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：送不出去（{e}）", verb_text(verb))),
+                Err(e) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}沒有成功：送不出去\u{1E}{e}\u{1F}", verb_text(verb))),
             });
         }
         let a = match &mut self.st {
@@ -921,7 +921,7 @@ impl OwnerSession {
                     match sig::owner_op_input(&conn.h(), &helper, verb, body) {
                         Ok(input) => Some(OwnerStep { sign_input: input, ..OwnerStep::new(OwnerKind::Sign) }),
                         Err(e) => {
-                            let t = format!("[REQ_FAIL] {}沒有成功：無法準備要求（{e:?}）", verb_text(verb));
+                            let t = format!("[REQ_FAIL] {}沒有成功：無法準備要求\u{1E}{e:?}\u{1F}", verb_text(verb));
                             *op = None;
                             Some(OwnerStep::text(OwnerKind::Answer, t))
                         }
@@ -1024,7 +1024,7 @@ impl OwnerSession {
                     let d = match (*asked, self.leave.take()) {
                         (LEAVE, _) => flow::Leave::Unknown.text(),
                         ("info-leave", Some((sent, code))) => flow::leave_outcome(sent, code, None).text(),
-                        _ => format!("連線出錯（{e:?}）"),
+                        _ => format!("連線出錯\u{1E}{e:?}\u{1F}"),
                     };
                     self.st = St::Over;
                     Some(OwnerStep::text(OwnerKind::Ended, d))
@@ -1054,7 +1054,7 @@ impl OwnerSession {
         if let Some(e) = self.flow_busy() {
             return Err(e.into());
         }
-        let adm: [u8; 65] = if member { [0; 65] } else { admin_pub.try_into().map_err(|_| "手機金鑰格式不對（admin_pub is not 65 bytes）")? };
+        let adm: [u8; 65] = if member { [0; 65] } else { admin_pub.try_into().map_err(|_| "手機金鑰格式不對\u{1E}admin_pub is not 65 bytes\u{1F}")? };
         let conn = match std::mem::replace(&mut self.st, St::Over) {
             St::Conn { conn, op: None, .. } if !conn.busy() => conn,
             other => {
@@ -1065,7 +1065,7 @@ impl OwnerSession {
         let inp = updflow::Input { record_plain, member, node: self.node.clone(), owner_pub: self.owner_pub, admin_pub: adm };
         let (flow, a) = SendUpdate::start(conn, inp);
         self.st = St::Update { flow, member };
-        self.update_step(Some(a)).ok_or_else(|| "App 內部錯誤（no first step）".into())
+        self.update_step(Some(a)).ok_or_else(|| "App 內部錯誤\u{1E}no first step\u{1F}".into())
     }
 
     /// After a Wait step.
@@ -1121,8 +1121,8 @@ impl OwnerSession {
             return Err(e.into());
         }
         let node = self.node.clone().ok_or("這次連線沒有驗證過節點身分，請重新連線")?;
-        let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?;
-        let adm: [u8; 65] = admin_pub.try_into().map_err(|_| "手機金鑰格式不對（admin_pub is not 65 bytes）")?;
+        let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對\u{1E}owner_enc_pub is not 65 bytes\u{1F}")?;
+        let adm: [u8; 65] = admin_pub.try_into().map_err(|_| "手機金鑰格式不對\u{1E}admin_pub is not 65 bytes\u{1F}")?;
         if !matches!(self.st, St::Conn { .. }) {
             return Err("還沒連線到節點（或上一個操作還沒結束）".into());
         }
@@ -1184,7 +1184,7 @@ impl OwnerSession {
     #[flutter_rust_bridge::frb(sync)]
     pub fn persist_failed(&mut self, error: String) -> Option<OwnerStep> {
         let stale = error == STALE_RECORD;
-        let why = if stale { STALE_RECORD.to_string() } else { format!("手機儲存失敗（{error}）") };
+        let why = if stale { STALE_RECORD.to_string() } else { format!("手機儲存失敗\u{1E}{error}\u{1F}") };
         if let Some(f) = &mut self.joinreq {
             let a = f.persist_failed((!stale).then_some(error));
             return self.joinreq_step(a);
@@ -1196,7 +1196,7 @@ impl OwnerSession {
         if let St::Join { applied, .. } = &self.st {
             let t = if *applied {
                 // the node applied; only the phone's "applied" copy is missing (the record stays pending on disk)
-                format!("[REQ_FAIL] 節點已套用，手機紀錄沒存好（{why}），請按「檢查網路」")
+                format!("[REQ_FAIL] 節點已套用，手機紀錄沒存好：{why}。請按「檢查網路」")
             } else {
                 format!("[REQ_FAIL] 建立網路沒有成功：{why}")
             };
@@ -1238,8 +1238,8 @@ impl OwnerSession {
         if let Some(e) = self.flow_busy() {
             return Err(e.into());
         }
-        let adm: [u8; 65] = admin_pub.try_into().map_err(|_| "手機金鑰格式不對（admin_pub is not 65 bytes）")?;
-        let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?;
+        let adm: [u8; 65] = admin_pub.try_into().map_err(|_| "手機金鑰格式不對\u{1E}admin_pub is not 65 bytes\u{1F}")?;
+        let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對\u{1E}owner_enc_pub is not 65 bytes\u{1F}")?;
         if !matches!(self.st, St::Conn { .. }) {
             return Err("還沒連線到節點（或上一個操作還沒結束）".into());
         }
@@ -1301,7 +1301,7 @@ impl OwnerSession {
             St::Conn { conn, op: None, .. } if !conn.busy() => {}
             _ => return Err("還沒連線到節點（或上一個操作還沒結束）".into()),
         }
-        let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?;
+        let enc: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對\u{1E}owner_enc_pub is not 65 bytes\u{1F}")?;
         let inp = JoinReqInput {
             invite_hex,
             name,
@@ -1332,7 +1332,10 @@ impl OwnerSession {
             }
             A::Done(E::Refused(e)) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 申請沒有成功：{}", super::member::invite_err(&e))),
             A::Done(E::PersistFailed(e)) => {
-                OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 申請沒有存好（{}），請再按一次", e.unwrap_or_else(|| "寫入被打斷".into())))
+                OwnerStep::text(OwnerKind::Answer, match e {
+                    Some(e) => format!("[REQ_FAIL] 申請沒有存好，請再按一次\u{1E}{e}\u{1F}"),
+                    None => "[REQ_FAIL] 申請沒有存好（寫入被打斷），請再按一次".into(),
+                })
             }
         };
         self.joinreq = None;
@@ -1377,7 +1380,7 @@ impl OwnerSession {
             self.addr_pending = Some((then, 1));
             return Ok(st);
         }
-        self.start_then(then, None).ok_or_else(|| "App 內部錯誤（no first step）".into())
+        self.start_then(then, None).ok_or_else(|| "App 內部錯誤\u{1E}no first step\u{1F}".into())
     }
 
     /// a join request being made, or a flow waiting for its address read: nothing else starts meanwhile (A-m1)
@@ -1551,7 +1554,7 @@ impl OwnerSession {
                     Some(a) => return self.join_step(Some(a)),
                     None => {
                         self.back_to_conn();
-                        OwnerStep::text(OwnerKind::Answer, "[REQ_FAIL] 建立網路沒有成功：節點連續兩次拒絕，不會再送第三次（代碼 3）".into())
+                        OwnerStep::text(OwnerKind::Answer, "[REQ_FAIL] 建立網路沒有成功：節點連續兩次拒絕，不會再送第三次\u{1E}代碼 3\u{1F}".into())
                     }
                 }
             }
@@ -1560,7 +1563,7 @@ impl OwnerSession {
                 self.back_to_conn();
                 match self.check_network() {
                     Ok(st) => st,
-                    Err(e) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 建立網路：結果不明，也讀不到節點的網路狀態，請按「檢查網路」（{e}）")),
+                    Err(e) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 建立網路：結果不明，也讀不到節點的網路狀態，請按「檢查網路」\u{1E}{e}\u{1F}")),
                 }
             }
             J::Done(JE::Replied(JoinReply::Rejected)) => {
@@ -1573,7 +1576,7 @@ impl OwnerSession {
             }
             J::Done(e) => {
                 self.back_to_conn();
-                OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 建立網路中斷（{e:?}）"))
+                OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 建立網路中斷\u{1E}{e:?}\u{1F}"))
             }
         })
     }
@@ -1620,7 +1623,7 @@ impl OwnerSession {
         if let Some(e) = self.flow_busy() {
             return Err(e.into());
         }
-        let (verb, body) = sw.next.take().ok_or("App 內部錯誤（no update request）")?;
+        let (verb, body) = sw.next.take().ok_or("App 內部錯誤\u{1E}no update request\u{1F}")?;
         let mut conn = match std::mem::replace(&mut self.st, St::Over) {
             St::Conn { conn, op: None, .. } if !conn.busy() => conn,
             other => {
@@ -1683,7 +1686,7 @@ impl OwnerSession {
             Ok(Some(o)) => o,
             Err(e) => {
                 self.st = St::Over;
-                return Some(OwnerStep::text(OwnerKind::Ended, format!("連線出錯（{e:?}）")));
+                return Some(OwnerStep::text(OwnerKind::Ended, format!("連線出錯\u{1E}{e:?}\u{1F}")));
             }
         };
         if *nonce {
@@ -1717,7 +1720,7 @@ impl OwnerSession {
                     St::Login(l) => l,
                     other => {
                         self.st = other;
-                        return Some(OwnerStep::text(OwnerKind::Ended, "App 內部錯誤（logged in without a login）".into()));
+                        return Some(OwnerStep::text(OwnerKind::Ended, "App 內部錯誤\u{1E}logged in without a login\u{1F}".into()));
                     }
                 };
                 self.node = login.verified().cloned();
@@ -1725,9 +1728,9 @@ impl OwnerSession {
                 match login.into_conn() {
                     Some(conn) => {
                         self.st = St::Conn { conn, asked: "", op: None };
-                        OwnerStep { login_end: 1, ..OwnerStep::text(OwnerKind::LoggedIn, format!("已連線到節點 …{}（擁有者）", self.last4)) }
+                        OwnerStep { login_end: 1, ..OwnerStep::text(OwnerKind::LoggedIn, format!("已連線到節點 …{}（擁有者）", self.last4.to_ascii_uppercase())) }
                     }
-                    None => OwnerStep::text(OwnerKind::Ended, "登入後沒有連線（no connection after login）".into()),
+                    None => OwnerStep::text(OwnerKind::Ended, "登入後沒有連線\u{1E}no connection after login\u{1F}".into()),
                 }
             }
             Action::Done(e) => {
@@ -1772,17 +1775,71 @@ mod tests {
         assert_eq!(reason_text(&m(vec![(2, Value::Uint(14))])).as_deref(), Some("要先讓節點離開網路才能改國家"));
         assert_eq!(reason_text(&m(vec![(1, Value::Text("status".into()))])), None);
         assert_eq!(reason_text(&m(vec![(1, Value::Text("settings/set".into())), (2, Value::Uint(20))])).as_deref(), Some("這是舊版節點，它的無線電不由 App 管理"));
-        assert_eq!(reason_text(&m(vec![(2, Value::Uint(99))])).as_deref(), Some("節點拒絕了（原因 99）"));
+        assert_eq!(reason_text(&m(vec![(2, Value::Uint(99))])).as_deref(), Some("節點拒絕了\u{1E}原因 99\u{1F}"));
         assert_eq!(reason_text(&Value::Map(vec![])), None);
-        // the whole error line: what failed, why, then the codes
-        assert_eq!(error_text("settings/set", 11, &m(vec![(2, Value::Uint(14))])), "[REQ_FAIL] 更改設定沒有成功：要先讓節點離開網路才能改國家（代碼 11，原因 14）");
-        assert_eq!(error_text("status", 6, &m(vec![(1, Value::Text("status".into()))])), "[REQ_FAIL] 查看狀態沒有成功：這台節點的軟體還不支援這個功能（代碼 6，status）");
+        // the whole error line: what failed, why, then the codes (#329 PR 6 D7: the codes are the technical part)
+        assert_eq!(error_text("settings/set", 11, &m(vec![(2, Value::Uint(14))])), "[REQ_FAIL] 更改設定沒有成功：要先讓節點離開網路才能改國家\u{1E}代碼 11，原因 14\u{1F}");
+        assert_eq!(error_text("status", 6, &m(vec![(1, Value::Text("status".into()))])), "[REQ_FAIL] 查看狀態沒有成功：這台節點的軟體還不支援這個功能\u{1E}代碼 6，status\u{1F}");
         assert_eq!(
             error_text("settings/set", 6, &m(vec![(1, Value::Text("settings/set".into())), (2, Value::Uint(20))])),
-            "[REQ_FAIL] 更改設定沒有成功：這是舊版節點，它的無線電不由 App 管理（代碼 6，原因 20，settings/set）"
+            "[REQ_FAIL] 更改設定沒有成功：這是舊版節點，它的無線電不由 App 管理\u{1E}代碼 6，原因 20，settings/set\u{1F}"
         );
-        assert_eq!(error_text("ssh_keys/set", 12, &Value::Map(vec![])), "[REQ_FAIL] 加入 SSH 金鑰沒有成功：嘗試太多次，請稍後再試（代碼 12）");
-        assert_eq!(error_text("x/y", 99, &Value::Map(vec![])), "[REQ_FAIL] 操作（x/y）沒有成功：節點回報錯誤（代碼 99）");
+        assert_eq!(error_text("ssh_keys/set", 12, &Value::Map(vec![])), "[REQ_FAIL] 設定 SSH 金鑰沒有成功：嘗試太多次，請稍後再試\u{1E}代碼 12\u{1F}");
+        assert_eq!(error_text("x/y", 99, &Value::Map(vec![])), "[REQ_FAIL] 操作\u{1E}x/y\u{1F}沒有成功：節點回報錯誤\u{1E}代碼 99\u{1F}");
+    }
+
+    /// #329 PR 6 D7a (2) / T-C4c: the sentence functions of F5 / F6 / E-M1 — the main part has no code and no ASCII word
+    /// outside the whitelist, the codes are in the technical part, and a sentence joined after a technical part keeps
+    /// its main words (G-M1: owner.rs:543, :602).
+    #[test]
+    fn d7a_2_owner_sentences() {
+        use crate::say_scan::{assert_split, split_code};
+        let m = |kv: Vec<(u64, Value)>| Value::Map(kv.into_iter().map(|(k, v)| (Value::Uint(k), v)).collect());
+        // error_text / reason_text, including an unknown reason and a node-sent verb
+        assert_split(&error_text("settings/set", 11, &m(vec![(2, Value::Uint(14))])), &["\u{1E}代碼 11，原因 14\u{1F}"]);
+        assert_split(&error_text("settings/set", 3, &m(vec![(2, Value::Uint(99))])), &["\u{1E}原因 99\u{1F}", "\u{1E}代碼 3\u{1F}"]);
+        assert_split(&error_text("op/x", 99, &Value::Map(vec![])), &["\u{1E}op/x\u{1F}", "\u{1E}代碼 99\u{1F}"]);
+        // G MINOR-3: the node's verb is cleaned (no control character, no newline) before it reaches the technical part
+        let t = error_text("status", 6, &m(vec![(1, Value::Text("x\u{1F}\n\u{202E}y".into()))]));
+        let (main, tech) = split_code(&t);
+        assert!(!tech.contains('\n') && !tech.contains('\u{202E}') && tech.contains("x\u{FFFD}\u{FFFD}\u{FFFD}y"), "{tech:?}");
+        assert_eq!(main, "[REQ_FAIL] 查看狀態沒有成功：這台節點的軟體還不支援這個功能");
+        // join2_text: codes and reply codes
+        use join2flow::End as E;
+        for (e, code) in [
+            (E::Joining(Keep::TwiceRefused), "\u{1E}代碼 3\u{1F}"),
+            (E::Joining(Keep::NonceRefused(12)), "\u{1E}代碼 12\u{1F}"),
+            (E::Failed(Fail::Rejected, Revert::NoChange), "\u{1E}回覆碼 4\u{1F}"),
+            (E::Failed(Fail::NotApplied(11), Revert::NoChange), "\u{1E}回覆碼 11\u{1F}"),
+            (E::Failed(Fail::NotSent(3), Revert::NoChange), "\u{1E}代碼 3\u{1F}"),
+            (E::SettingsError(Outcome::Err { code: 6, detail: m(vec![(2, Value::Uint(7))]) }), "\u{1E}代碼 6，原因 7\u{1F}"),
+            (E::PersistFailed { applied: false, error: Some("Io(StorageFull)".into()) }, "\u{1E}Io(StorageFull)\u{1F}"),
+            (E::PersistFailed { applied: true, error: Some("Io(StorageFull)".into()) }, "\u{1E}Io(StorageFull)\u{1F}"),
+            (E::Broken("Timeout".into()), "\u{1E}Timeout\u{1F}"),
+        ] {
+            assert_split(&join2_text(&e, "bm-ab", "2233"), &[code]);
+            assert_split(&member_join_text(&e, "bm-ab", "2233"), &[code]);
+        }
+        // G-M1 (owner.rs:543): an unknown reason inside, the words after it stay in the main part
+        let t = join2_text(&E::CountryRefused { code: 11, reason: 99 }, "", "");
+        assert_split(&t, &["\u{1E}原因 99\u{1F}", "\u{1E}代碼 11，原因 99\u{1F}"]);
+        assert!(split_code(&t).0.ends_with("節點拒絕了，沒有改動任何東西"), "{t}");
+        // G-M1 (owner.rs:602): 「需要新的邀請」 after a sentence with a reply code
+        let t = member_join_text(&E::Failed(Fail::NotApplied(11), Revert::Reverted { country: "TW".into() }), "", "");
+        assert_split(&t, &["\u{1E}回覆碼 11\u{1F}"]);
+        assert!(split_code(&t).0.ends_with("；國家已改回 TW；需要新的邀請"), "{t}");
+        // E-M1 / F6: the login's ends in English
+        assert_split(&login_end_text(&End::Broken("Timeout".into())), &["\u{1E}Timeout\u{1F}"]);
+        assert_split(&login_end_text(&End::AuthRefused(Outcome::Err { code: 3, detail: Value::Map(vec![]) })), &["AuthRefused"]);
+        assert_split(&login_end_text(&End::CertRejected(nodecert::Error::NotPinned)), &["CertRejected"]);
+        assert_split(&verb_text("op/zz"), &["\u{1E}op/zz\u{1F}"]);
+        assert_eq!(verb_text("ssh_keys/set"), "設定 SSH 金鑰", "plan D2: the success / failure sentence of the SSH page");
+        // J MINOR-4: a node-sent country cannot open or close a technical part (display_name)
+        let t = join2_text(&E::Declined { have: "U\u{1E}S".into(), want: "U\u{1F}S".into() }, "", "");
+        assert_eq!(split_code(&t).0.matches('\u{FFFD}').count(), 2, "{t}");
+        let t = join2_text(&E::Failed(Fail::Rejected, Revert::Reverted { country: "\u{1E}J".into() }), "", "");
+        assert!(split_code(&t).0.contains("國家已改回 \u{FFFD}J"), "{t}");
+        assert_eq!(country_question("\u{1F}JP", "US"), "[COUNTRY] 這台的國家是 \u{FFFD}JP，要改成 US 才能加入。要改嗎？");
     }
 
     fn base() -> joinflow::NetRecord {
@@ -1870,11 +1927,11 @@ mod tests {
         assert_eq!(join2_text(&E::Applied { country_unverified: false, save_pending: false }, "bm-ab", "2233"), "[JOINED] 已套用：節點 …2233 已加入網路 bm-ab");
         assert_eq!(
             join2_text(&E::Failed(Fail::NotApplied(11), Revert::NotReverted { now: "US".into(), was: "JP".into() }), "", ""),
-            "[JOIN_STATE] 節點沒有套用這個網路（回覆碼 11）。常見原因：國家或頻道不合、無線電被關、手動改過網路設定、節點剛更新完還沒穩定；國家可能仍是 US，原本是 JP，未能改回；稍後在這台按「加入網路」或手動改回"
+            "[JOIN_STATE] 節點沒有套用這個網路\u{1E}回覆碼 11\u{1F}。常見原因：國家或頻道不合、無線電被關、手動改過網路設定、節點剛更新完還沒穩定；國家可能仍是 US，原本是 JP，未能改回；稍後在這台按「加入網路」或手動改回"
         );
         assert_eq!(join2_text(&E::Joining(Keep::Unclear7), "", ""), "[JOIN_STATE] 結果不明（節點可能正在更新或連線中斷），稍後在這台按「加入網路」");
         assert_eq!(join2_text(&E::PersistFailed { applied: false, error: None }, "", ""), "[REQ_FAIL] 紀錄已被別處更新，請重新開啟再試");
-        assert_eq!(join2_text(&E::PersistFailed { applied: false, error: Some("seal x".into()) }, "", ""), "[REQ_FAIL] 手機儲存失敗（seal x）");
+        assert_eq!(join2_text(&E::PersistFailed { applied: false, error: Some("seal x".into()) }, "", ""), "[REQ_FAIL] 手機儲存失敗\u{1E}seal x\u{1F}");
         assert_eq!(country_question("JP", "US"), "[COUNTRY] 這台的國家是 JP，要改成 US 才能加入。要改嗎？");
         assert_eq!(link_text(&flow::LinkState::Connected { plinks: 3 }), "[CONNECTED] 已連上隊伍網路", "no station count (status page §3)");
     }
@@ -2185,7 +2242,7 @@ mod tests {
                 k => panic!("unexpected step {k:?}"),
             };
         };
-        assert_eq!(t, "[REQ_FAIL] 節點已套用，手機紀錄沒存好（手機儲存失敗（Io(StorageFull)）），請按「檢查網路」");
+        assert_eq!(t, "[REQ_FAIL] 節點已套用，手機紀錄沒存好：手機儲存失敗\u{1E}Io(StorageFull)\u{1F}。請按「檢查網路」");
         assert_eq!(s.made.as_ref().unwrap().1, 1, "the pending record (generation 1) is what is on disk");
         assert!(matches!(s.st, St::Conn { .. }), "an owner session again");
         assert_eq!(verb_text("info-confirm"), "檢查網路");
@@ -2214,7 +2271,7 @@ mod tests {
         });
         r.state = netrec::APPLIED.into();
         for (error, want) in [
-            ("Io(StorageFull)", "[REQ_FAIL] 手機儲存失敗（Io(StorageFull)）"),
+            ("Io(StorageFull)", "[REQ_FAIL] 手機儲存失敗\u{1E}Io(StorageFull)\u{1F}"),
             (STALE_RECORD, "[REQ_FAIL] 紀錄已被別處更新，請重新開啟再試"),
         ] {
             let (mut s, mut n) = logged_in();
@@ -2859,7 +2916,7 @@ mod leave_tests {
         assert!(!r.left);
         // op/nonce 3
         let (_, _, r) = run(Err(3), true, Ok(Value::Map(vec![])), Ok(info(true, Some(false))));
-        assert!(r.answer.contains("代碼 3") && !r.answer.contains("重新開機"), "{}", r.answer);
+        assert!(r.answer.contains("\u{1E}代碼 3\u{1F}") && !r.answer.contains("重新開機"), "{}", r.answer);
         // the signature failed: through info and leave_outcome, not a direct answer
         let (_, _, r) = run(nonce(), false, Ok(Value::Map(vec![])), Ok(info(true, Some(false))));
         assert_eq!(r.verbs, ["op/nonce", "info"]);
