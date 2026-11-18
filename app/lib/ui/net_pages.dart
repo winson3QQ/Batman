@@ -15,7 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../member_ui.dart' show forgetNotice;
-import '../say.dart' show SayLine, screenText, stripMarkers;
+import '../say.dart' show SayLine, logText, screenText, stripMarkers;
 import '../src/flows/net_index.dart';
 import '../src/flows/net_run.dart';
 import '../src/flows/owner_console.dart';
@@ -66,7 +66,7 @@ FlowDeps flowDeps(AppLink a, Lease lease, {required AskUser askCountry, required
           askCountry: askCountry,
           askRemoved: askRemoved,
           keyError: (e) => keyErrorToRadio(e, a.link),
-          log: (l) => debugPrint('BMAPP $l'),
+          log: (l) => debugPrint('BMAPP ${logText(l)}'), // #329 PR 6 D7: the technical marks as 〔 〕
           onLost: onLost),
       // §2.6: the one record read again under the lease; a record that does not read or open is not applied (§2.9)
       applied: (rel) async {
@@ -92,7 +92,7 @@ Future<bool> askYesNo(BuildContext context, String title, String body, String ye
                 backgroundColor: t.surf,
                 title: Text(title, style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
                 content: SingleChildScrollView(
-                    child: Text(body, style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink))),
+                    child: SayLine(body, style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink))), // #329 PR 6 D7
                 actions: [
                   Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                     BatButton(yes, onPressed: () => Navigator.pop(c, true)),

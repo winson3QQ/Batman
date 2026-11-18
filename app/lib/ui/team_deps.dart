@@ -4,6 +4,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../say.dart' show logText;
 import '../src/flows/offline_op.dart';
 import '../src/flows/rekey_send.dart';
 import '../src/nodelink/app_link.dart';
@@ -22,7 +23,7 @@ OfflineDeps offlineDeps(AppLink a) => OfflineDeps(
   busyName: () => a.reg.current?.name,
   writer: a.writer,
   after: a.link.after,
-  log: (l) => debugPrint('BMAPP $l'),
+  log: (l) => debugPrint('BMAPP ${logText(l)}'), // #329 PR 6 D7: the technical marks as 〔 〕
 );
 
 /// R10: the keys and the record store for offline work (the same calls ConsolePlatform makes, plus ecdh).

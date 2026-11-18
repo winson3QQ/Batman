@@ -6,7 +6,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../say.dart' show SayLine, stripMarkers;
+import '../say.dart' show SayLine, logText, stripMarkers;
 import '../secure_screen.dart';
 import '../src/flows/net_run.dart' show loginLine;
 import '../src/flows/op_session.dart';
@@ -32,7 +32,7 @@ OpDeps opDeps(AppLink a) => OpDeps(
           askCountry: (_) async => false, // no settings request asks (a join's question)
           askRemoved: (_) async => false,
           keyError: (e) => keyErrorToRadio(e, a.link),
-          log: (l) => debugPrint('BMAPP $l')),
+          log: (l) => debugPrint('BMAPP ${logText(l)}')),
       keepScreen: keepScreen,
     );
 

@@ -155,7 +155,7 @@ class _StartupCheckState extends State<StartupCheck> {
         ..clear()
         ..add('啟動檢查失敗：${sayErr(e)}');
     }
-    debugPrint('BMAPP ${[...lines, ...tech].join(' | ')}');
+    debugPrint('BMAPP ${logText([...lines, ...tech].join(' | '))}');
     final make = widget.makeLink;
     if (agree && keys.appUsable && _app == null && make != null) {
       // review pr1 A-m5: a NodeLink that cannot be built leaves the startup result on screen, never a spinner
