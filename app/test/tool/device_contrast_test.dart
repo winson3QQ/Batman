@@ -158,6 +158,20 @@ void main() {
     expect(m.ratio, greaterThan(4.5));
   });
 
+  // S20, 2026-11-18: a dark card row (984 × 192 px) with a 1-px border and a short light label — measured over the
+  // whole box the border (3.4 %) won over the label's ink (< 2 %) and the row read 1.39 (LOW). Negative controls: the
+  // share against the whole box, or no inset -> the border is the foreground and this FAILs.
+  test('a card row: the label, not the card border, is the foreground', () {
+    const cardBg = 0x211F18, border = 0x3B372B, label = 0xEFE9D9, page = 0x14130F;
+    final p = pic(300, 80, page);
+    rect(p, 10, 10, 290, 70, border); // the card, its 1-px border
+    rect(p, 11, 11, 289, 69, cardBg);
+    rect(p, 40, 30, 70, 34, label); // 120 px of ink in a 280 × 60 box (0.7 %)
+    final rows = report([const UiNode('新增節點', 10, 10, 290, 70)], p);
+    expect(rows[1], startsWith('PASS'), reason: rows[1]);
+    expect(rows[1], contains(hex(label)));
+  });
+
   test('pale text is LOW; a one-pixel speck is no foreground (NO-FG)', () {
     final p = screen();
     final pale1 = measure(p, 0, 20, 100, 40)!;
