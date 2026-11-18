@@ -29,16 +29,25 @@ import javax.net.SocketFactory
  *   networkSecurityConfig permitting cleartext) to the main manifest -> cleartextIsBlockedForHttpStack FAILs.
  * - logcat after the PUT does not hold the bearer (lower- or upper-case hex); the passphrase is checked in T9.
  *   Mutation: a Log.d of the bearer in SwPut -> noSecretInLogcat FAILs.
- * §10-15: if 127.0.0.1 turns out to be exempt from the policy, run with `-e host wifi` (the phone's Wi-Fi IPv4).
+ * §10-15: if 127.0.0.1 turns out to be exempt from the policy, run with `-e host wifi` (the phone's Wi-Fi IPv4)
+ *   or `-e host lan` (any non-loopback IPv4; the emulator / CI). 2026-11-18, emulator API 37: it is exempt —
+ *   HttpURLConnection to 127.0.0.1 is let through with cleartext off, so cleartextIsBlockedForHttpStack needs one.
  */
 @RunWith(AndroidJUnit4::class)
 class SwCleartextTest {
     private val bearer = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
 
+    // wifi: the phone's wlan IPv4; lan: the first IPv4 of any interface that is up and not loopback (the emulator's
+    // eth0; CI). An unknown value or no such address fails the test, never a silent fallback to 127.0.0.1.
     private fun host(): InetAddress {
-        if (InstrumentationRegistry.getArguments().getString("host") != "wifi") return InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
-        return NetworkInterface.getNetworkInterfaces().toList().filter { it.name.startsWith("wlan") }
-            .flatMap { it.inetAddresses.toList() }.first { it.address.size == 4 }
+        val h = InstrumentationRegistry.getArguments().getString("host") ?: return InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
+        val ifs = NetworkInterface.getNetworkInterfaces().toList().filter { it.isUp && !it.isLoopback }
+        val pick = when (h) {
+            "wifi" -> ifs.filter { it.name.startsWith("wlan") }
+            "lan" -> ifs
+            else -> throw IllegalArgumentException("-e host $h: only wifi or lan")
+        }
+        return pick.flatMap { it.inetAddresses.toList() }.first { it.address.size == 4 }
     }
 
     // a fake node answering 200 after reading the head and Content-Length bytes
