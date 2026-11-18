@@ -56,3 +56,17 @@
 ## rekey_send_test / member_ui_test 的 nodes.dart 掃描排除
 
 - 拿掉（檔案已不存在）。
+
+## 逐條核對（第二次、唯讀，base c4905ed → HEAD a18295e；每個 HEAD 檔:行都用 `git show HEAD:<file> | sed -n` 確認過）
+
+48 列：已有對應 20（4 列 ⚠️ 部分）、移植 16（1 列 ⚠️ 部分）、隨舊控制台刪除 10、❓ 找不到對應 2。
+
+缺口（在下一個 commit 補）：
+1. T19：沒有一條測試「移除隊員 commit 之後推進時鐘、斷言 0 frame」；之前靠 rekey_send_test:199 結構檢查 + team_pages_test:414 / node_team_test:91 按鈕閘門合起來保證。
+2. member_ui_test :159「rows 3 / 4 carry the lag small print」：Dart 端 node_page.dart:175 顯示 `lagNote` 沒有測試（Rust statuspage.rs:230 有）。
+3. member_ui_test :451「a double tap opens one dialog」：LeavePage 的 `_running`（more_pages.dart:316）沒有連點測試。
+4. `teamLogLine`（member_ui.dart:35）成了死碼。
+5. 行號更正：plan §7 的 `key_abilities_test:338` 實際是 c4905ed 的 :341；`pages_test:275` 是 :270。
+
+⚠️ 部分的列：T19（同第 1 點）、key_gate :195（沒有一條頁面測試從頭到尾斷言畫面上的那句話；owner_console_test:383、net_run_test:223、key_abilities_test:249 分段涵蓋）、member_ui :167（更多頁的 tech 摺疊沒有測試）、:399（LeavePage 沒有頁內重新整理）、nodes_pop I-m1 / I-m3（新的 OpSession 刻意不切斷進行中的請求，op_session_test:207；「pop 後不再送」由 net_run_test:307 涵蓋）。
+隨舊控制台刪除的 10 列：StatusPageView 的版面 / 頁內重新整理 / E_RATE 提示 / 讀不到 / 讀取中再按 / ReadClock / readTime、離開後的 stale 標記、ControlsAndLog 360×640、key_abilities 舊控制台那一列——這些元件已不存在（pages_test.dart:287 斷言），新路徑的對應見上面各段。
