@@ -73,7 +73,9 @@ void main() {
       expect(find.text('掃描 QR'), findsOneWidget);
       await scan(t);
       expect(rust.parsed, isEmpty);
-      expect(button(t, '認領').onPressed, isNull, reason: 'no QR read');
+      // #329 PR 6 P2-2: no code -> 「認領」 is not shown, 「掃描 QR」 is the one primary
+      expect(find.text('認領'), findsNothing, reason: 'no QR read');
+      expect(button(t, '掃描 QR').onPressed, isNotNull);
       expect(find.byKey(claimLinesKey), findsNothing, reason: 'no line said'); // #329 PR 3: the lines are a card now
     });
 
@@ -105,7 +107,7 @@ void main() {
       await scan(t);
       expect(rust.parsed, [qrText, notClaim]);
       expect(find.textContaining('這不是認領用的 QR 碼'), findsOneWidget);
-      expect(button(t, '認領').onPressed, isNull, reason: 'no claim of the previous node');
+      expect(find.text('認領'), findsNothing, reason: 'no claim of the previous node (P2-2: not shown)');
     });
 
     testWidgets('$flavor: the scan button is off while a scan is open', (t) async {
@@ -123,7 +125,7 @@ void main() {
       await page(t, dev: dev, scans: [PlatformException(code: 'camera')]);
       await scan(t);
       expect(find.text('無法使用相機：請確認已允許相機權限，且沒有其他 app 正在使用相機'), findsOneWidget);
-      expect(button(t, '認領').onPressed, isNull);
+      expect(find.text('認領'), findsNothing); // P2-2: not shown without a code
       expect(button(t, '掃描 QR').onPressed, isNotNull, reason: 'can try again');
     });
   }

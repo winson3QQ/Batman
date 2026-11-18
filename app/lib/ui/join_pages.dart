@@ -9,7 +9,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../member_ui.dart' show SasShowView;
-import '../say.dart' show screenText;
+import '../say.dart' show SayLine, stripMarkers, tech;
 import '../secure_screen.dart';
 import '../src/flows/offline_op.dart';
 import '../src/flows/op_session.dart';
@@ -46,7 +46,7 @@ String nameLeft(String s) {
 
 /// R10: a PersistMnet / PersistNet step written under the lease (seal, then compare-and-swap).
 Future<void> writeStep(OwnerStep st, OfflinePlatform p, Lease l, RecordWriter w) async {
-  if (st.kind != OwnerKind.persistMnet && st.kind != OwnerKind.persistNet) throw screenText(st.detail);
+  if (st.kind != OwnerKind.persistMnet && st.kind != OwnerKind.persistNet) throw st.detail; // the whole line (its technical part is shown under 技術資訊)
   final sealed = await p.seal(st.record, st.aad);
   await w.writeCas(l, st.rel, st.expectedGen, sealed);
 }
@@ -100,7 +100,7 @@ class _JoinTeamPageState extends State<JoinTeamPage> {
       a.invite.take(hex, v); // no record, no lease (F51)
       setState(() => _line = '收到網路「${v.netName}」的邀請');
     } catch (e) {
-      setState(() => _line = '[REQ_FAIL] 邀請不能用：${e is String ? e : e.runtimeType}');
+      setState(() => _line = '[REQ_FAIL] 邀請不能用：${e is String ? e : tech(e.runtimeType)}');
     }
   }
 
@@ -147,10 +147,9 @@ class _JoinTeamPageState extends State<JoinTeamPage> {
       child: BatPage(
         title: '加入隊伍的網路',
         body: [
-          if (held == null) ...[
-            const Text('掃描隊長的邀請 QR，或貼上他用訊息傳來的文字。'),
-            CodeInput(devTrust: a.devTrust, onText: _took, onError: (w) => setState(() => _line = w)),
-          ] else ...[
+          if (held == null)
+            const Text('掃描隊長的邀請 QR，或貼上他用訊息傳來的文字。')
+          else ...[
             Text('邀請：網路「${held.$2.netName}」', key: const Key('join-invite')),
             TextField(
               key: const Key('join-name'),
@@ -183,9 +182,11 @@ class _JoinTeamPageState extends State<JoinTeamPage> {
               ),
             ),
           ],
-          if (_line.isNotEmpty) Text(screenText(_line), key: const Key('join-line')),
+          if (_line.isNotEmpty) SayLine(_line, key: const Key('join-line')),
         ],
         foot: [
+          // #329 PR 6 (7.8): the main action at the bottom
+          if (held == null) CodeInput(devTrust: a.devTrust, onText: _took, onError: (w) => setState(() => _line = w)),
           if (held != null)
             BatButton(
               Btn.requestJoin,
@@ -215,6 +216,9 @@ class _JoinTeamPageState extends State<JoinTeamPage> {
 }
 
 // ---- 7.9 我的申請 -----------------------------------------------------------------------------------------------------
+
+/// 7.9: a request renewed since the last time it was shown (Rust's 「[JOINREQ] 申請已換新…」).
+const kRenewedNotice = '申請已換新，要重新核對確認碼';
 
 class MyRequestPage extends StatefulWidget {
   const MyRequestPage(
@@ -258,7 +262,7 @@ class _MyRequestPageState extends State<MyRequestPage> {
         _sas = st.sas;
       });
     } catch (e) {
-      setState(() => _line = '[REQ_FAIL] ${e is String ? e : e.runtimeType}');
+      setState(() => _line = '[REQ_FAIL] ${e is String ? e : tech(e.runtimeType)}');
     }
   }
 
@@ -312,20 +316,22 @@ class _MyRequestPageState extends State<MyRequestPage> {
         title: '我的申請',
         body: [
           const Text('先把申請交給隊長，再用電話把確認碼唸給他聽。'),
+          // #329 PR 6 (7.9): the renewed notice as a status component, not orange text
+          if (sas != null && widget.renewed) const BatBanner(key: Key('renewed'), look: Look.warn, title: kRenewedNotice),
           if (hex != null) CodeView(hex: hex),
           if (sas != null)
             SecureScreen(
               fallback: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  SasShowView(sas: sas, notice: widget.renewed ? '申請已換新，要重新核對確認碼' : null),
+                  SasShowView(sas: sas),
                   Text('這支手機無法防止截圖', style: TextStyle(color: Look.warn.ink(t))),
                 ],
               ),
-              child: SasShowView(sas: sas, notice: widget.renewed ? '申請已換新，要重新核對確認碼' : null),
+              child: SasShowView(sas: sas),
             ),
-          const Text('不要用傳邀請的同一個聊天室核對'),
-          if (_line.isNotEmpty) Text(screenText(_line), key: const Key('request-line')),
+          // #329 PR 6 (7.9): one reminder — sasRule, in SasShowView
+          if (_line.isNotEmpty) SayLine(_line, key: const Key('request-line')),
         ],
         foot: [
           BatButton(
@@ -379,7 +385,7 @@ class _ImportApprovalPageState extends State<ImportApprovalPage> {
     try {
       id = approvalNetId(hex: hex);
     } catch (e) {
-      return setState(() => _line = '[REQ_FAIL] 同意碼不能用：${e is String ? e : e.runtimeType}');
+      return setState(() => _line = '[REQ_FAIL] 同意碼不能用：${e is String ? e : tech(e.runtimeType)}');
     }
     final (pendGen, pend) = await teamDeps(a).readRecord('mpend/$id');
     final (_, mnet) = await teamDeps(a).readRecord('mnet/$id');
@@ -398,7 +404,7 @@ class _ImportApprovalPageState extends State<ImportApprovalPage> {
         prep = memberImportPrepare(hex: hex, pendGen: pendGen, pendPlain: pend, mnetPlain: mnet, replace: true);
       }
     } catch (e) {
-      return setState(() => _line = '[REQ_FAIL] 同意碼不能匯入：${e is String ? e : e.runtimeType}');
+      return setState(() => _line = '[REQ_FAIL] 同意碼不能匯入：${e is String ? e : tech(e.runtimeType)}');
     }
     if (!mounted) return;
     if (prep.state != ImportState.ready || pend == null) return setState(() => _line = prep.detail);
@@ -521,7 +527,7 @@ class _ImportApprovalPageState extends State<ImportApprovalPage> {
               onConfirm: () => _import(prep.sas),
             ),
           ],
-          if (_line.isNotEmpty) Text(screenText(_line), key: const Key('import-line')),
+          if (_line.isNotEmpty) SayLine(_line, key: const Key('import-line')),
         ],
         foot: [
           if (_settled != null && !_imported)
@@ -600,7 +606,7 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
     try {
       id = updateNetId(hex: hex);
     } catch (e) {
-      return setState(() => _line = '[REQ_FAIL] 更新包不能用：${e is String ? e : e.runtimeType}');
+      return setState(() => _line = '[REQ_FAIL] 更新包不能用：${e is String ? e : tech(e.runtimeType)}');
     }
     if (_running) return; // review B m1: busy before the first await
     setState(() => _running = true);
@@ -625,8 +631,8 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
           ownerEncPub: keys['ownerEnc']!,
         );
         // device session 2026-11-17: each Rust line loses its log marker before they are joined (「[UPDATE] 已收到新密碼」
-        // showed on the second line: screenText strips only the start of the whole text)
-        if (prep.state == UpdateState.alreadyImported) return '這份更新包你之前匯入過了，可能不是最新的（${screenText(prep.detail)}）';
+        // showed on the second line; SayLine strips them line by line)
+        if (prep.state == UpdateState.alreadyImported) return '這份更新包你之前匯入過了，可能不是最新的（${stripMarkers(prep.detail)}）';
         if (prep.state == UpdateState.advance) z = ownCopy(await p.ecdh(prep.ephPub)); // only on Advance (S-m8)
         final (gen2, mnet2) = await p.readRecord('mnet/$id');
         final st = memberUpdateImport(
@@ -639,7 +645,7 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
           z: z ?? Uint8List(0),
         );
         await writeStep(st, p, l, w);
-        return '${screenText(prep.detail)}\n${screenText(st.detail)}'; // Rust's 「更新到第 N 版」 shown as is (T-M1)
+        return '${stripMarkers(prep.detail)}\n${stripMarkers(st.detail)}'; // Rust's 「更新到第 N 版」 shown as is (T-M1)
       } finally {
         zero(z);
       }
@@ -748,7 +754,7 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
           const Text('貼上隊長給你的更新包。'),
           CodeInput(devTrust: a.devTrust, scan: false, onText: _got, onError: (w) => setState(() => _line = w)),
         ],
-        if (_line.isNotEmpty) Text(screenText(_line), key: const Key('update-line')),
+        if (_line.isNotEmpty) SayLine(_line, key: const Key('update-line')),
         if (_settled != null)
           BatButton(kJudgeAgain, key: const Key('judge-again'), onPressed: _judging ? null : _judgeUpdate),
         if (_imported) ...[
@@ -771,7 +777,7 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
                   Padding(
                     padding: const EdgeInsets.all(12),
                     child: s.notReached != null
-                        ? Text(opLine(s.notReached!))
+                        ? SayLine(opLine(s.notReached!))
                         : RekeyResult(end: s.end, line: s.line, member: true, version: s.version ?? _ver),
                   ),
               ],

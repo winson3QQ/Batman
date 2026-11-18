@@ -218,7 +218,7 @@ void main() {
       act(SwKind.show_, text: '傳送一直中斷', buttons: [SwButton.refresh]),
     ]));
     expect(r.flow.calls, contains('uploaded other'));
-    await t.tap(find.text('技術資訊'));
+    await t.tap(find.text('技術資訊（給維修人員看）')); // #329 PR 6: the fold's one title
     await pumps(t, 3);
     expect(find.text('PUT: watchdog'), findsOneWidget);
     expect(r.hold.putCode, 'watchdog');

@@ -20,6 +20,7 @@ import 'package:batman_app/src/rust/api/rekey.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/ui/join_pages.dart';
 import 'package:batman_app/ui/join_choice.dart' show NetMode;
+import 'package:batman_app/member_ui.dart' show sasRule;
 import 'package:batman_app/ui/net_pages.dart' show NetFormPage;
 import 'package:batman_app/ui/rekey_result.dart';
 import 'package:batman_app/ui/team_deps.dart';
@@ -370,7 +371,9 @@ void main() {
       final w = World(['0000aa01'], {});
       await open(t, w, (a) => MyRequestPage(app: a, ui: UiState(MemStore()), netId: 'nn'));
       expect(find.textContaining('5678'), findsOneWidget);
-      expect(find.text('不要用傳邀請的同一個聊天室核對'), findsOneWidget);
+      // #329 PR 6 (7.9): one reminder (sasRule), not two
+      expect(find.text('不要用傳邀請的同一個聊天室核對'), findsNothing);
+      expect(find.text(sasRule), findsOneWidget);
       await t.tap(find.text('放棄申請'));
       await settle(t);
       expect(find.textContaining('同意碼都不能再匯入'), findsOneWidget);

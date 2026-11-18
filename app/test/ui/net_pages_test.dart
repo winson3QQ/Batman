@@ -120,7 +120,7 @@ void main() {
     final l = a.reg.current;
     expect(l, isNotNull);
     expect(l!.busy, isTrue, reason: 'working: a hold');
-    expect(find.text('請留在這個畫面'), findsOneWidget);
+    expect(find.text(kRunWait), findsOneWidget); // #329 PR 6 (4.x_working): with 「這一步最多 6 分鐘」
     gate.complete();
     await settle(t);
     expect(find.text('完成'), findsWidgets);
@@ -142,7 +142,7 @@ void main() {
     await start(t);
     await back(t);
     expect(find.byType(NetRunPage), findsOneWidget);
-    expect(find.text('請留在這個畫面'), findsOneWidget);
+    expect(find.text(kRunWait), findsOneWidget); // #329 PR 6 (4.x_working): with 「這一步最多 6 分鐘」
     expect(a.reg.current, isNotNull);
     gate.complete();
     await settle(t);

@@ -222,8 +222,8 @@ void main() {
       'write node/$deviceId',
       'remove claim-pending/$deviceId',
     ]);
-    final claim = t.widget<FilledButton>(find.widgetWithText(FilledButton, '認領'));
-    expect(claim.onPressed, isNull, reason: 'R6: the QR is forgotten after [CLAIMED]');
+    // #329 PR 6 P2-2: without a code 「認領」 is not shown (was: shown and off)
+    expect(find.text('認領'), findsNothing, reason: 'R6: the QR is forgotten after [CLAIMED]');
   });
 
   // design §4.1 (dev build + SOFTWARE owner_enc): confirmed -> the claim goes through and the session is told to mark
@@ -314,8 +314,8 @@ void main() {
     expect(find.textContaining('沒能刪掉這次的認領暫存紀錄'), findsOneWidget);
     expect(find.textContaining('認領沒有完成'), findsNothing);
     expect(rust.calls, contains('write node/$deviceId'));
-    final claim = t.widget<FilledButton>(find.widgetWithText(FilledButton, '認領'));
-    expect(claim.onPressed, isNull, reason: 'R6: the QR is forgotten');
+    // #329 PR 6 P2-2: without a code 「認領」 is not shown (was: shown and off)
+    expect(find.text('認領'), findsNothing, reason: 'R6: the QR is forgotten');
   });
 
   // #329 review pr1 r2 C-M1 (A-M1 / B-M1 with the real page): ClaimPage opened by openRawPage, popped while its claim

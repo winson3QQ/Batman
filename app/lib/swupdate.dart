@@ -63,6 +63,30 @@ class SwHold {
   BigInt now() => BigInt.from(clock.elapsedMilliseconds);
 }
 
+/// #329 PR 6 §3 row swupdate (plan §11 MINOR): the status area at the top of the page — prepared = ok, writing / any
+/// step in progress = busy, finished = ok, failed (reverted) = bad, ended otherwise (later, cancelled) = unk. Null = no
+/// status area (a screen that asks for a file or a setting).
+(Look, String)? swHero(SwAction? a, {required bool running}) {
+  if (a == null) return null;
+  if (running || a.kind == SwKind.send || a.kind == SwKind.wait || a.kind == SwKind.upload) {
+    return (Look.busy, a.text.isNotEmpty ? a.text : (a.note.isNotEmpty ? a.note : '進行中'));
+  }
+  if (a.kind == SwKind.show_ && a.buttons.contains(SwButton.applyAnyway)) return (Look.ok, swPrepared);
+  if (a.kind == SwKind.show_ && a.buttons.contains(SwButton.apply)) {
+    // the written screen (swupd.rs written_screen), else the apply was refused (the error screen keeps 套用 to retry)
+    return a.text.startsWith('節點上有一個已寫好') ? (Look.ok, swPrepared) : (Look.bad, '還沒套用：節點沒有接受');
+  }
+  if (a.kind == SwKind.done) {
+    if (a.text.startsWith('更新完成')) return (Look.ok, a.text);
+    if (a.text.contains('退回') || a.text.contains('回到原本的版本')) return (Look.bad, '更新沒有成功，已回到原本的版本');
+    return (Look.unk, '更新已結束');
+  }
+  return null;
+}
+
+/// The prepared state's sentence (plan §11 MINOR).
+const swPrepared = '已準備好，還沒套用';
+
 String buttonLabel(SwButton b) => switch (b) {
       SwButton.pick => '選擇更新檔',
       SwButton.start => '開始傳送',
@@ -331,7 +355,8 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
 
   /// #329 PR 4 §2.8: the dangerous buttons (they cut the node off for a while: the note says how long)
   BtnKind _kind(SwButton b) => switch (b) {
-        SwButton.apply || SwButton.applyAnyway => BtnKind.danger,
+        // #329 PR 6 P2-5 (9.2): 「開始傳送」 starts what cannot be cancelled once writing starts (T_CONFIRM says so)
+        SwButton.apply || SwButton.applyAnyway || SwButton.start => BtnKind.danger,
         SwButton.cancel || SwButton.abandon => BtnKind.text,
         _ => BtnKind.primary,
       };
@@ -341,13 +366,15 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
     final a = _a;
     final uploading = a?.kind == SwKind.upload;
     final t = BatTheme.of(context);
+    final hero = swHero(a, running: _running);
     // #329 PR 4 §2.8: PR 2's page parts; what shows when, and every button, as before
     return PopScope(
       canPop: !_running,
       child: BatPage(
         title: '軟體更新',
         body: [
-          if (a != null && a.text.isNotEmpty)
+          if (hero case (final look, final text)) StatusHero(key: const Key('sw-hero'), look: look, text: text),
+          if (a != null && a.text.isNotEmpty && hero?.$2 != a.text) // (said once: not again under the status area)
             Text(a.text, style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, height: 1.4, color: t.ink)),
           if (a != null && a.note.isNotEmpty) Text(a.note, style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
           if (a != null && a.percent >= 0) LinearProgressIndicator(value: a.percent / 100),
@@ -359,7 +386,7 @@ class _SwUpdatePageState extends State<SwUpdatePage> {
           ],
           if (_running && !uploading) const Padding(padding: EdgeInsets.all(8), child: Center(child: CircularProgressIndicator())),
           if (a != null && (a.tech.isNotEmpty || _h.putCode.isNotEmpty))
-            ExpansionTile(title: const Text('技術資訊'), children: [
+            ExpansionTile(title: const Text('技術資訊（給維修人員看）'), children: [
               Text([if (a.tech.isNotEmpty) a.tech, if (_h.putCode.isNotEmpty) 'PUT: ${_h.putCode}'].join(';'),
                   style: TextStyle(fontFamily: 'monospace', fontSize: Fs.meta, color: t.ink)),
             ]),

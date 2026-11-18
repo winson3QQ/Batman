@@ -15,7 +15,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../member_ui.dart' show forgetNotice;
-import '../say.dart' show screenText;
+import '../say.dart' show SayLine, screenText, stripMarkers;
 import '../src/flows/net_index.dart';
 import '../src/flows/net_run.dart';
 import '../src/flows/owner_console.dart';
@@ -38,7 +38,11 @@ import 'widgets.dart';
 /// What a check page or a run page hands back to 4.1: make a network now (§2.8 「建立網路」).
 const goMake = 'make';
 
-/// The plain line of a reply for the screen (log marks off).
+/// 4.x_working's next step (#329 PR 6, design S5 / F49: the one wait sentence of a join / make).
+const kRunWait = '請留在這個畫面。這一步最多 6 分鐘。';
+
+/// The plain line of a reply for the screen (log marks and technical parts off; #329 PR 6 D7: = splitCode's main
+/// part). Lines on screen go through SayLine, which keeps the technical part under 技術資訊.
 String plain(String s) => screenText(s);
 
 /// keepScreenOn (the update page's way, swupdate.dart:137); a convenience only.
@@ -341,7 +345,7 @@ class _NetFormPageState extends State<NetFormPage> {
     } finally {
       await l.release();
     }
-    if (mounted) setState(() => _note = plain(line));
+    if (mounted) setState(() => _note = line); // SayLine: main part + 技術資訊
   }
 
   /// R13: team networks with the same name told apart by the last four of their id.
@@ -415,7 +419,7 @@ class _NetFormPageState extends State<NetFormPage> {
           ],
           if (entry != null) Text('用節點 …${rustLast4(entry)} 加入「${_mnetLabel(m, s.mnets)}」', key: const Key('member-entry')),
         ],
-        if (_note != null) Text(_note!, style: TextStyle(fontSize: Fs.body, color: t.ink)),
+        if (_note != null) SayLine(_note!, style: TextStyle(fontSize: Fs.body, color: t.ink)),
       ],
       foot: [
         BatButton(Btn.start,
@@ -552,7 +556,7 @@ class _NetFormPageState extends State<NetFormPage> {
             ]),
         ],
         if (todo != null && !_makes && !_forgotten) BatButton(Btn.forgetJoin, kind: BtnKind.text, onPressed: () => _forget(todo)),
-        if (_note != null) Text(_note!, style: TextStyle(fontSize: Fs.body, color: t.ink)),
+        if (_note != null) SayLine(_note!, style: TextStyle(fontSize: Fs.body, color: t.ink)),
       ],
       foot: pending
           ? null
@@ -705,7 +709,7 @@ class _NetRunPageState extends State<NetRunPage> {
       child: AlertDialog(
         backgroundColor: t.surf,
         title: Text(title, style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
-        content: SingleChildScrollView(child: Text(body, style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink))),
+        content: SingleChildScrollView(child: SayLine(body, style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink))),
         actions: [
           Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             BatButton(yes, onPressed: () => _closeQ(c, true)),
@@ -717,9 +721,9 @@ class _NetRunPageState extends State<NetRunPage> {
     );
   }
 
-  Future<bool> _askGoOn(RunRow r) => _ask((c) => _dialog(c, '${_name(r.id)} 沒有完成', plain(r.line), Btn.nextNode, Btn.stopHere));
-  Future<bool> _askCountry(String q) => _ask((c) => _dialog(c, '要改這台節點的國家嗎？', plain(q), '改', '不要'));
-  Future<bool> _askRemoved(String q) => _ask((c) => _dialog(c, '這台之前被排除過', plain(q), '確定，加回', Btn.cancel));
+  Future<bool> _askGoOn(RunRow r) => _ask((c) => _dialog(c, '${_name(r.id)} 沒有完成', r.line, Btn.nextNode, Btn.stopHere));
+  Future<bool> _askCountry(String q) => _ask((c) => _dialog(c, '要改這台節點的國家嗎？', q, '改', '不要'));
+  Future<bool> _askRemoved(String q) => _ask((c) => _dialog(c, '這台之前被排除過', q, '確定，加回', Btn.cancel));
 
   String _name(String id) => nodeName(a, id, widget.ui);
 
@@ -767,7 +771,7 @@ class _NetRunPageState extends State<NetRunPage> {
         title: title,
         body: [
           if (working)
-            StatusHero(look: Look.busy, text: i >= 0 ? '${_name(run.rows[i].id)}：${run.rows[i].line}' : '正在進行', next: '請留在這個畫面')
+            StatusHero(look: Look.busy, text: i >= 0 ? '${_name(run.rows[i].id)}：${stripMarkers(run.rows[i].line)}' : '正在進行', next: kRunWait)
           else
             StatusHero(
                 look: run.rows.every((r) => r.state == RowState.ok && r.sendEnd != RekeyEnd.applying) ? Look.ok : Look.warn,
@@ -796,7 +800,7 @@ class _NetRunPageState extends State<NetRunPage> {
                     RowState.notDone => '還沒做',
                   }}', style: TextStyle(fontSize: Fs.body, fontWeight: FontWeight.w700, color: t.ink)),
                   if (r.line.isNotEmpty && r.line != r.sendLine && r.state != RowState.waiting && r.state != RowState.notDone)
-                    Text(plain(r.line), style: TextStyle(fontSize: Fs.body, height: 1.5, color: t.ink)),
+                    SayLine(r.line, style: TextStyle(fontSize: Fs.body, height: 1.5, color: t.ink)),
                   if (r.note.isNotEmpty) Text(r.note, style: TextStyle(fontSize: Fs.meta, color: t.sub)),
                   if (r.sendEnd case final e?) RekeyResult(end: e, line: r.sendLine, member: widget.member, version: _ver), // R14
                   if (!working && r.state == RowState.failed && needsNewInvite(r.line) && a.devTrust)
@@ -959,9 +963,9 @@ class _CheckNetPageState extends State<CheckNetPage> {
               next: _working ? '請留在這個畫面' : null,
             ),
             if (r != null)
-              for (final l in r.lines) Text(plain(l), style: TextStyle(fontSize: Fs.body, height: 1.5, color: t.ink)),
+              for (final l in r.lines) SayLine(l, style: TextStyle(fontSize: Fs.body, height: 1.5, color: t.ink)),
           ],
-          if (_note != null) Text(_note!, style: TextStyle(fontSize: Fs.body, color: t.ink)),
+          if (_note != null) SayLine(_note!, style: TextStyle(fontSize: Fs.body, color: t.ink)),
         ],
         foot: _working || id == null
             ? null
