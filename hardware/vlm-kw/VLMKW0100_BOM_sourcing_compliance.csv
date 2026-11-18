@@ -1,0 +1,33 @@
+Line,Refs,Qty,Description,Mfr,MPN,Source,Confidence,Note
+1,U1,1,USB audio+HID+GPIO controller LQFP-48,C-Media,CM108B,Symmetry Electronics (NOT Mouser),HIGH,買 Symmetry ~$1.40 授權正品; 走 consignment
+2,U2,1,EEPROM 93C46 microwire SOIC-8 5V,Microchip,93C46B-I/SN,Mouser,MED,確認電壓變體(C=5V)與 ORG 腳
+3,IC1,1,LDO 3.3V fixed SOT-223,Texas Instruments,LM1117MPX-3.3/NOPB,Mouser,HIGH,
+4,Q1,1,NPN transistor SOT-23 (PTT switch),onsemi,MMBT5088LT1G,Mouser,HIGH,
+5,D1,1,Dual Schottky SOT-23,onsemi,BAT54SLT1G,Mouser,HIGH,或 Nexperia BAT54S,215
+6,FB1,1,Ferrite bead 0805 56ohm@100MHz,Murata,BLM21PG560SN1D,Mouser,MED,替代 Sunlord; 確認阻抗碼=56ohm & 額定電流; 或 TDK MPZ2012 系列
+7,J1,1,3.5mm phone jack SMT (Kenwood),CUI Devices,SJ-3524-SMT-TR,Mouser,HIGH,
+8,J2,1,2.5mm phone jack SMT (Kenwood),CUI Devices,SJ-2523-SMT-TR,Mouser,HIGH,
+9,J3,1,JST SH 5-pin R/A SMT (audio breakout),JST,SM05B-SRSS-TB(LF)(SN),Mouser,HIGH,
+10,J4,1,JST SH 4-pin R/A SMT (USB breakout),JST,SM04B-SRSS-TB(LF)(SN),Mouser,HIGH,
+11,J7,1,USB-C receptacle SMT,Molex,2130830005,Mouser,LOW,BOM footprint 推得; 下單前對 Fusion 檔核 footprint
+12,R7 R8,2,Res 22ohm 0603 1%,Yageo,RC0603FR-0722RL,Mouser,HIGH,
+13,R12,1,Res 100ohm 0603 1%,Yageo,RC0603FR-07100RL,Mouser,HIGH,
+14,R5,1,Res 220ohm 0603 1%,Yageo,RC0603FR-07220RL,Mouser,HIGH,
+15,R4,1,Res 470ohm 0603 1%,Yageo,RC0603FR-07470RL,Mouser,HIGH,
+16,R11,1,Res 1.5k 0603 1%,Yageo,RC0603FR-071K5L,Mouser,HIGH,
+17,R9 R10,2,Res 5.1k 0603 1%,Yageo,RC0603FR-075K1L,Mouser,HIGH,
+18,R3 R6 R13,3,Res 10k 0603 1%,Yageo,RC0603FR-0710KL,Mouser,HIGH,
+19,R2,1,Res 100k 0603 1%,Yageo,RC0603FR-07100KL,Mouser,HIGH,
+20,R1,1,Res 1M 0603 1%,Yageo,RC0603FR-071ML,Mouser,HIGH,
+21,C3 C8 C14 C16 C19 C23 C25 C26,8,Cap 1uF 0402 X5R >=16V 10%,(spec-match),SPEC: 1uF 0402 X5R 16V,Mouser,SPEC,Murata GRM155/Samsung CL05 系列; Mouser BOM tool 依規格配
+22,C4 C7 C15 C17 C18 C22 C24 C27,8,Cap 100nF 0402 X7R >=25V 10%,(spec-match),SPEC: 100nF 0402 X7R 25V,Mouser,SPEC,
+23,C2,1,Cap 1uF 0603 X7R >=25V,(spec-match),SPEC: 1uF 0603 X7R 25V,Mouser,SPEC,
+24,C1,1,Cap 10nF 0603 X7R >=50V,(spec-match),SPEC: 10nF 0603 X7R 50V,Mouser,SPEC,
+25,C9,1,Cap 470pF 0603 C0G/NP0 >=50V,(spec-match),SPEC: 470pF 0603 C0G 50V,Mouser,SPEC,音訊路徑建議 C0G
+26,C12,1,Cap 1nF 0603 C0G/NP0 >=50V,(spec-match),SPEC: 1nF 0603 C0G 50V,Mouser,SPEC,
+27,C5,1,Cap 4.7uF 0603 X5R >=10V,(spec-match),SPEC: 4.7uF 0603 X5R 10V,Mouser,SPEC,
+28,C10,1,Cap 100nF 0603 X7R >=25V,(spec-match),SPEC: 100nF 0603 X7R 25V,Mouser,SPEC,
+29,C6,1,Cap 47uF 0805 X5R >=6.3V,(spec-match),SPEC: 47uF 0805 X5R 6.3V,Mouser,SPEC,
+30,C11,1,Cap 10uF 0805 X5R >=16V,(spec-match),SPEC: 10uF 0805 X5R 16V,Mouser,SPEC,
+31,C13 C20 C21,3,Cap 47uF 1206 X5R >=10V,(spec-match),SPEC: 47uF 1206 X5R 10V,Mouser,SPEC,
+32,SW1 SW2,0,Tactile button (volume) - DNP this batch,C&K,(KSS series),Mouser,OPTION,VLMKW0100 不裝; 要裝再加
