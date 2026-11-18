@@ -7,7 +7,9 @@ name: app-tests
 #   - tests/tools/sigverify (go test) and tests/noise_live.rs against tests/tools/peer/noise_responder.py, each judged
 #     by app/tools/judge-test-output.sh
 # Each stage FAILs when it finds nothing to run, and each new check has its negative control as a step here.
-# Not here (needs a phone / an APK): the instrumented tests (src/androidTest), aapt2 on a built APK, the .so inside
+#   - job instrumented: KeyHandlersDeviceTest and SwCleartextTest on an emulator (adb -s + am instrument, judged by
+#     judge-test-output.sh instrument), with a manifest-mutation negative control
+# Not here (needs a phone / a node): SwNetDeviceTest; aapt2 on a built APK, the .so inside
 # an APK (cargokit builds every flavor with dev-trust until #255).
 # push: main only, and docs-only changes skip, for the same reasons as ci.yml.
 on:
@@ -221,3 +223,102 @@ jobs:
           out=$(bash ../../tools/judge-test-output.sh cargo "$RUNNER_TEMP/noiseX.log" 3) && rc=0 || rc=$?; echo "no peer: rc=$rc $out"
           [ "$crc" != 0 ] || exit 1
           [ "$rc" = 1 ] || exit 1
+
+  # B6: the instrumented tests (src/androidTest) on an emulator — a fresh one per run, the only device here (the
+  # rule "never gradle connected* / install tasks" protects a phone; this job still installs with adb -s and runs
+  # am instrument like the hand procedure, so CI and the bench run the same commands). SwNetDeviceTest stays a hand
+  # test: it needs a node's AP and a person at the system dialog.
+  instrumented:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      EMU_IMAGE: "system-images;android-37.0;google_apis;x86_64"
+      # one AVD home for avdmanager and the emulator (run 44304983328: avdmanager wrote elsewhere, the emulator found
+      # no ci.ini in $HOME/.android/avd)
+      ANDROID_AVD_HOME: ${{ github.workspace }}/../avd
+      ADB_S: emulator-5554
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+      - name: Rust ${{ env.RUST_TOOLCHAIN }} + the emulator's Android target
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          rustup target add x86_64-linux-android aarch64-linux-android
+          cargo --version | grep -F "cargo $RUST_TOOLCHAIN "
+      - name: Flutter ${{ env.FLUTTER_VERSION }} at the revision of app/.metadata
+        run: |
+          want=$(awk '$1 == "revision:" { gsub(/"/, "", $2); print $2; exit }' app/.metadata)
+          git clone --quiet --depth 1 --branch "$FLUTTER_VERSION" https://github.com/flutter/flutter.git "$HOME/flutter"
+          got=$(git -C "$HOME/flutter" rev-parse HEAD)
+          [ -n "$want" ] && [ "$want" = "$got" ] || { echo "::error::flutter $FLUTTER_VERSION is $got, app/.metadata wants $want"; exit 1; }
+          echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
+      - name: pub get (pubspec.lock enforced)
+        working-directory: app
+        run: flutter pub get --enforce-lockfile
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3   # v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+      - name: Gradle version of the wrapper properties
+        id: gradle
+        run: |
+          v=$(sed -nE 's#^distributionUrl=.*/gradle-([0-9.]+)-(all|bin)\.zip$#\1#p' app/android/gradle/wrapper/gradle-wrapper.properties)
+          [ -n "$v" ] || { echo "::error::no Gradle version in gradle-wrapper.properties"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a   # v4
+        with:
+          gradle-version: ${{ steps.gradle.outputs.version }}
+      - name: android/local.properties (flutter.sdk, sdk.dir)
+        run: printf 'flutter.sdk=%s\nsdk.dir=%s\n' "$HOME/flutter" "$ANDROID_HOME" > app/android/local.properties
+      - name: emulator — KVM, the system image, an AVD, booted with no window
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          sm="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sm" --licenses > /dev/null || true
+          "$sm" --install emulator platform-tools "$EMU_IMAGE" | tail -3
+          ls -d "$ANDROID_HOME/system-images/"*/*/* || { echo "::error::system image $EMU_IMAGE not installed"; exit 1; }
+          ls -l /dev/kvm
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd -n ci -k "$EMU_IMAGE" -d pixel_6 --force
+          "$ANDROID_HOME/emulator/emulator" -list-avds | tee "$RUNNER_TEMP/avds.txt"
+          grep -qx ci "$RUNNER_TEMP/avds.txt" || { ls -la "$ANDROID_AVD_HOME" ~/.android ~/.config/.android 2>&1 | head -20; echo "::error::AVD ci not created where the emulator looks"; exit 1; }
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          nohup "$ANDROID_HOME/emulator/emulator" -avd ci -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect \
+            -port 5554 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+      - name: APKs — dev debug and its test APK for x86_64 (-Pemulator-abi=true), built only (no gradle install)
+        working-directory: app/android
+        run: gradle -q -Pemulator-abi=true :app:assembleDevDebug :app:assembleDevDebugAndroidTest
+      - name: emulator booted; install both APKs with adb -s
+        run: |
+          timeout 300 adb -s "$ADB_S" wait-for-device || { ls -l /dev/kvm; tail -60 "$RUNNER_TEMP/emulator.log"; echo "::error::no emulator device in 300 s"; exit 1; }
+          for i in $(seq 1 90); do [ "$(adb -s "$ADB_S" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ] && break; sleep 5; done
+          [ "$(adb -s "$ADB_S" shell getprop sys.boot_completed | tr -d '\r')" = 1 ] || { tail -30 "$RUNNER_TEMP/emulator.log"; echo "::error::emulator did not boot"; exit 1; }
+          echo "Android $(adb -s "$ADB_S" shell getprop ro.build.version.release | tr -d '\r'), API $(adb -s "$ADB_S" shell getprop ro.build.version.sdk | tr -d '\r')"
+          adb -s "$ADB_S" install -r app/build/app/outputs/apk/dev/debug/app-dev-debug.apk
+          adb -s "$ADB_S" install -r app/build/app/outputs/apk/androidTest/dev/debug/app-dev-debug-androidTest.apk
+      - name: KeyHandlersDeviceTest (2) and SwCleartextTest (3, -e host lan), judged by the output
+        if: ${{ !cancelled() }}
+        run: |
+          r=dev.batman.app.dev.test/androidx.test.runner.AndroidJUnitRunner; p=dev.batman.batman_app; j=app/tools/judge-test-output.sh; rc=0
+          adb -s "$ADB_S" shell am instrument -w -e class $p.keystore.KeyHandlersDeviceTest $r | tr -d '\r' > "$RUNNER_TEMP/i-keys.log"
+          adb -s "$ADB_S" shell am instrument -w -e host lan -e class $p.swupd.SwCleartextTest $r | tr -d '\r' > "$RUNNER_TEMP/i-clear.log"
+          cat "$RUNNER_TEMP/i-keys.log" "$RUNNER_TEMP/i-clear.log"
+          bash $j instrument "$RUNNER_TEMP/i-keys.log" 2 || rc=1
+          bash $j instrument "$RUNNER_TEMP/i-clear.log" 3 || rc=1
+          exit $rc
+      - name: instrumented negative control — cleartext allowed in the main manifest must FAIL SwCleartextTest
+        if: ${{ !cancelled() }}
+        run: |
+          m=app/android/app/src/main/AndroidManifest.xml
+          sed -i 's|<application|<application android:usesCleartextTraffic="true"|' "$m"
+          grep -c 'usesCleartextTraffic="true"' "$m"
+          (cd app/android && gradle -q -Pemulator-abi=true :app:assembleDevDebug)
+          git checkout -- "$m"
+          adb -s "$ADB_S" install -r app/build/app/outputs/apk/dev/debug/app-dev-debug.apk
+          adb -s "$ADB_S" shell am instrument -w -e host lan -e class dev.batman.batman_app.swupd.SwCleartextTest \
+            dev.batman.app.dev.test/androidx.test.runner.AndroidJUnitRunner | tr -d '\r' > "$RUNNER_TEMP/i-mut.log"
+          grep -E '^[0-9]+\)|^Tests run|^OK' "$RUNNER_TEMP/i-mut.log"
+          out=$(bash app/tools/judge-test-output.sh instrument "$RUNNER_TEMP/i-mut.log" 3) && rc=0 || rc=$?; echo "rc=$rc $out"
+          [ "$rc" = 1 ] || exit 1
+          grep -q '^[0-9]) cleartextIsBlockedForHttpStack' "$RUNNER_TEMP/i-mut.log" || exit 1
