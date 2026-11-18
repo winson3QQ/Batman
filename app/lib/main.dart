@@ -11,7 +11,6 @@ import 'scan.dart';
 import 'src/nodelink/app_link.dart';
 import 'src/nodelink/core.dart' as nlcore show Page;
 import 'src/nodelink/node_link.dart' show NodeLink;
-import 'src/nodelink/raw_use.dart';
 import 'src/rust/api/owner.dart' show listNodes, listPending;
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
@@ -92,19 +91,10 @@ class _StartupCheckState extends State<StartupCheck> {
     _run();
   }
 
-  /// §4.4: an older page that uses Bluetooth or writes records holds a raw lease while it is open.
-  Future<void> _open(String name, Widget Function(AppLink? a, RawUse? use) page) async {
-    final a = _app;
-    if (a == null) {
-      // no NodeLink (a test of this page alone): the page as before
-      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => page(null, null)));
-      return;
-    }
-    final m = ScaffoldMessenger.of(context);
-    final busy = await openRawPage(Navigator.of(context), a.link, a.gate, name, (u) => page(a, u));
-    if (busy != null) m.showSnackBar(SnackBar(content: Text('另一個操作還在進行：$busy')));
-    if (mounted) setState(() {});
-  }
+  /// An older page from the fallback start page. That page shows only when the check passed and NodeLink did not start
+  /// (build: `_ok && _app == null`; once `_app` is set the home page replaces this one), so there is no NodeLink and no
+  /// lease to hold: the page as before (#329 PR 7 T19: the lease path here could not be reached and was removed).
+  Future<void> _open(Widget page) => Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
 
   Future<void> _run() async {
     var agree = false;
@@ -353,12 +343,12 @@ class _StartupCheckState extends State<StartupCheck> {
                 const SizedBox(height: 16),
                 OutlinedButton(
                     onPressed: _keys.claim // off: the reason is in the report above
-                        ? () => _open('新增節點', (a, u) => ClaimPage(ble: a?.ble, use: u))
+                        ? () => _open(const ClaimPage())
                         : null,
                     child: const Text('認領節點')),
                 if (_devTrust) // the BLE test page: dev builds only (D1)
                   TextButton(
-                      onPressed: () => _open('附近的節點', (a, u) => ScanPage(ble: a?.ble, use: u)),
+                      onPressed: () => _open(const ScanPage()),
                       child: const Text('附近的節點（開發用：藍牙測試）')),
                 const SizedBox(height: 8),
                 ExpansionTile(
