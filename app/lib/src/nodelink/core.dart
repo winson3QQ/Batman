@@ -41,12 +41,20 @@ class Rec {
 enum Res { body, errorCode, undecryptable, certRejected, refusedForbidden, refusedOther, noResponse, broken }
 
 class Outcome {
-  const Outcome(this.res, [this.view = '', this.extra]);
+  const Outcome(this.res, [this.view = '', this.extra]) : team = null;
+
+  /// #329 PR 6 D5(b): a read's outcome with the team section worked out on its session.
+  const Outcome.withTeam(this.res, this.view, this.extra, this.team);
   final Res res;
   final String view;
 
   /// What the screens show of a read (the status page's fields); the scheduler never looks at it.
   final Object? extra;
+
+  /// #329 PR 6 D5(b)/(c): the team section of this read (NodeLink's `TeamSeen`), or null when none was worked out.
+  /// `Object?` so this file stays free of bridge types; only NodeLink reads it, and only after [NodeLinkCore.result]
+  /// accepted the read.
+  final Object? team;
 }
 
 class Attempt {
@@ -63,7 +71,11 @@ enum Why { notFound, identity, refused, bluetoothOff, noPermission, keys }
 /// A round's conclusion for one target (§4.3.4).
 enum Concl { read, unchanged, reason, notFound, notYet, queued }
 
-enum Page { home, node, other }
+/// #329 PR 6 D5(d): `team` (the whole-team page) reads like `home`: every record, every 60 s.
+enum Page { home, team, node, other }
+
+/// D5(d): home and the team page are one target set; switching between them changes nothing in the scheduler.
+bool _homeLike(Page p) => p == Page.home || p == Page.team;
 
 class NodeState {
   Kind kind = Kind.unread;
@@ -162,7 +174,7 @@ class NodeLinkCore {
   Attempt? get running => _round?.running;
 
   Set<String> get _pageTargets => switch (page) {
-        Page.home => _recs.keys.toSet(),
+        Page.home || Page.team => _recs.keys.toSet(),
         Page.node => _recs.containsKey(pageNode) ? {pageNode!} : <String>{},
         Page.other => <String>{},
       };
@@ -187,6 +199,12 @@ class NodeLinkCore {
 
   void setPage(int now, Page pg, {String? node}) {
     if (pg == page && node == pageNode) return;
+    if (_homeLike(pg) && _homeLike(page)) {
+      // D5(d): home <-> team is the same target set: the round in progress and the dues stay as they are
+      page = pg;
+      pageNode = node;
+      return;
+    }
     _cancel(now);
     page = pg;
     pageNode = node;
@@ -240,6 +258,9 @@ class NodeLinkCore {
         s.remove(id);
       }
       _earlyTargets.remove(id);
+      // #329 PR 6 D5(c): a round still running drops it too (its late result is then not taken, `result`)
+      _round?.targets.remove(id);
+      _round?.t.remove(id);
     }
     for (final r in recs) {
       _recs[r.id] = r;
@@ -423,13 +444,18 @@ class NodeLinkCore {
     return a;
   }
 
-  void result(int now, Attempt a, Outcome o) {
+  /// The outcome of the attempt [a]; true = taken into this round (#329 PR 6 D5(c): only then may the driver keep
+  /// anything else of this read, e.g. its team section), false = dropped.
+  bool result(int now, Attempt a, Outcome o) {
     final r = _round;
-    if (r == null || !identical(r.running, a)) return; // a late result of a cancelled attempt is dropped (code-2 A-m3)
+    if (r == null || !identical(r.running, a)) return false; // a late result of a cancelled attempt is dropped (code-2 A-m3)
     r.running = null;
     r.freeAt[a.addr] = now + p.gap;
-    final t = r.t[a.id]!;
-    final s = states[a.id]!;
+    // #329 PR 6 D5(c): the record went meanwhile (setRecords took it out of the round, its state with it): nothing
+    // of this read is kept
+    final t = r.t[a.id];
+    final s = states[a.id];
+    if (t == null || s == null) return false;
     final key = '${a.addr}|${a.id}';
     _log('${_s(now)}   $a -> ${o.res.name}${o.view.isEmpty ? '' : ' ${o.view}'}');
     switch (o.res) {
@@ -482,6 +508,7 @@ class NodeLinkCore {
         }
         r.noResp.add(a.addr);
     }
+    return true;
   }
 
   void _read(NodeState s, int now, String view) {
@@ -515,7 +542,8 @@ class NodeLinkCore {
           _log('${_s(now)}   $cut cut at the cap');
           r.tried.remove('${cut.addr}|${cut.id}');
           r.count[cut.addr] = (r.count[cut.addr] ?? 1) - 1;
-          r.t[cut.id]!.n--;
+          final ct = r.t[cut.id]; // null: its record went meanwhile (setRecords)
+          if (ct != null) ct.n--;
           r.running = null;
         }
         _end(now, r);

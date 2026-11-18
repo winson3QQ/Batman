@@ -134,6 +134,8 @@ class AppLink {
       },
       openNet: openNet,
       onHint: (id, h) => _one?.link.setHint(id, h),
+      // #329 PR 6 §14: before NetIndex's first computation no team section is made
+      netReady: () => _one?.nets.ready ?? false,
     );
     final prober = SessionProber(
         openRecord: openRecord, ownerPub: ownerPub, signOwner: signOwner, log: log, keyError: keyError, hint: hint);

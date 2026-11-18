@@ -142,10 +142,16 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
   NetSnapshot _now = const NetSnapshot(computing: true);
   NetSnapshot get now => _now;
 
+  /// #329 PR 6 §14: a computation has finished at least once (a later one keeps the last snapshot while it runs).
+  /// Before that nothing is known about any network (cold start).
+  bool get ready => _ready;
+  bool _ready = false;
+
   @visibleForTesting
   void setForTest(NetSnapshot s) {
     _gen++;
     _now = s;
+    _ready = true;
     notifyListeners();
   }
   int _gen = 0;
@@ -170,6 +176,7 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
     final s = await compute();
     if (gen != _gen) return; // a newer one runs
     _now = s;
+    _ready = true;
     notifyListeners();
   }
 

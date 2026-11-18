@@ -19,6 +19,7 @@ import 'intro_pages.dart';
 import 'join_pages.dart' show JoinTeamPage, MyRequestPage;
 import 'net_pages.dart' show NetFormPage;
 import 'team_hub.dart' show PickPendPage;
+import 'team_status_page.dart' show TeamPage, anyTeamVisible;
 import 'node_page.dart';
 import 'settings_page.dart';
 import 'theme.dart';
@@ -388,6 +389,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
             enabled: widget.keys.claim,
             onTap: _addNode,
           ),
+          // #329 PR 6 D5(e) (design §5.1 :703): only while some own node's team section is visible (version N: never)
+          if (anyTeamVisible(a))
+            BatRow(
+              key: const Key('home-team'),
+              icon: Icons.groups_outlined,
+              title: '看全隊狀態',
+              sub: '每台自己的節點看到的隊員',
+              onTap: () => _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => TeamPage(app: a, ui: widget.ui)))),
+            ),
         ]),
       ],
     );

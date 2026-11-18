@@ -14,8 +14,9 @@ import 'package:batman_app/src/flows/net_run.dart';
 import 'package:batman_app/src/flows/offline_op.dart' show offlineTodoText;
 import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/core.dart';
+import 'package:batman_app/src/nodelink/node_link.dart' show TeamRead;
 import 'package:batman_app/src/rust/api/member.dart' show JoinReqView;
-import 'package:batman_app/src/rust/api/owner.dart' show StatusView;
+import 'package:batman_app/src/rust/api/owner.dart' show StatusView, TeamView;
 import 'package:batman_app/src/rust/api/rekey.dart' show OwnNodeView, RecipientView;
 import 'package:batman_app/src/rust/api/swupdate.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
@@ -34,6 +35,7 @@ import 'package:batman_app/ui/settings_pages.dart' show CountryPage, WifiPage;
 import 'package:batman_app/ui/team_deps.dart' show teamDepsOverride;
 import 'package:batman_app/ui/team_hub.dart';
 import 'package:batman_app/ui/team_pages.dart';
+import 'package:batman_app/ui/team_status_page.dart' show TeamPage;
 import 'package:batman_app/ui/theme.dart';
 import 'package:batman_app/ui/ui_state.dart';
 import 'package:batman_app/ui/widgets.dart' show Btn;
@@ -79,6 +81,29 @@ AppLink app(StatusView? v) {
   return a;
 }
 
+
+/// #329 PR 6 D5(f): an app whose node was read with a visible team section (version N never shows one: faked here);
+/// [fresh] false = the team is from an older read than the state.
+AppLink _teamApp({required bool fresh}) {
+  final a = app(sv('green'));
+  final at = a.link.core.states[id]!.readAt!;
+  a.link.teams[id] = TeamRead(
+      'nn',
+      const TeamView(
+          visible: true,
+          title: '全隊（僅供參考；由『客廳』看到）',
+          only: '這台目前沒連上網路，下面是最後看到的狀態',
+          cards: [
+            '🟢 『書房』 在線 · 連線 好（約 14.9 Mbit/s） · 直接連線',
+            '⚪ 『王小明的節點』 離線 · 最後看到 4 分鐘前',
+            '❔ 不明節點 · 最後看到 6 分鐘前\n不在你手機的名單裡（可能是新加入、隊長還沒發新名單的隊員）',
+          ],
+          note: '在線 = 這台節點最近 1 分鐘內收得到。離線不一定是關機，也可能是太遠或被擋住。節點重開後『最後看到』會歸零。名稱僅供參考：有網路密碼的人可以假冒別台。',
+          tech: ['不明節點 …c6d3：400 秒前']),
+      fresh ? at : at - 120000,
+      DateTime(2026, 11, 16, 1, 28));
+  return a;
+}
 
 class _Rust extends tp.LeadRust {
   @override
@@ -306,6 +331,11 @@ void main() {
       final a = app(sv('green'));
       return PickNetPage(app: a, title: '隊員名單', next: (id) => Text('next $id'));
     }),
+    // #329 PR 6 D5(f): the whole-team page (6.1–6.3) with a visible team, fresh / old data / none; the home entry
+    'team_fresh': B((ui) => TeamPage(app: _teamApp(fresh: true), ui: ui)),
+    'team_old': B((ui) => TeamPage(app: _teamApp(fresh: false), ui: ui)),
+    'team_none': B((ui) => TeamPage(app: app(sv('green')), ui: ui)),
+    'home_team_entry': B((ui) => HomePage(app: _teamApp(fresh: true), ui: ui, devTrust: true, keys: keys())),
   };
 
   for (final dark in [false, true]) {

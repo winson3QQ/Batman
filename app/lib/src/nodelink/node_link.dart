@@ -11,7 +11,26 @@ import 'ble_gate.dart';
 import 'core.dart';
 import 'handoff.dart';
 import 'lease.dart';
+import '../rust/api/owner.dart' show TeamView;
 import '../rust/api/rekey.dart' show UpdateHint;
+
+/// #329 PR 6 D5(b): the team section worked out on a read's own session ([Outcome.team]): the network the node said
+/// it is in, and Rust's view.
+class TeamSeen {
+  const TeamSeen(this.netId, this.view);
+  final String netId;
+  final TeamView view;
+}
+
+/// #329 PR 6 D5(c): a node's team section as kept by NodeLink: the [TeamSeen] of an accepted read, with that read's
+/// monotonic time (= the state's `readAt` it was written with) and wall time. Memory only; never logged (T-A9).
+class TeamRead {
+  const TeamRead(this.netId, this.view, this.readAt, this.readWall);
+  final String netId;
+  final TeamView view;
+  final int readAt;
+  final DateTime readWall;
+}
 
 /// One attempt's login + status read on an open link, for record [id]. [due] completes when the attempt's 8 s from
 /// the start of the connect to msg2 are over (§4.3.3-3): without msg2 by then it is `noResponse`. It must stop when
@@ -109,6 +128,13 @@ class NodeLink implements LeaseListener {
   /// #329 PR 5 R8: the remove-member §3.5 line of the node whose page is open (memory only, never in UiState).
   final Map<String, UpdateHint> hints = {};
 
+  /// #329 PR 6 D5(c): each own node's team section. One writer: [_run], after the core accepted that read; cleared
+  /// for a record that is gone ([_dropGoneTeams]); a page change keeps it. Never logged (254 T-A9).
+  final Map<String, TeamRead> teams = {};
+
+  /// D5(c): the team sections of records no longer on the phone go with them.
+  void _dropGoneTeams() => teams.removeWhere((id, _) => !core.states.containsKey(id));
+
   /// R8: a read's hint for [id], kept only while [id]'s page is open (a late one after leaving is dropped); an empty
   /// line removes it. Fires [changed] when it changes.
   void setHint(String id, UpdateHint h) {
@@ -146,6 +172,7 @@ class NodeLink implements LeaseListener {
     }
     _recs = await readRecords();
     core.setRecords(_recs);
+    _dropGoneTeams();
     core.startup(now(), page, node: node);
     _pump();
   }
@@ -444,11 +471,13 @@ class NodeLink implements LeaseListener {
         // another lease was taken while the records were read: the core stays leased (review pr1 A-M5 / B-M2);
         // the written records wait for that lease's release
         if (recs != null) core.setRecords(recs);
+        _dropGoneTeams(); // #329 PR 6 D5(c): node/<id> removed -> its team section goes
         _writtenWaiting.addAll(written);
         return;
       }
       _writtenWaiting.clear();
       core.releaseLease(now(), written: written, recs: recs); // records unreadable: the old list (A-m6)
+      _dropGoneTeams(); // #329 PR 6 D5(c): node/<id> removed -> its team section goes
       _pump();
     });
   }
@@ -579,9 +608,18 @@ class NodeLink implements LeaseListener {
     if (!identical(_attempt, a)) return; // aborted: the core no longer waits for it
     _attempt = null;
     _cancel = null;
-    core.result(now(), a, o);
+    // one clock value for the core's readAt and the team section's (#329 PR 6 §14: a second now() would differ)
+    final t = now();
+    final accepted = core.result(t, a, o);
     // the wall time of a read; a 2' is a read too (its own time, not the last body's: PR 2 review r2 D-m6)
     if (o.res == Res.body) readWall[a.id] = wall();
+    // #329 PR 6 D5(c): the team section of this read, only when the core took the read (not a cancelled round, not
+    // a record gone, not an error-code answer), with the very readAt / readWall just written for it
+    final team = o.team;
+    final w = readWall[a.id];
+    if (accepted && o.res == Res.body && team is TeamSeen && w != null) {
+      teams[a.id] = TeamRead(team.netId, team.view, t, w);
+    }
     _pump();
   }
 
