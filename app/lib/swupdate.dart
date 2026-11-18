@@ -73,8 +73,9 @@ class SwHold {
   }
   if (a.kind == SwKind.show_ && a.buttons.contains(SwButton.applyAnyway)) return (Look.ok, swPrepared);
   if (a.kind == SwKind.show_ && a.buttons.contains(SwButton.apply)) {
-    // the written screen (swupd.rs written_screen), else the apply was refused (the error screen keeps 套用 to retry)
-    return a.text.startsWith('節點上有一個已寫好') ? (Look.ok, swPrepared) : (Look.bad, '還沒套用：節點沒有接受');
+    // the written screen (swupd.rs written_screen: no code), else the apply was refused: that screen keeps 套用 to retry
+    // and carries the node's codes in its technical line (swupd.rs fn tech: 「代碼 N…」)
+    return a.tech.contains('代碼') ? (Look.bad, '還沒套用：節點沒有接受') : (Look.ok, swPrepared);
   }
   if (a.kind == SwKind.done) {
     if (a.text.startsWith('更新完成')) return (Look.ok, a.text);

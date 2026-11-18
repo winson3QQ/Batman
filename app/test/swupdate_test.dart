@@ -12,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:batman_app/src/rust/api/swupdate.dart';
 import 'package:batman_app/swupdate.dart';
+import 'package:batman_app/ui/widgets.dart' show Look;
 
 const pass = 'ap-pass-1-secret';
 const bearer = 'de63f334ff58f414a57dacbfec4b9eee';
@@ -339,5 +340,25 @@ void main() {
     expect(r.count('upload'), 0);
     expect(r.flow.calls, contains('uploaded denied'));
     expect(r.flow.calls, isNot(contains('apCredentials')));
+  });
+
+  // #329 PR 6 T6-11 (swupdate, plan §11 MINOR): the status area's look — prepared = ok, writing / any step = busy,
+  // finished = ok, reverted = bad, a refused apply (its tech has the node's codes) = bad, a file to pick = none.
+  // Negative control: a refused apply shown as prepared (ok) -> FAIL.
+  test('swHero: the five states', () {
+    SwAction with_(SwAction a, String tech) => SwAction(
+        kind: a.kind, waitMs: a.waitMs, note: a.note, text: a.text, tech: tech, percent: a.percent, buttons: a.buttons,
+        ip: a.ip, port: a.port, bearerHex: a.bearerHex, size: a.size, payload: a.payload, uploading: a.uploading);
+    final written = act(SwKind.show_, text: '節點上有一個已寫好、還沒套用的更新', buttons: [SwButton.apply, SwButton.refresh]);
+    expect(swHero(written, running: false), (Look.ok, swPrepared));
+    expect(swHero(with_(written, 'dev trust: x'), running: false), (Look.ok, swPrepared), reason: 'the dev build trust line');
+    expect(swHero(with_(written, '代碼 11，原因 13'), running: false)?.$1, Look.bad, reason: 'the apply was refused');
+    expect(swHero(act(SwKind.wait, text: '節點正在驗證並寫入新版'), running: false), (Look.busy, '節點正在驗證並寫入新版'));
+    expect(swHero(act(SwKind.show_, text: 'x', buttons: [SwButton.pick]), running: true)?.$1, Look.busy);
+    expect(swHero(act(SwKind.done, text: '更新完成:1.2.3'), running: false), (Look.ok, '更新完成:1.2.3'));
+    expect(swHero(act(SwKind.done, text: '新版不健康,已退回原本的版本'), running: false)?.$1, Look.bad);
+    expect(swHero(act(SwKind.done, text: '已取消,目前版本不變'), running: false)?.$1, Look.unk);
+    expect(swHero(act(SwKind.show_, text: '選檔', buttons: [SwButton.pick, SwButton.refresh]), running: false), isNull);
+    expect(swHero(null, running: false), isNull);
   });
 }

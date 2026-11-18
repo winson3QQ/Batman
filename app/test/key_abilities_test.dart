@@ -506,6 +506,32 @@ void main() {
       expect(find.text('節點 4F2A') /* #329 PR 6 P1-3: the last four */, findsOneWidget);
     });
 
+    // #329 PR 6 T6-11 (board 2.4): a title bar; no retry -> the next step is the repair person; the technical
+    // information, once opened, says to give it to them and copies it (the whole node id is there, not on the list).
+    // Negative controls: the title '' / the next step / the copy dropped -> FAIL.
+    testWidgets('2.4: title bar, next step without a retry, the technical information copied', (t) async {
+      String? copied;
+      t.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (c) async {
+        if (c.method == 'Clipboard.setData') copied = (c.arguments as Map)['text'] as String?;
+        return null;
+      });
+      addTearDown(() => t.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+      await start(t, answer(appUsable: false, claim: false, login: false, recover: false, makeNetwork: false, soft: true));
+      expect(find.descendant(of: find.byType(AppBar), matching: find.text(startupKeysTitle)), findsOneWidget);
+      expect(find.textContaining(startupNoRetryNext), findsOneWidget);
+      expect(find.textContaining('0000000000000c4f2a'), findsNothing, reason: 'the whole id only in 技術資訊');
+      await t.tap(find.text('技術資訊（給維修人員看）'));
+      await t.pumpAndSettle();
+      expect(find.text(startupTechAsk), findsOneWidget);
+      expect(find.textContaining('節點紀錄：0000000000000c4f2a'), findsOneWidget);
+      await t.ensureVisible(find.text('複製文字'));
+      await t.pumpAndSettle();
+      await t.tap(find.text('複製文字'));
+      await t.pump();
+      expect(copied, contains('節點紀錄：0000000000000c4f2a'));
+      expect(copied, contains('啟動檢查：'));
+    });
+
     // design §4 / §4.1 「單一金鑰遺失」: record AES lost. Negative control: the index not built -> FAIL
     testWidgets('record AES lost: said so (not "not hardware"), the node index shown, no button', (t) async {
       await start(t, answer(appUsable: false, claim: false, login: false, recover: false, makeNetwork: false, gone: {'RECORD_AES'}));

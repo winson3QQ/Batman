@@ -220,6 +220,9 @@ ReplayStep rstep(ReplayKind kind,
         pendingPath: kind == ReplayKind.recovered ? pendPath : '',
         replayRefused: refused);
 
+/// #329 PR 6 T-C4c: when set, a refused claim/replay (3 / 4) ends with this line (Rust's shape) instead of 「REFUSED c」.
+String Function(int code)? refusedText;
+
 /// §4's table over the token frames, the way the Rust ReplaySession maps them (its mapping: bridge r2)
 class FakeReplay implements ReplaySession {
   String stage = 'idle';
@@ -275,7 +278,7 @@ class FakeReplay implements ReplaySession {
           13 => _ended(ReplayNext.reconnect),
           12 => _ended(ReplayNext.stop, 'RATE'),
           7 || 10 => _ended(ReplayNext.again),
-          3 || 4 => _ended(ReplayNext.stop, 'REFUSED $c', true), // as Rust: replay_refused
+          3 || 4 => _ended(ReplayNext.stop, refusedText?.call(c) ?? 'REFUSED $c', true), // as Rust: replay_refused
           _ => _ended(ReplayNext.stop, 'REFUSED $c'),
         };
       case 0x3f:

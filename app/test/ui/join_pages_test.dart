@@ -25,6 +25,7 @@ import 'package:batman_app/ui/net_pages.dart' show NetFormPage;
 import 'package:batman_app/ui/rekey_result.dart';
 import 'package:batman_app/ui/team_deps.dart';
 import 'package:batman_app/ui/ui_state.dart';
+import 'package:batman_app/ui/widgets.dart' show BatBanner, Btn;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -314,6 +315,15 @@ void main() {
   Finder sendOf(String id) => find.descendant(of: find.byKey(Key('update-node-$id')), matching: find.text('送出'));
 
   group('7.8 join team', () {
+    // #329 PR 6 T6-11 (7.8): the main action (scan / paste the invite) at the bottom, not in the content.
+    // Negative control: CodeInput back in the body -> FAIL
+    testWidgets('T6-11: the invite is taken from the foot', (t) async {
+      final w = World(['0000aa01'], {'0000aa01': ''});
+      await open(t, w, (a) => JoinTeamPage(app: a, ui: UiState(MemStore())));
+      expect(find.byKey(const Key('code-scan')), findsOneWidget);
+      expect(find.descendant(of: find.byType(ListView), matching: find.byKey(const Key('code-scan'))), findsNothing);
+    });
+
     test('T-V1 / T-V2: 32 UTF-8 bytes, the count and its CJK estimate', () {
       expect(kNameMaxBytes, 32);
       expect(nameBytes('一' * 10), 30);
@@ -392,6 +402,8 @@ void main() {
       final w = World([], {});
       await open(t, w, (a) => MyRequestPage(app: a, ui: UiState(MemStore()), netId: 'nn', hex: 'H', sas: '1111', renewed: true));
       expect(find.text('申請已換新，要重新核對確認碼'), findsOneWidget);
+      // #329 PR 6 T6-11 (7.9): a status component, not orange text
+      expect(find.descendant(of: find.byType(BatBanner), matching: find.text(kRenewedNotice)), findsOneWidget);
     });
   });
 
@@ -457,6 +469,14 @@ void main() {
   });
 
   group('8.5 new key', () {
+    // #329 PR 6 T6-11 (8.5): 「貼上文字」 is the page's main action (no scan here). Negative control: secondary -> FAIL
+    testWidgets('T6-11: the paste is the primary button', (t) async {
+      final w = World(['0000aa01'], {'0000aa01': 'nn'});
+      await open(t, w, (a) => UpdateImportPage(app: a, ui: UiState(MemStore())));
+      expect(find.widgetWithText(FilledButton, Btn.pasteText), findsOneWidget);
+      expect(find.widgetWithText(OutlinedButton, Btn.pasteText), findsNothing);
+    });
+
     testWidgets('device session 2026-11-17: no log marker on either Rust line (「[UPDATE] 已收到新密碼」 was shown)',
         (t) async {
       rust.prepDetail = '[UPDATE] 更新到第 3 版';

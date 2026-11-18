@@ -128,5 +128,21 @@ void main() {
       expect(find.text('認領'), findsNothing); // P2-2: not shown without a code
       expect(button(t, '掃描 QR').onPressed, isNotNull, reason: 'can try again');
     });
+
+    // #329 PR 6 T6-10 (T-C3 on ClaimPage, P2-2): one primary button in each state — no code: 「掃描 QR」, and no
+    // 「認領」; a code read: 「認領」 primary, 「掃描 QR」 secondary. (Recovering: claim_replay_page_test T4.)
+    // Negative control: 認領 always primary next to a primary 掃描 QR -> FAIL.
+    testWidgets('$flavor: T6-10 one primary button per state', (t) async {
+      List<String> primaries() => [
+            for (final e in find.byType(FilledButton).evaluate())
+              ((e.widget as FilledButton).child as Row).children.whereType<Flexible>().map((f) => (f.child as Text).data).join()
+          ];
+      await page(t, dev: dev, scans: [qrText]);
+      expect(primaries(), ['掃描 QR']);
+      expect(find.text('認領'), findsNothing);
+      await scan(t);
+      expect(primaries(), ['認領']);
+      expect(find.widgetWithText(OutlinedButton, '掃描 QR'), findsOneWidget, reason: 'a new scan is still possible');
+    });
   }
 }
