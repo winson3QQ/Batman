@@ -192,4 +192,39 @@ void main() {
         id: 't2', name: '節點 T2', state: s, fresh: false, shownWhy: Why.notFound, view: sv(), readWall: DateTime(2026, 11, 15, 22, 48));
     expect(nodeRowWords(gone, firstRounds: false).$3, startsWith('上次讀取 22:48'));
   });
+
+  // #329 PR 7 T16 (#329:222): a name in a Dart sentence — one space where an ASCII letter or digit at its edge meets a
+  // CJK character; none between CJK characters or next to CJK punctuation. Negative control: a space always added ->
+  // the Chinese name FAILs.
+  group('T16 names in sentences', () {
+    NodeInfo named(String name, {StatusView? v, Why? why}) {
+      final n = node('aaaa0001', v: v, why: why);
+      return NodeInfo(id: n.id, name: name, state: n.state, fresh: n.fresh, shownWhy: n.shownWhy, view: n.view, readWall: n.readWall);
+    }
+
+    test('an English name', () {
+      expect(home([named('Alpha', why: Why.notFound)]).text, '手機連不到 Alpha');
+      expect(home([named('Alpha', v: sv(nodeState: 1))]).text, 'Alpha 還沒加入隊伍網路');
+      expect(home([named('Alpha', why: Why.identity)]).text, 'Alpha 的身分和這支手機記錄的不同');
+    });
+    test('a Chinese name', () {
+      expect(home([named('山貓', why: Why.notFound)]).text, '手機連不到山貓');
+      expect(home([named('山貓', v: sv(nodeState: 1))]).text, '山貓還沒加入隊伍網路');
+      expect(home([named('山貓')]).text, '還沒讀到山貓的狀態');
+    });
+    test('English first, Chinese last; 「節點 XXXX」', () {
+      expect(home([named('A山', why: Why.notFound)]).text, '手機連不到 A山');
+      expect(home([named('A山', v: sv(nodeState: 1))]).text, 'A山還沒加入隊伍網路');
+      expect(home([named('節點 7D2C')]).text, '還沒讀到節點 7D2C 的狀態');
+      expect(home([named('節點 7D2C', why: Why.notFound)]).text, '手機連不到節點 7D2C');
+    });
+    test('nameIn: punctuation, empty sides, an empty name', () {
+      expect(nameIn('移除', 'Bob', '，全隊換密碼'), '移除 Bob，全隊換密碼');
+      expect(nameIn('移除', '王小明', '，全隊換密碼'), '移除王小明，全隊換密碼');
+      expect(nameIn('', '04', '加入「山隊」還沒有完成。'), '04 加入「山隊」還沒有完成。');
+      expect(nameIn('「', 'Bob', '」'), '「Bob」');
+      expect(nameIn('正在找', 'Alpha', '…'), '正在找 Alpha…', reason: 'none before 「…」');
+      expect(nameIn('移除', '', ''), '移除');
+    });
+  });
 }

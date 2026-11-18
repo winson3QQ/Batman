@@ -384,7 +384,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
           BatBanner(
               look: Look.warn,
               title: '節點加入網路沒有做完',
-              text: '${nodeInfo(a, j.deviceId, widget.ui).name} 加入「${j.net.view.netName.isEmpty ? j.net.view.meshId : j.net.view.netName}」還沒有完成。',
+              text: nameIn('', nodeInfo(a, j.deviceId, widget.ui).name,
+                  '加入「${j.net.view.netName.isEmpty ? j.net.view.meshId : j.net.view.netName}」還沒有完成。'),
               action: Btn.finishIt,
               onAction: () => _form(makes: false, todo: j)),
         // #329 PR 5 (design §5.1): a request waiting for the leader -> 7.9

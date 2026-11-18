@@ -24,6 +24,7 @@ import 'settings_pages.dart' show opLine;
 import 'team_deps.dart';
 import 'team_pages.dart' show MembersPage, offlineLine;
 import 'theme.dart';
+import 'home_logic.dart' show nameIn;
 import 'widgets.dart';
 
 NetOpCalls removeCalls(RemoveOp op) =>
@@ -194,7 +195,7 @@ class _RemoveConfirmPageState extends State<RemoveConfirmPage> {
     final plan = _plan;
     return PopScope(
       canPop: !_running,
-      child: BatPage(title: widget.node.isEmpty ? '移除${widget.person.name}' : '排除這台', body: [
+      child: BatPage(title: widget.node.isEmpty ? nameIn('移除', widget.person.name, '') : '排除這台', body: [
         Text('指紋 ${widget.person.fpr}', style: TextStyle(fontSize: Fs.note, color: t.sub)),
         for (final s in widget.same) Text(s, key: const Key('remove-same'), style: TextStyle(fontSize: Fs.note, color: t.sub)),
         if (_progress.isNotEmpty) Text(_progress, key: const Key('remove-progress')),
