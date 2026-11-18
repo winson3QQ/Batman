@@ -96,6 +96,17 @@ void main() {
       });
     }
 
+    // #329 PR 7 (p1p2-check phone_wifi): the name's rule is said once the user has typed in the field, not before (the
+    // board phone_wifi: an empty field from an unread name showed it in red at once). Negative control: errorText always
+    // ssidBad -> the board check FAILs; never -> this test FAILs.
+    testWidgets('the name rule shows after the user edits the name', (t) async {
+      await openWifi(t);
+      expect(find.text('名稱要 1–32 個字元'), findsNothing);
+      await t.enterText(find.byKey(const Key('wifi-ssid')), '');
+      await t.pump();
+      expect(find.text('名稱要 1–32 個字元'), findsOneWidget);
+    });
+
     testWidgets('T-W2 / T-W5: sent -> 已更新; the field is empty; the passphrase is in no log line', (t) async {
       final logs = <String>[];
       final saved = debugPrint;

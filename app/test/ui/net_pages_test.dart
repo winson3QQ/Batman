@@ -40,15 +40,19 @@ FlowDeps deps(World w, Lease l, {Completer<void>? gate, AppLink? app}) {
 void main() {
   // #329 PR 6 (S20 device session 2026-11-18): the running card said 「這一步最多 6 分鐘」 twice, and under
   // 「正在確認節點連上了，最多 2 分鐘」 it said 6 minutes. The limit is said once: the step's own, else the run's 6 min.
-  // Negative controls: a fixed 6-minute line -> the 6 / 2 minute cases FAIL; kRunWait alone -> the connect case FAILs.
-  test('runWaitFor: the time limit once per step', () {
+  // #329 PR 7 (p1p2-check 4.x_working): the connect step says its own limit (design §5.4: login 60 s), not the run's 6
+  // minutes; a step with no limit the code keeps (正在確認) says none.
+  // Negative controls: a fixed 6-minute line -> the 6 / 2 minute cases FAIL; kRunWait alone -> the connect case FAILs;
+  // the PR 6 version (6 minutes for every step without one) -> the connect case FAILs.
+  test('runWaitFor: the time limit once per step, the current step own limit', () {
     for (final (line, want) in [
-      ('正在連到節點…', '請留在這個畫面。這一步最多 6 分鐘。'),
+      ('正在連到節點…', '請留在這個畫面。這一步最多 1 分鐘。'),
+      ('正在確認', '請留在這個畫面。'),
       ('正在加入網路，這一步最多 6 分鐘', '請留在這個畫面。'),
       ('正在確認節點連上了，最多 2 分鐘', '請留在這個畫面。'),
     ]) {
       expect(runWaitFor(line), want, reason: line);
-      expect('$line\n${runWaitFor(line)}'.split('最多').length - 1, 1, reason: 'one limit on the card: $line');
+      expect('$line\n${runWaitFor(line)}'.split('最多').length - 1, line == '正在確認' ? 0 : 1, reason: 'at most one limit on the card: $line');
     }
   });
 
@@ -134,7 +138,7 @@ void main() {
     final l = a.reg.current;
     expect(l, isNotNull);
     expect(l!.busy, isTrue, reason: 'working: a hold');
-    expect(find.textContaining('最多 6 分鐘'), findsOneWidget); // #329 PR 6 (4.x_working): S5 once, on the step's own line
+    expect(find.textContaining('最多 1 分鐘'), findsOneWidget); // #329 PR 6 (4.x_working): the limit once; PR 7: the connect step's own (§5.4)
     gate.complete();
     await settle(t);
     expect(find.text('完成'), findsWidgets);
@@ -156,7 +160,7 @@ void main() {
     await start(t);
     await back(t);
     expect(find.byType(NetRunPage), findsOneWidget);
-    expect(find.textContaining('最多 6 分鐘'), findsOneWidget); // #329 PR 6 (4.x_working): S5 once, on the step's own line
+    expect(find.textContaining('最多 1 分鐘'), findsOneWidget); // #329 PR 6 (4.x_working): the limit once; PR 7: the connect step's own (§5.4)
     expect(a.reg.current, isNotNull);
     gate.complete();
     await settle(t);

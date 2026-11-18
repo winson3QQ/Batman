@@ -307,7 +307,7 @@ void main() {
     rust.target = ClaimTarget.nodeAndPending;
     rust.disk[nodeRecPath] = Uint8List.fromList([0x6f]);
     field.add(Dev('BB', -50, ours: true));
-    await runPage(t, confirm: ['重新認領', '恢復'], until: () => rust.calls.contains('remove $pendPath'));
+    await runPage(t, confirm: ['重新認領', '恢復，中斷它所有的連線'], until: () => rust.calls.contains('remove $pendPath'));
     await t.pump(const Duration(minutes: 5));
     expect(rust.calls, ['copy $nodeRecPath', 'write $nodeRecPath', 'remove $pendPath']);
   });
@@ -433,18 +433,19 @@ void main() {
     expect(find.text('從認領暫存恢復'), findsNothing);
   });
 
-  // D18 (Dart): the list names each pending by the last 6 characters, or by the whole id where two share them.
-  // Negative control: always the last 6 -> two identical labels.
-  test('D18: pendingLabels — 6 characters, the full id where they collide', () {
+  // D18 (Dart): the list names each pending by its last four (#329 PR 7, p1p2-check P1-3: 「…XXXX」 upper case as every
+  // other screen; was the last 6 lower case), or by the whole id where two share them.
+  // Negative controls: always the last four -> two identical labels; no upper case -> 「…4f2a」.
+  test('D18: pendingLabels — the last four upper case, the full id where they collide', () {
     expect(pendingLabels(['0000000000000c4f2a', 'e61551410cfd538e24']), {
-      '0000000000000c4f2a': '…0c4f2a',
-      'e61551410cfd538e24': '…538e24',
+      '0000000000000c4f2a': '…4F2A',
+      'e61551410cfd538e24': '…8E24',
     });
-    expect(pendingLabels(['aaaaaaaaaaaa0c4f2a', 'bbbbbbbbbbbb0c4f2a', 'e61551410cfd538e24']), {
+    expect(pendingLabels(['aaaaaaaaaaaa0c4f2a', 'bbbbbbbbbbbbbb4F2A', 'e61551410cfd538e24']), {
       'aaaaaaaaaaaa0c4f2a': 'aaaaaaaaaaaa0c4f2a',
-      'bbbbbbbbbbbb0c4f2a': 'bbbbbbbbbbbb0c4f2a',
-      'e61551410cfd538e24': '…538e24',
-    });
+      'bbbbbbbbbbbbbb4F2A': 'bbbbbbbbbbbbbb4F2A',
+      'e61551410cfd538e24': '…8E24',
+    }, reason: 'the same last four in either case collide');
   });
 
   // #329 PR 1 review r5 I-M1: the real ClaimPage builds its recovery radio itself (no injected recoveryBle): the
@@ -459,7 +460,7 @@ void main() {
     final lease = reg.acquire('新增節點', LeaseKind.raw)!;
     await runPage(t,
         t4: true,
-        confirm: ['節點 …0c4f2a', '恢復'],
+        confirm: ['節點 …4F2A', '恢復，中斷它所有的連線'],
         use: RawUse(lease, gate),
         fakeRecovery: false,
         iters: 60,
@@ -479,7 +480,7 @@ void main() {
     devTrust = true;
     rust.pendingIds.add(deviceId);
     field.add(Dev('BB', -50, ours: true));
-    await runPage(t, t4: true, confirm: ['節點 …0c4f2a', '取消'], iters: 80);
+    await runPage(t, t4: true, confirm: ['節點 …4F2A', '取消'], iters: 80);
     expect(pageSays('沒有恢復，手機裡的紀錄沒有改動'), isTrue);
     expect(field.connects, 0);
     expect(rust.calls, isEmpty);
@@ -496,7 +497,7 @@ void main() {
     var checks = 0;
     var freeDuringRun = false;
     final primaries = <String>{}; // #329 PR 6 T6-10: the primary buttons seen while recovering
-    await runPage(t, t4: true, confirm: ['節點 …0c4f2a', '恢復'], until: () {
+    await runPage(t, t4: true, confirm: ['節點 …4F2A', '恢復，中斷它所有的連線'], until: () {
       if (field.connects > 0 && !rust.calls.contains('remove $pendPath')) {
         // #329 PR 6 P2-2: while recovering, 掃描 QR is a secondary button (off) and the paste is in the folded 開發用
         Iterable<ButtonStyleButton> btns(String s) => find.ancestor(of: find.text(s), matching: find.byWidgetPredicate((w) => w is ButtonStyleButton)).evaluate().map((e) => e.widget as ButtonStyleButton);
@@ -515,7 +516,7 @@ void main() {
     expect(freeDuringRun, isFalse, reason: 'the other buttons are off during T4');
     expect(primaries, {'停止恢復'}, reason: 'T6-10: recovering -> 停止恢復 is the one primary (not danger)');
     expect(blePermAsked, 1);
-    expect(pageSays('從認領暫存恢復節點 …0c4f2a'), isTrue);
+    expect(pageSays('從認領暫存恢復節點 …4F2A'), isTrue);
     expect(pageSays('沒找到未認領的這台'), isFalse, reason: 'T4 has its own intro');
     expect(rust.calls, ['copy $nodeRecPath', 'write $nodeRecPath', 'remove $pendPath']);
     expect(rust.disk[nodeRecPath], rec(1));
@@ -527,7 +528,7 @@ void main() {
     blePerm = false;
     rust.pendingIds.add(deviceId);
     field.add(Dev('BB', -50, ours: true));
-    await runPage(t, t4: true, confirm: ['節點 …0c4f2a', '恢復'], iters: 80);
+    await runPage(t, t4: true, confirm: ['節點 …4F2A', '恢復，中斷它所有的連線'], iters: 80);
     expect(pageSays('沒有藍牙權限'), isTrue);
     expect(field.connects, 0);
     expect(rust.disk[pendPath], pendingBytes);
@@ -543,7 +544,7 @@ void main() {
       ..disk[nodeRecPath] = Uint8List.fromList([0x6f]);
     field.add(Dev('BB', -50, ours: true));
     var sawT3 = false;
-    await runPage(t, t4: true, confirm: ['節點 …0c4f2a', '恢復'], iters: 60, until: () {
+    await runPage(t, t4: true, confirm: ['節點 …4F2A', '恢復，中斷它所有的連線'], iters: 60, until: () {
       if (find.text('要恢復這台節點嗎？').evaluate().isNotEmpty) {
         sawT3 = true;
         return true;
@@ -568,7 +569,7 @@ void main() {
     blePermDelay = const Duration(seconds: 5);
     rust.pendingIds.add(deviceId);
     field.add(Dev('BB', -50, ours: true));
-    await runPage(t, t4: true, confirm: ['節點 …0c4f2a', '恢復'], iters: 40, until: () => blePermAsked == 1);
+    await runPage(t, t4: true, confirm: ['節點 …4F2A', '恢復，中斷它所有的連線'], iters: 40, until: () => blePermAsked == 1);
     expect(blePermAsked, 1);
     await t.pumpWidget(const MaterialApp(home: Text('elsewhere')));
     for (var i = 0; i < 400; i++) {
@@ -585,7 +586,7 @@ void main() {
     devTrust = true;
     rust.pendingIds.add(deviceId);
     field.add(Dev('BB', -50, ours: true));
-    await runPage(t, t4: true, confirm: ['節點 …0c4f2a', '恢復'], until: () => rust.calls.contains('remove $pendPath'));
+    await runPage(t, t4: true, confirm: ['節點 …4F2A', '恢復，中斷它所有的連線'], until: () => rust.calls.contains('remove $pendPath'));
     await t.pump(const Duration(minutes: 5));
     await t.pumpAndSettle();
     expect(rust.pendingIds, isEmpty);

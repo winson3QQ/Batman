@@ -106,6 +106,8 @@ void main() {
       expect(find.text(softKeyWarning), findsOneWidget);
       expect(find.text('節點 …7D2C'), findsOneWidget);
       expect(find.text('回覆〔代碼 7〕'), findsOneWidget);
+      expect(find.text('安裝版類型'), findsOneWidget); // #329 PR 7 (p1p2-check 10.5): a Chinese label, not 「flavor」
+      expect(find.text('flavor'), findsNothing);
     }),
     // D2: two good lines with their fingerprints, one bad line (why), the send button off
     'dev_ssh_keys': P6((a, f, ui) => SshKeysPage(app: a, ui: ui, deps: f.d), act: (t, f) async {

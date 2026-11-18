@@ -45,7 +45,7 @@ class SettingsPage extends StatelessWidget {
         ),
         BatRow(
           icon: Icons.phonelink_erase,
-          title: '換手機 / 手機遺失',
+          title: '換手機／手機遺失',
           onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PhoneLostPage())),
         ),
       ]),
@@ -181,7 +181,7 @@ class PhoneLostPage extends StatelessWidget {
   const PhoneLostPage({super.key});
 
   @override
-  Widget build(BuildContext context) => const _TextPage(title: '換手機 / 手機遺失', paragraphs: [
+  Widget build(BuildContext context) => const _TextPage(title: '換手機／手機遺失', paragraphs: [
         '管理節點用的金鑰只存在這支手機裡，沒有備份，也不能搬到另一支手機。',
         '換手機：新手機不能接手這支手機的節點。舊手機還在的話，節點仍然由舊手機管理。',
         '手機遺失：請隊長把你從隊伍移除。你管理的節點要請維修人員重新燒錄，燒完是新的身分和新的 QR，之後再用新手機新增。',

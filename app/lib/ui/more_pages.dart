@@ -67,7 +67,7 @@ class _MorePageState extends State<MorePage> {
       context: context,
       builder: (c) => AlertDialog(
         backgroundColor: t.surf,
-        title: Text('要從這支手機移除$name嗎？', style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
+        title: Text(nameIn('要從這支手機移除', name, '嗎？') /* #329 PR 7 T16 (p1p2-check 5.7) */, key: const Key('remove-title'), style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
         content: Text('這支手機會忘記它，之後不能再管理它。要再新增，只能請維修人員重新燒錄。',
             style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
         actions: [
@@ -153,7 +153,12 @@ class _MorePageState extends State<MorePage> {
                 onTap: () => _push(UpdateImportPage(app: a, ui: widget.ui))),
         ]),
       BatCard(children: [
-        BatRow(icon: Icons.build_outlined, title: '技術資訊（給維修人員看）', onTap: () => setState(() => _tech = !_tech)),
+        BatRow(
+            key: const Key('more-tech'),
+            icon: Icons.build_outlined,
+            title: '技術資訊（給維修人員看）',
+            trail: _tech ? Icons.expand_less : Icons.expand_more, // #329 PR 7 (p1p2-check 5.5): a fold, not a page
+            onTap: () => setState(() => _tech = !_tech)),
         if (_tech)
           Padding(
             padding: const EdgeInsets.all(14),

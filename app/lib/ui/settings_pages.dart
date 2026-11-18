@@ -92,6 +92,7 @@ class _WifiPageState extends State<WifiPage> {
   bool _reading = false, _sending = false, _show = false;
   String _line = '';
   bool _again = false; // 「重新讀取」 is offered
+  bool _ssidEdited = false; // #329 PR 7 (p1p2-check phone_wifi): the name's rule is said once the user has typed in it
 
   @override
   void initState() {
@@ -127,7 +128,7 @@ class _WifiPageState extends State<WifiPage> {
         _now = v;
         if (_ssid.text.isEmpty) _ssid.text = v.apSsid;
       } else {
-        _line = v != null ? '讀不到目前的名稱。' : '讀不到目前的名稱：${opLine(r)}';
+        _line = v != null ? '讀不到目前的名稱。' : '讀不到目前的名稱（${opLine(r)}）'; // #329 PR 7: no two colons (as the country page)
         _again = true;
       }
     });
@@ -187,10 +188,11 @@ class _WifiPageState extends State<WifiPage> {
             TextField(
               key: const Key('wifi-ssid'),
               controller: _ssid,
+              onChanged: (_) => _ssidEdited ? null : setState(() => _ssidEdited = true), // the user's own edits only
               enabled: !_sending, // code review B m7: the values sent are the ones on screen
               autocorrect: false,
               enableSuggestions: false,
-              decoration: InputDecoration(border: const OutlineInputBorder(), labelText: '名稱', errorText: ssidBad),
+              decoration: InputDecoration(border: const OutlineInputBorder(), labelText: '名稱', errorText: _ssidEdited ? ssidBad : null),
             ),
             TextField(
               key: const Key('wifi-pass'),

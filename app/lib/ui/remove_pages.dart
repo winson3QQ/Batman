@@ -363,8 +363,14 @@ class _RekeyPageState extends State<RekeyPage> {
               key: Key('handed-${p.owner}'),
               value: a.ticks.handed(widget.netId, p.owner),
               onChanged: (v) => a.ticks.tick(widget.netId, p.owner, v ?? false), // T-R1: a mark, never a condition
-              title: Text('${p.name}（${p.fpr}）…${p.nodes.join('、…')}'),
-              subtitle: p.note.isEmpty ? const Text('已交出') : Text('${p.note}\n已交出'),
+              // #329 PR 7 (p1p2-check 8.4): the nodes on their own line as 「節點 …XXXX」 (upper case; after the Latin
+              // fingerprint a 「…」 was drawn as three low dots)
+              title: Text('${p.name}（${p.fpr}）'),
+              subtitle: Text([
+                if (p.nodes.isNotEmpty) '節點 ${p.nodes.map((n) => '…${n.toUpperCase()}').join('、')}',
+                if (p.note.isNotEmpty) p.note,
+                '已交出',
+              ].join('\n')),
             ),
             if (_bundles[p.owner] case final hex?)
               Padding(padding: const EdgeInsets.all(12), child: CodeView(hex: hex, qr: false)) // T10: text only
@@ -384,7 +390,7 @@ class _RekeyPageState extends State<RekeyPage> {
       BatRow(
         key: Key('own-${n.dacHash}'),
         icon: Icons.router_outlined,
-        title: n.last4.isEmpty ? '一台沒有編號紀錄的節點' : '節點 …${n.last4}${n.state == 'joining' ? '（加入中）' : ''}',
+        title: n.last4.isEmpty ? '一台沒有編號紀錄的節點' : '節點 …${n.last4.toUpperCase()}${n.state == 'joining' ? '（加入中）' : ''}',
         sub: cands.isEmpty
             ? (n.last4.isEmpty
                 ? '這支手機從這裡送不了：到那台的節點頁，按「更多」→「把新密碼送給節點」'

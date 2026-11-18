@@ -86,8 +86,8 @@ void main() {
         netFiles: 3, nets: [net('aa11', 'Batman'), net('bb22', 'Batman'), net('cc33', 'Other', applied: false)]));
     await t.pumpWidget(host(PickNetPage(app: a, title: '隊員名單', next: (id) => Text('next $id'))));
     await settle(t);
-    expect(find.text('Batman bm-aa（代號 …aa11）'), findsOneWidget);
-    expect(find.text('Batman bm-bb（代號 …bb22）'), findsOneWidget);
+    expect(find.text('Batman bm-aa（代號 …AA11）'), findsOneWidget);
+    expect(find.text('Batman bm-bb（代號 …BB22）'), findsOneWidget);
     expect(find.byKey(const Key('pick-cc33')), findsNothing);
     await t.tap(find.byKey(const Key('pick-bb22')));
     await settle(t);
