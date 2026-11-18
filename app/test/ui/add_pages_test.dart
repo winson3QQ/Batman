@@ -215,9 +215,19 @@ void main() {
       await t.pumpWidget(MaterialApp(home: ClaimPage(key: ValueKey(dev))));
       await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
       await t.pump();
+      // #329 PR 6 P2-3b: the dev inputs are in the folded 「開發用」 at the bottom (closed: none shown)
+      expect(find.byKey(claimDevFoldKey), dev ? findsOneWidget : findsNothing, reason: 'dev=$dev');
+      expect(find.byType(TextField), findsNothing, reason: 'dev=$dev: folded');
+      if (dev) {
+        await t.tap(find.byKey(claimDevFoldKey));
+        await t.pumpAndSettle();
+      }
       expect(find.byType(TextField), dev ? findsOneWidget : findsNothing, reason: 'dev=$dev');
+      expect(find.text('QR 內容（16 進位）'), dev ? findsOneWidget : findsNothing, reason: 'the label (not cut off)');
       expect(find.text(Btn.pasteQr), dev ? findsOneWidget : findsNothing, reason: 'dev=$dev');
       expect(find.text(Btn.scanQr), findsOneWidget);
+      // the fold is below the main button
+      if (dev) expect(t.getTopLeft(find.byKey(claimDevFoldKey)).dy, greaterThan(t.getTopLeft(find.text(Btn.scanQr)).dy));
     }
   });
 }

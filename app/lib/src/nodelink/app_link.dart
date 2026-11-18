@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 §4.1 / §4.2: the app's one radio, lease registry, BleGate and NodeLink, built once after the startup check.
 // Monotonic time (a Stopwatch) for the core; dart:async Timers for the waits.
 import 'dart:async';
@@ -134,6 +136,8 @@ class AppLink {
       },
       openNet: openNet,
       onHint: (id, h) => _one?.link.setHint(id, h),
+      // #329 PR 6 §14: before NetIndex's first computation no team section is made
+      netReady: () => _one?.nets.ready ?? false,
     );
     final prober = SessionProber(
         openRecord: openRecord, ownerPub: ownerPub, signOwner: signOwner, log: log, keyError: keyError, hint: hint);
@@ -163,7 +167,9 @@ class AppLink {
         remove: (rel) => storeRemove(dir: records, rel: rel),
         keepCopy: (rel) => storeKeepCopy(dir: records, rel: rel),
       ),
+      log: link.note, // #329 PR 6 D4: a refused or failed write goes to the text log (design :342)
     );
+    reg.log = link.note; // #329 PR 6 D4: a lease taken back (60 / 420 / 900 s) goes to the text log too
     // §4.3.2 (T20): the app lifecycle, app-wide (it outlives any page)
     WidgetsBinding.instance.addObserver(_Life(link));
     // §4.3.3-1: Bluetooth off / no permission are the overlay 2.3 / 2.2, at once (review pr1 A-M3 / B-M5)

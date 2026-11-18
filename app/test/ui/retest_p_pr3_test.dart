@@ -32,7 +32,7 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../flows/net_run_test.dart' show World, ans, pend;
-import '../nodes_update_send_test.dart' show step;
+import '../support/fake_node.dart' show step;
 import 'net_pages_test.dart' as npt show deps;
 import 'pages_test.dart' show FakeRust, app, host, id;
 import 'ui_state_test.dart' show MemStore;
@@ -290,7 +290,7 @@ void main() {
     a.nets.setForTest(snap); // the release recomputes from real files: the form's records again
     await settle(t);
     expect(rust.cas, ['net/q'], reason: 'the forget was written through RecordWriter');
-    expect(find.text('已放棄節點 …7d2c 這次的加入'), findsOneWidget);
+    expect(find.text('已放棄節點 …7D2C 這次的加入'), findsOneWidget);
     expect(find.widgetWithText(TextButton, Btn.forgetJoin), findsNothing, reason: 'done: the button goes (code review B m9)');
     expect(a.reg.current, isNull);
     await finish(t, a);

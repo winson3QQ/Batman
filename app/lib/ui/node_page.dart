@@ -14,7 +14,7 @@ import 'join_choice.dart' show NetMode;
 import 'send_key.dart';
 import 'team_hub.dart' show PickNetPage;
 import 'team_pages.dart' show MembersPage;
-import '../say.dart' show screenText;
+
 import '../src/flows/rekey_send.dart' show rustLast4, sameLast4;
 import 'net_pages.dart' show CheckNetPage, NetFormPage, goMake;
 import 'settings_pages.dart' show WifiPage;
@@ -133,7 +133,7 @@ class _NodePageState extends State<NodePage> {
     return StatusHero(
         key: const Key('node-hint'),
         look: Look.warn,
-        text: screenText(h.line),
+        text: h.line, // StatusHero shows the main part (#329 PR 6 D7)
         extra: [if (h.button) SendKeyButton(app: a, id: widget.id)]);
   }
 

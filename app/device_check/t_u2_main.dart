@@ -2,11 +2,12 @@
 // Keystore (seal / open) and UiState together. A device-only check program (not `flutter test`, which uninstalls apps on
 // failure). It needs a hardware-backed RECORD_AES: an emulator's keystore is software level 0, which the key policy
 // refuses (PlatformException(keyLevel, RECORD_AES, 0)), so every premise fails there. Run it on a phone under a package
-// of its own that holds no real records (2026-11-18: S20 under a temporary `dev3` flavor, `install -r` only; the
-// normal dev3 build was put back after), never over the dev / field package:
-//   flutter build apk --debug --flavor dev3 -t device_check/t_u2_main.dart
-//   adb -s <phone> install -r build/app/outputs/flutter-apk/app-dev3-debug.apk
-//   adb -s <phone> shell am start -n dev.batman.app.dev3/dev.batman.batman_app.MainActivity
+// of its own that has NEVER held keys or records (the program refuses otherwise, t_u2_guard.dart — on 2026-11-18 it was
+// run under dev3, which held node 7C31, and its `firstRun` destroyed that node's owner key). `tu2` is NOT in
+// build.gradle.kts: add it for the run only (a copy of the dev block with applicationIdSuffix ".tu2"), never commit it:
+//   flutter build apk --debug --flavor tu2 -t device_check/t_u2_main.dart
+//   adb -s <phone> install -r build/app/outputs/flutter-apk/app-tu2-debug.apk
+//   adb -s <phone> shell am start -n dev.batman.app.tu2/dev.batman.batman_app.MainActivity
 //   adb -s <phone> logcat -d | grep T-U2
 // Four broken files — length 0, an unknown header version, a ciphertext byte flipped, a body of version 2 — must each
 // read as 「no saved state」 (defaults, no exception), and the next write after each must work and read back.
@@ -19,18 +20,38 @@ import 'package:batman_app/ui/ui_state.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 't_u2_guard.dart';
+
 const platform = MethodChannel('dev.batman/platform');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const MaterialApp(home: Scaffold(body: Center(child: Text('T-U2 running')))));
   await RustLib.init();
-  final files = (await platform.invokeMethod<String>('filesDir'))!;
+  // 2026-11-18 (#329 PR 6): `firstRun` REGENERATES all four keys, so this runs only under a temporary flavor that has
+  // never held a key or a record (t_u2_guard.dart; fail-closed on any doubt, filesDir included).
+  var files = '';
+  String? refusal;
+  try {
+    files = (await platform.invokeMethod<String>('filesDir'))!;
+    refusal = tu2Refusal(
+      flavor: await platform.invokeMethod<String>('flavor'),
+      levels: await platform.invokeMapMethod<String, dynamic>('keyLevels'),
+      hasRecords: Directory('$files/records').existsSync(),
+    );
+  } catch (e) {
+    refusal = 'the check itself failed (${e.runtimeType})';
+  }
+  if (refusal != null) {
+    debugPrint('T-U2 REFUSED: $refusal');
+    debugPrint('T-U2 DONE pass=0 fail=1');
+    return;
+  }
   final dir = '$files/t-u2-records'; // its own directory: never the app's records
   try {
-    await platform.invokeMethod<Object?>('firstRun'); // the emulator's first run: the four keys
+    await platform.invokeMethod<Object?>('firstRun'); // no key yet: the four keys
   } catch (e) {
-    debugPrint('T-U2 diag firstRun: $e'); // already there, or the reason
+    debugPrint('T-U2 diag firstRun: $e');
   }
   try {
     debugPrint('T-U2 diag keyLevels: ${await platform.invokeMethod<Object?>('keyLevels')}');

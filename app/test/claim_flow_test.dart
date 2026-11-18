@@ -77,10 +77,16 @@ class FakeRust implements RustLibApi {
   Future<SealParams> crateApiClaimStoreSealParams({required String dir, required String rel}) async =>
       SealParams(generation: BigInt.two, aad: Uint8List(1));
   @override
-  Future<void> crateApiClaimStoreWriteSealed({required String dir, required String rel, required BigInt generation, required List<int> sealed}) async =>
-      calls.add('write $rel');
+  Future<void> crateApiClaimStoreWriteSealed({required String dir, required String rel, required BigInt generation, required List<int> sealed}) async {
+    under.add('write $rel:${reg?.current?.name ?? 'NO LEASE'}'); // #329 PR 6: the pop tests ported to ClaimPage
+    calls.add('write $rel');
+  }
+
+  LeaseRegistry? reg; // the lease registry of a test that opens the page under a raw lease
+  final under = <String>[]; // each record write / remove with the lease that held the radio then
   @override
   Future<void> crateApiClaimStoreRemove({required String dir, required String rel}) async {
+    under.add('remove $rel:${reg?.current?.name ?? 'NO LEASE'}');
     calls.add('remove $rel');
     if (removeFails) throw 'Io(EIO)';
   }
@@ -222,8 +228,8 @@ void main() {
       'write node/$deviceId',
       'remove claim-pending/$deviceId',
     ]);
-    final claim = t.widget<FilledButton>(find.widgetWithText(FilledButton, '認領'));
-    expect(claim.onPressed, isNull, reason: 'R6: the QR is forgotten after [CLAIMED]');
+    // #329 PR 6 P2-2: without a code 「認領」 is not shown (was: shown and off)
+    expect(find.text('認領'), findsNothing, reason: 'R6: the QR is forgotten after [CLAIMED]');
   });
 
   // design §4.1 (dev build + SOFTWARE owner_enc): confirmed -> the claim goes through and the session is told to mark
@@ -314,8 +320,8 @@ void main() {
     expect(find.textContaining('沒能刪掉這次的認領暫存紀錄'), findsOneWidget);
     expect(find.textContaining('認領沒有完成'), findsNothing);
     expect(rust.calls, contains('write node/$deviceId'));
-    final claim = t.widget<FilledButton>(find.widgetWithText(FilledButton, '認領'));
-    expect(claim.onPressed, isNull, reason: 'R6: the QR is forgotten');
+    // #329 PR 6 P2-2: without a code 「認領」 is not shown (was: shown and off)
+    expect(find.text('認領'), findsNothing, reason: 'R6: the QR is forgotten');
   });
 
   // #329 review pr1 r2 C-M1 (A-M1 / B-M1 with the real page): ClaimPage opened by openRawPage, popped while its claim
@@ -367,6 +373,58 @@ void main() {
     }
     expect(reg.current, isNull, reason: 'the claim ended: released');
     expect(rust.calls, contains('write node/$deviceId'));
+  });
+
+  // #329 PR 6 (plan §7 「既有」: the old console's pop tests nodes_pop / nodes_paste_pop / nodes_persist_pop, PR 1 review
+  // r5 I-m1 / r6 K-m1 / K-2, moved to the raw lease's remaining user, ClaimPage): popped while the claim waits for the
+  // node; every record write and remove that follows (pending, node record, pending gone) lands while the page's raw
+  // lease still holds the radio — never with no lease. Negative control: ClaimPage without its `use.hold()` around the
+  // claim (the lease goes at the pop) -> the writes land with NO LEASE -> FAIL.
+  testWidgets('pop ported: popped mid-claim, every record write after the pop lands under the raw lease', (t) async {
+    rust
+      ..target = ClaimTarget.nothing
+      ..under.clear();
+    mockPlatform(t);
+    final ble = HoldBle();
+    final clock = nlt.Clock();
+    final reg = rust.reg = LeaseRegistry(after: clock.after);
+    addTearDown(() => rust.reg = null);
+    final gate = BleGate(nlt.Radio(), reg, now: () => clock.t, after: clock.after);
+    final nl = NodeLink(
+        core: NodeLinkCore(const []),
+        gate: gate,
+        reg: reg,
+        prober: nlt.FakeProber({}),
+        readRecords: () async => const [],
+        now: () => clock.t,
+        after: clock.after);
+    await t.pumpWidget(MaterialApp(
+        home: Builder(
+            builder: (c) => TextButton(
+                onPressed: () => openRawPage(Navigator.of(c), nl, gate, '新增節點', (u) => ClaimPage(ble: ble, use: u)),
+                child: const Text('open')))));
+    await t.tap(find.text('open'));
+    await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+    await t.pumpAndSettle();
+    await t.tap(find.text('掃描 QR'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('認領'));
+    for (var i = 0; i < 20 && ble.written.isEmpty; i++) {
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await t.pump(const Duration(milliseconds: 100));
+    }
+    expect(rust.under, isEmpty, reason: 'nothing written before the node answers');
+    t.state<NavigatorState>(find.byType(Navigator)).pop();
+    await t.pumpAndSettle();
+    expect(find.byType(ClaimPage), findsNothing);
+    ble.hold.complete();
+    for (var i = 0; i < 50 && reg.current != null; i++) {
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await t.pump(const Duration(milliseconds: 200));
+    }
+    expect(rust.under, contains('write node/$deviceId:新增節點'));
+    expect(rust.under.where((w) => w.endsWith('NO LEASE')), isEmpty, reason: rust.under.join(', '));
+    expect(reg.current, isNull);
   });
 
   // #329 PR 3 §2.7: a pushed claim page that adds the node pops ClaimDone with it (3.2 取名 next). Negative control:

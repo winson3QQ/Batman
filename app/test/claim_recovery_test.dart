@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:batman_app/claim_records.dart';
 import 'package:batman_app/claim_recovery.dart';
+import 'package:batman_app/say.dart' show screenText, techText;
 import 'package:batman_app/src/rust/api/claim.dart';
 import 'package:batman_app/src/rust/api/replay.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
@@ -827,5 +828,19 @@ void main() {
     final store = FakeStore();
     await expectLater(ClaimRecords(store, null, (_) {}).persistPending(pendPath, Uint8List(3)), throwsStateError);
     expect(store.calls, isEmpty);
+  });
+
+  // #329 PR 6 T-C4c / G-M1 (claim_recovery.dart `'${t.step.detail}$warn'`): Rust's refused line (replay.rs:133: the
+  // code is its technical part) with the T4 warning joined after it -> the warning stays on screen, the code does not.
+  // Negative control: splitCode taking everything after the first control character as technical -> FAIL.
+  testWidgets('T-C4c: T4 3 with Rust\'s line -> 「請不要一直重試」 in the main part, the code technical', (t) async {
+    refusedText = (c) => '節點沒有接受這次恢復，已停止；紀錄先保留\u001eclaim/replay，代碼 $c\u001f';
+    addTearDown(() => refusedText = null);
+    final h = H(t, rust);
+    h.field.add(Dev('M', -40, ours: true)..replies.add(const Reply(3)));
+    expect(await h.run(t4: true), RecoveryOutcome.stopped);
+    final shown = screenText(h.lines.last);
+    expect(shown, '節點沒有接受這次恢復，已停止；紀錄先保留。這筆暫存可能不是這台節點最後一次認領用的，請不要一直重試');
+    expect(techText(h.lines.last), 'claim/replay，代碼 3');
   });
 }

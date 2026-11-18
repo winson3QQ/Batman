@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 3 §2.6 (design §4.3.8): the phone's network records, summarised once per change for the screens — which
 // kinds the phone holds (home row 6 and 3.5 / 3.6), the openable net records with their name, applied flag and members
 // (4.1's forms, the pending screens), and the 「節點加入網路沒有做完」 todos. Held by AppLink, computed after the
@@ -60,7 +62,17 @@ class NetSnapshot {
     this.mnetIds = const [],
     this.mpendIds = const [],
     this.mnets = const [],
+    this.orphanJoins = const [],
+    this.orphansUnknown = false,
   });
+
+  /// #329 PR 6 D4a: joining members (`forgettable`) whose node record is no longer on this phone (T17 removed it;
+  /// [todos] skips them). Only the developer options list them (「忘記加入中的節點」).
+  final List<JoinTodo> orphanJoins;
+
+  /// #329 PR 6 D4a: the node records could not be listed — no orphan is listed then (fail-closed: never every joining
+  /// member as an orphan); the page says it could not read them.
+  final bool orphansUnknown;
 
   /// Nothing computed yet, or a newer computation running: the screens use the neutral 「加入網路」 (PR 2 D-m9).
   final bool computing;
@@ -142,10 +154,16 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
   NetSnapshot _now = const NetSnapshot(computing: true);
   NetSnapshot get now => _now;
 
+  /// #329 PR 6 §14: a computation has finished at least once (a later one keeps the last snapshot while it runs).
+  /// Before that nothing is known about any network (cold start).
+  bool get ready => _ready;
+  bool _ready = false;
+
   @visibleForTesting
   void setForTest(NetSnapshot s) {
     _gen++;
     _now = s;
+    _ready = true;
     notifyListeners();
   }
   int _gen = 0;
@@ -164,12 +182,15 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
           todos: _now.todos,
           mnetIds: _now.mnetIds,
           mpendIds: _now.mpendIds,
-          mnets: _now.mnets);
+          mnets: _now.mnets,
+          orphanJoins: _now.orphanJoins,
+          orphansUnknown: _now.orphansUnknown);
       notifyListeners();
     }
     final s = await compute();
     if (gen != _gen) return; // a newer one runs
     _now = s;
+    _ready = true;
     notifyListeners();
   }
 
@@ -209,7 +230,8 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
         }
       }
     }
-    var todos = <JoinTodo>[];
+    var todos = <JoinTodo>[], orphans = <JoinTodo>[];
+    var orphansUnknown = false;
     try {
       final mine = (await src.nodeIds()).toSet();
       todos = [
@@ -220,7 +242,15 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
                 mine.contains(m.deviceId))
               JoinTodo(n, m)
       ];
+      // #329 PR 6 D4a: the same joining members whose node record is gone (or that never named a device)
+      orphans = [
+        for (final n in nets)
+          for (final m in n.view.members)
+            if (forgettable(joining: m.joining, approved: m.approved, creator: m.creator) && !mine.contains(m.deviceId))
+              JoinTodo(n, m)
+      ];
     } catch (e) {
+      orphansUnknown = true; // J MINOR: fail-closed, never every joining member as an orphan
       log?.call('NetIndex: node records not listed (${e.runtimeType})');
     }
     return NetSnapshot(
@@ -231,7 +261,9 @@ class NetIndex extends ChangeNotifier implements LeaseListener {
         todos: todos,
         mnetIds: mnets,
         mpendIds: mpends,
-        mnets: mnetEntries);
+        mnets: mnetEntries,
+        orphanJoins: orphans,
+        orphansUnknown: orphansUnknown);
   }
 
   // §2.6: after every lease release (a flow may have written a record). Not in the same call: a release often comes

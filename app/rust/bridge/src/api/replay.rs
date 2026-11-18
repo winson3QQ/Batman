@@ -130,7 +130,7 @@ pub(crate) enum Res<'a> {
 /// §4, the whole table: (where it ended, what it was) -> what next. A row that is not listed stops.
 pub(crate) fn replay_next(r: &Res) -> (ReplayNext, String) {
     use ReplayNext::*;
-    let neutral = |what: &str, c: u64| format!("節點沒有接受這次恢復（{what}，代碼 {c}），已停止；紀錄先保留");
+    let neutral = |what: &str, c: u64| format!("節點沒有接受這次恢復，已停止；紀錄先保留\u{1E}{what}，代碼 {c}\u{1F}");
     match r {
         Res::NoConnection => (NoConnection, String::new()),
         Res::LostBeforeWrite => (Again, String::new()),
@@ -142,7 +142,7 @@ pub(crate) fn replay_next(r: &Res) -> (ReplayNext, String) {
             ("op/nonce", E_FORBIDDEN) => (Again, String::new()),
             (v, c) => (Stop, neutral(v, c)),
         },
-        Res::End { end: End::Refused { verb, .. }, .. } => (Stop, format!("節點沒有接受這次恢復（{verb}），已停止；紀錄先保留")),
+        Res::End { end: End::Refused { verb, .. }, .. } => (Stop, format!("節點沒有接受這次恢復，已停止；紀錄先保留\u{1E}{verb}\u{1F}")),
         Res::End { written: false, end: End::Broken(_) } => (Again, String::new()),
         Res::End { written: true, end: End::Broken(_) } => (Stop, BAD_REPLY.into()),
         Res::End { end: End::Replayed(c), .. } => match c {
@@ -243,7 +243,7 @@ impl ReplaySession {
     pub fn set_z(&mut self, z: Vec<u8>) -> Result<(), String> {
         dev_gate()?;
         let mut z = z;
-        let r = <[u8; 32]>::try_from(&z[..]).map_err(|_| "金鑰交換的結果格式不對（not 32 bytes）".to_string());
+        let r = <[u8; 32]>::try_from(&z[..]).map_err(|_| "金鑰交換的結果格式不對\u{1E}not 32 bytes\u{1F}".to_string());
         z.iter_mut().for_each(|b| *b = 0);
         self.z = Some(r?);
         Ok(())
@@ -253,7 +253,7 @@ impl ReplaySession {
     #[flutter_rust_bridge::frb(sync)]
     pub fn begin(&mut self, frame_limit: u32) -> Result<ReplayStep, String> {
         dev_gate()?;
-        let z = self.z.ok_or("App 內部錯誤（no ECDH result）")?;
+        let z = self.z.ok_or("App 內部錯誤\u{1E}no ECDH result\u{1F}")?;
         let (mut flow, a) = Replay::start(self.pending.clone(), frame_limit as usize);
         let a = match a {
             Action::Ecdh { .. } => flow.ecdh_done(z),
@@ -262,7 +262,7 @@ impl ReplaySession {
         self.flow = Some(flow);
         self.stage = Stage::Idle; // the msg1 Write moves it to Hello
         self.decrypted = false;
-        self.step(a).ok_or_else(|| "App 內部錯誤（no msg1）".to_string())
+        self.step(a).ok_or_else(|| "App 內部錯誤\u{1E}no msg1\u{1F}".to_string())
     }
 
     /// A frame received on TX; None = keep reading.
@@ -308,7 +308,7 @@ impl ReplaySession {
 
     fn step(&mut self, a: Option<Action>) -> Option<ReplayStep> {
         Some(match a? {
-            Action::Ecdh { .. } => ReplayStep::ended(ReplayNext::Stop, "App 內部錯誤（ECDH asked twice）".into()),
+            Action::Ecdh { .. } => ReplayStep::ended(ReplayNext::Stop, "App 內部錯誤\u{1E}ECDH asked twice\u{1F}".into()),
             Action::Write(frames) => {
                 self.stage = match self.stage {
                     Stage::Idle => Stage::Hello,

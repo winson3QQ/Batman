@@ -19,7 +19,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../console_paths.dart';
 import '../nodelink/node_link_test.dart' show Clock;
-import '../nodes_update_send_test.dart' show FakeRust, FakeSession, fSend, step;
+import '../support/fake_node.dart' show FakeRust, FakeSession, fSend, step;
 
 const fMake = 60;
 

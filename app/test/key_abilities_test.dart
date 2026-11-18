@@ -5,7 +5,8 @@
 // - admin not hardware -> no network;
 // - owner_enc not allowed (field: SOFTWARE) -> no claim / recovery; dev + SOFTWARE owner_enc -> allowed, with the notice;
 // - no answer, a missing entry, an entry that is not a bool, a platform error -> nothing allowed (fail closed).
-// The gate inside a claim is in claim_target_test; here: the decision, the start page, and the login of 「我的節點」.
+// The gate inside a claim is in claim_target_test; here: the decision and the start page. (The old console's login gate
+// 「我的節點: login not allowed」 went with it in #329 PR 6; NodeLink's live key check before a login is login_for_test.)
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -19,7 +20,6 @@ import 'package:batman_app/src/rust/api/claim.dart' show SealParams;
 import 'package:batman_app/src/rust/api/owner.dart' show SealedRecord;
 import 'package:batman_app/ui/cbor_mini.dart';
 import 'package:batman_app/claim.dart';
-import 'package:batman_app/nodes.dart';
 import 'package:batman_app/scan.dart';
 import 'package:batman_app/ui/home_page.dart';
 import 'package:batman_app/src/nodelink/app_link.dart';
@@ -100,12 +100,6 @@ class FakeRust implements RustLibApi {
   @override
   Future<List<String>> crateApiOwnerListPending({required String dir}) async => ['00000000000000beef'];
 
-  @override
-  dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
-}
-
-/// never reached: the login is refused before BLE
-class NoBle implements FlutterReactiveBle {
   @override
   dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
 }
@@ -335,7 +329,6 @@ void main() {
     // PR 2: 新增節點 is on the home page; the older console and the BLE test page are in 設定 -> 開發者選項
     for (final (button, lease, Type type, viaSettings) in [
       ('新增節點', '新增節點', ClaimPage, false),
-      ('舊版控制台', '舊版控制台', NodesPage, true),
       ('附近的節點（藍牙測試）', '附近的節點', ScanPage, true),
     ]) {
       testWidgets('r3 E-M1 / r4 G-M1: $button opens its page under a raw lease handed to the page; back releases it',
@@ -356,13 +349,14 @@ void main() {
           await t.tap(find.byTooltip('設定'));
           await t.pumpAndSettle();
         }
+        await t.ensureVisible(find.text(button).last); // #329 PR 6: the settings page is longer now
+        await t.pumpAndSettle();
         await t.tap(find.text(button).last);
         await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
         await t.pumpAndSettle();
         expect(find.byType(type), findsOneWidget);
         expect(a.reg.current?.name, lease);
         final use = switch (t.widget(find.byType(type))) {
-          final NodesPage p => p.use,
           final ClaimPage p => p.use,
           final ScanPage p => p.use,
           _ => null,
@@ -425,7 +419,7 @@ void main() {
         await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: _ScanBle())));
         await t.pumpAndSettle();
         expect(find.text('歡迎'), welcome ? findsOneWidget : findsNothing);
-        expect(find.text('可以做的事'), welcome ? findsNothing : findsOneWidget);
+        expect(find.byType(HomePage), welcome ? findsNothing : findsOneWidget); // #329 PR 6: no node -> no 「可以做的事」 (one 新增節點)
         await t.runAsync(AppLink.instance!.link.dispose);
         rust.nodes = ['0000000000000c4f2a'];
         AppLink.forgetForTest();
@@ -456,7 +450,7 @@ void main() {
           await t.tap(find.text('開始'));
         }
         await t.pumpAndSettle();
-        expect(find.text('可以做的事'), findsOneWidget);
+        expect(find.byType(HomePage), findsOneWidget);
         expect(rust.uiWrites, ['ui/state-v1']);
         await t.runAsync(AppLink.instance!.link.dispose);
         AppLink.forgetForTest();
@@ -484,13 +478,40 @@ void main() {
         AppLink.forgetForTest();
       });
     }
-    testWidgets('every key fits: the three entries are there and on', (t) async {
+    testWidgets('every key fits: the entries are there and on; no 我的節點 (#329 PR 6 D1)', (t) async {
       await start(t, answer());
       expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
-      expect(find.text('我的節點'), findsOneWidget);
+      expect(find.text('我的節點'), findsNothing);
       expect(find.text('認領節點'), findsOneWidget);
-      expect(live(t).length, 3);
+      expect(live(t).length, 2, reason: '#329 PR 6 D1: 認領節點 and (dev) 附近的節點');
     });
+
+    // #329 PR 6 D1 / T6-2: the older start page is only what is left when the check passed and NodeLink did not start:
+    // the reason, 「請完全關閉 app 再開…」, the exception only in the technical detail; no 「我的節點」 (the old console is
+    // gone), no 「再試一次」 (F15: a second start on the same AppLink), 附近的節點 only in a dev build. Negative controls:
+    // the 我的節點 button put back, or 附近的節點 without its devTrust gate -> FAIL.
+    for (final dev in [true, false]) {
+      testWidgets('T6-2: NodeLink does not start (${dev ? 'dev' : 'field'}) -> reason + restart line, no 我的節點 / retry',
+          (t) async {
+        rust.dev = dev;
+        addTearDown(() => rust.dev = true);
+        mock(t, answer());
+        AppLink.forgetForTest();
+        await t.pumpWidget(BatmanApp(makeLink: (dir) => throw StateError('no radio')));
+        await t.pumpAndSettle();
+        expect(find.byType(HomePage), findsNothing);
+        expect(find.textContaining('節點自動讀取沒有啟動'), findsOneWidget);
+        expect(find.text(restartLine), findsOneWidget);
+        expect(find.textContaining('no radio'), findsNothing, reason: 'the exception is technical detail (folded)');
+        expect(find.text('我的節點'), findsNothing);
+        expect(find.text('再試一次'), findsNothing);
+        expect(find.text('認領節點'), findsOneWidget);
+        expect(find.text('附近的節點（開發用：藍牙測試）'), dev ? findsOneWidget : findsNothing);
+        await t.tap(find.text('技術資訊（給維修人員看）'));
+        await t.pumpAndSettle();
+        expect(find.textContaining('NodeLink start: Bad state: no radio'), findsOneWidget);
+      });
+    }
 
     // design §8 test row: an emulator (all SOFTWARE) -> the app is off
     testWidgets('record AES not hardware: said so, and no button leads anywhere', (t) async {
@@ -503,7 +524,50 @@ void main() {
       // design §4: the plaintext index stays on screen (file names only: nothing is opened, nothing deleted — any
       // other store call of the fake throws)
       expect(find.text('這些節點需要重燒卡回收：'), findsOneWidget);
-      expect(find.text('節點 0000000000000c4f2a'), findsOneWidget);
+      expect(find.text('節點 4F2A') /* #329 PR 6 P1-3: the last four */, findsOneWidget);
+    });
+
+    // #329 PR 6 T6-11 (board 2.4): a title bar; no retry -> the next step is the repair person; the technical
+    // information, once opened, says to give it to them and copies it (the whole node id is there, not on the list).
+    // Negative controls: the title '' / the next step / the copy dropped -> FAIL.
+    testWidgets('2.4: title bar, next step without a retry, the technical information copied', (t) async {
+      String? copied;
+      t.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (c) async {
+        if (c.method == 'Clipboard.setData') copied = (c.arguments as Map)['text'] as String?;
+        return null;
+      });
+      addTearDown(() => t.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+      await start(t, answer(appUsable: false, claim: false, login: false, recover: false, makeNetwork: false, soft: true));
+      expect(find.descendant(of: find.byType(AppBar), matching: find.text(startupKeysTitle)), findsOneWidget);
+      expect(find.textContaining(startupNoRetryNext), findsOneWidget);
+      expect(find.textContaining('0000000000000c4f2a'), findsNothing, reason: 'the whole id only in 技術資訊');
+      await t.tap(find.text('技術資訊（給維修人員看）'));
+      await t.pumpAndSettle();
+      expect(find.text(startupTechAsk), findsOneWidget);
+      expect(find.textContaining('節點紀錄：0000000000000c4f2a'), findsOneWidget);
+      await t.ensureVisible(find.text('複製文字'));
+      await t.pumpAndSettle();
+      await t.tap(find.text('複製文字'));
+      await t.pump();
+      expect(copied, contains('節點紀錄：0000000000000c4f2a'));
+      expect(copied, contains('啟動檢查：'));
+    });
+
+    // review pr6 B-1: the startup line in logcat carries the node ids' last four only (the whole id stays in 技術資訊).
+    // Negative control: main.dart's debugPrint without NodeLink.mask -> the whole id in the line -> FAIL.
+    testWidgets('B-1: the logcat startup line has no whole device id', (t) async {
+      final printed = <String>[];
+      final old = debugPrint;
+      debugPrint = (String? m, {int? wrapWidth}) => printed.add(m ?? '');
+      try {
+        await start(t, answer(appUsable: false, claim: false, login: false, recover: false, makeNetwork: false, soft: true));
+      } finally {
+        debugPrint = old;
+      }
+      final startup = printed.where((l) => l.startsWith('BMAPP ') && l.contains('節點紀錄：')).toList();
+      expect(startup, hasLength(1), reason: printed.join('\n'));
+      expect(startup.single, isNot(contains('0000000000000c4f2a')));
+      expect(startup.single, contains('節點紀錄：…'));
     });
 
     // design §4 / §4.1 「單一金鑰遺失」: record AES lost. Negative control: the index not built -> FAIL
@@ -512,10 +576,10 @@ void main() {
       expect(find.textContaining('啟動檢查：${KeyAbilities.aesGone}'), findsOneWidget);
       expect(find.textContaining(KeyAbilities.appOff), findsNothing);
       expect(find.text('這些節點需要重燒卡回收：'), findsOneWidget);
-      expect(find.text('節點 0000000000000c4f2a'), findsOneWidget);
+      expect(find.text('節點 4F2A') /* #329 PR 6 P1-3: the last four */, findsOneWidget);
       // review round 2 MINOR 3: an unfinished claim is listed too, said as not confirmed (full device_id).
       // Negative control: claim-pending not listed -> FAIL
-      expect(find.text('節點 00000000000000beef（認領沒有確認）'), findsOneWidget);
+      expect(find.text('節點 BEEF（認領沒有確認）'), findsOneWidget);
       expect(find.bySubtype<ButtonStyleButton>(), findsNothing);
       expect(calls, isNot(contains('open')));
     });
@@ -531,7 +595,7 @@ void main() {
               makeNetwork: false,
               gone: {'RECORD_AES', 'OWNER_SIGN', 'ADMIN_SIGN', 'OWNER_ENC'}));
       expect(find.textContaining('啟動檢查：${KeyAbilities.allGone}'), findsOneWidget);
-      expect(find.text('節點 0000000000000c4f2a'), findsOneWidget);
+      expect(find.text('節點 4F2A') /* #329 PR 6 P1-3: the last four */, findsOneWidget);
       expect(find.bySubtype<ButtonStyleButton>(), findsNothing);
       expect(calls, isNot(contains('firstRun')), reason: 'with a marker the keys are never made again');
     });
@@ -573,8 +637,8 @@ void main() {
         // review round 2 MINOR 4: the plaintext index is there while the levels cannot be read (listing needs no key),
         // without any re-flash advice. Negative control: the index only when not unreadable -> FAIL
         expect(find.text('手機裡有這些節點的紀錄（沒有打開，也沒有刪除）：'), findsOneWidget);
-        expect(find.text('節點 0000000000000c4f2a'), findsOneWidget);
-        expect(find.text('節點 00000000000000beef（認領沒有確認）'), findsOneWidget);
+        expect(find.text('節點 4F2A') /* #329 PR 6 P1-3: the last four */, findsOneWidget);
+        expect(find.text('節點 BEEF（認領沒有確認）'), findsOneWidget);
         expect(find.widgetWithText(FilledButton, '再試一次'), findsOneWidget);
         expect(find.bySubtype<ButtonStyleButton>(), findsOneWidget, reason: 'the retry is the only button');
         // the retry reads again: this time the keys answer
@@ -584,7 +648,7 @@ void main() {
         expect(calls, contains('keyLevels'));
         expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
         expect(find.text('再試一次'), findsNothing);
-        expect(live(t).length, 3);
+        expect(live(t).length, 2, reason: '#329 PR 6 D1: 認領節點 and (dev) 附近的節點');
       });
     }
 
@@ -610,35 +674,23 @@ void main() {
         await t.tap(find.text('再試一次'));
         await t.pumpAndSettle();
         expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
-        expect(live(t).length, 3);
+        expect(live(t).length, 2, reason: '#329 PR 6 D1: 認領節點 and (dev) 附近的節點');
       });
     }
 
-    testWidgets('claim not allowed: 「認領節點」 is off with its reason; 「我的節點」 stays', (t) async {
+    testWidgets('claim not allowed: 「認領節點」 is off with its reason; the restart line stays', (t) async {
       await start(t, answer(claim: false, recover: false));
       expect(find.textContaining('復原／隊員金鑰不是硬體保護，不能認領節點'), findsOneWidget);
       expect(t.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '認領節點')).onPressed, isNull);
-      expect(t.widget<FilledButton>(find.widgetWithText(FilledButton, '我的節點')).onPressed, isNotNull);
+      expect(find.text(restartLine), findsOneWidget);
     });
 
     testWidgets('dev build with a SOFTWARE owner_enc (S20): usable, with the notice', (t) async {
       await start(t, answer(soft: true));
       expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
       expect(find.textContaining('只有軟體保護，只適合開發使用'), findsOneWidget);
-      expect(live(t).length, 3);
+      expect(live(t).length, 2, reason: '#329 PR 6 D1: 認領節點 and (dev) 附近的節點');
     });
-  });
-
-  // the records stay readable when the owner key does not fit (§4.1 單一金鑰遺失), so the page opens: the login itself refuses
-  testWidgets('我的節點: login not allowed -> refused before the record or BLE is touched', (t) async {
-    mock(t, answer(claim: false, login: false, recover: false, makeNetwork: false));
-    await t.pumpWidget(MaterialApp(home: NodesPage(ble: NoBle())));
-    await t.pumpAndSettle();
-    await t.tap(find.text('節點 …4f2a'));
-    await t.pumpAndSettle();
-    expect(find.textContaining('擁有者金鑰不是硬體保護，不能認領或登入節點'), findsOneWidget);
-    expect(calls, isNot(contains('blePermissions')));
-    expect(calls, isNot(contains('open')));
   });
 }
 

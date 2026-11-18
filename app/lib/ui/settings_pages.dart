@@ -6,7 +6,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../say.dart' show screenText;
+import '../say.dart' show SayLine, logText, stripMarkers;
 import '../secure_screen.dart';
 import '../src/flows/net_run.dart' show loginLine;
 import '../src/flows/op_session.dart';
@@ -32,7 +32,7 @@ OpDeps opDeps(AppLink a) => OpDeps(
           askCountry: (_) async => false, // no settings request asks (a join's question)
           askRemoved: (_) async => false,
           keyError: (e) => keyErrorToRadio(e, a.link),
-          log: (l) => debugPrint('BMAPP $l')),
+          log: (l) => debugPrint('BMAPP ${logText(l)}')),
       keepScreen: keepScreen,
     );
 
@@ -41,8 +41,8 @@ String opLine(OpReply r) => switch (r.end) {
       OpEnd.busy => '另一個操作還在進行：${r.busyName}',
       OpEnd.login => '${loginLine(r.login!)}沒有送出任何東西。',
       OpEnd.gone => '',
-      OpEnd.leaseLost => r.reply == null ? '這個操作被中斷了，沒有送出。請再試一次。' : screenText(r.reply!.text),
-      OpEnd.done => screenText(r.reply!.text),
+      OpEnd.leaseLost => r.reply == null ? '這個操作被中斷了，沒有送出。請再試一次。' : stripMarkers(r.reply!.text),
+      OpEnd.done => stripMarkers(r.reply!.text), // technical parts kept: shown through SayLine
       OpEnd.failed => '操作出錯，結果不明。請重新讀取後再決定要不要再做一次。',
     };
 
@@ -217,7 +217,7 @@ class _WifiPageState extends State<WifiPage> {
             ),
             Text('改完之後，正連著這台 Wi-Fi 的手機（例如跑 TAK 的）會斷線，要用新的名稱和密碼重新連。',
                 style: TextStyle(fontSize: Fs.note, height: 1.55, color: t.ink)),
-            if (_line.isNotEmpty) Text(_line, key: const Key('wifi-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+            if (_line.isNotEmpty) SayLine(_line, key: const Key('wifi-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
           ],
           foot: [
             BatButton(_sending ? '正在送出…' : '送出', onPressed: can ? _send : null),
@@ -229,8 +229,24 @@ class _WifiPageState extends State<WifiPage> {
   }
 }
 
-/// Board 5.8: the menu of design §5.5 (U9: no default changes).
-const countries = {'TW': '台灣 TW', 'US': '美國 US'};
+/// Board 5.8: the menu of design §5.5. #329 PR 6 D11: only the countries of [allowedCountries] (US: Taiwan uses that
+/// band); a node set to another one shows it and can be changed to US.
+final countries = {for (final c in allowedCountries) c: _countryLabels[c] ?? c};
+const _countryLabels = {'US': '美國 US（台灣使用這個頻段）'};
+
+bool _hidden(int r) =>
+    r < 0x20 ||
+    (r >= 0x7f && r < 0xa0) ||
+    (r >= 0x200b && r <= 0x200f) ||
+    (r >= 0x2028 && r <= 0x202e) ||
+    (r >= 0x2060 && r <= 0x206f) ||
+    r == 0xfeff;
+
+/// #329 PR 6 D11 (plan §11 MINOR): a node's country string for the screen — control and format characters dropped,
+/// at most 8 characters (a node string; the value is never sent back).
+String countryShown(String cc) => String.fromCharCodes(cc.runes.where((r) => !_hidden(r)).take(8));
+
+String _countryName(String cc) => countries[cc] ?? '${countryShown(cc)}（不在可選清單）';
 
 class CountryPage extends StatefulWidget {
   const CountryPage({super.key, required this.app, required this.ui, required this.id, this.deps});
@@ -276,7 +292,7 @@ class _CountryPageState extends State<CountryPage> {
     setState(() {
       _reading = false;
       _cc = v != null && v.read && v.country.isNotEmpty ? v.country : null;
-      if (_cc == null) _line = v != null ? '讀不到目前的國家。' : '讀不到目前的國家：${opLine(r)}';
+      if (_cc == null) _line = v != null ? '讀不到目前的國家。' : '讀不到目前的國家（${opLine(r)}）'; // #329 PR 6: no two colons
     });
   }
 
@@ -299,7 +315,7 @@ class _CountryPageState extends State<CountryPage> {
         context: context,
         builder: (c) => AlertDialog(
               backgroundColor: t.surf,
-              title: Text('把這台的國家從 ${countries[from] ?? from} 改成 ${countries[cc]}？',
+              title: Text('把這台的國家從 ${_countryName(from)} 改成 ${countries[cc]}？',
                   style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
               content: Text('之後加入網路時，國家會改成那個網路的國家。', style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
               actions: [
@@ -339,9 +355,13 @@ class _CountryPageState extends State<CountryPage> {
     return PopScope(
       canPop: !_sending,
       child: BatPage(title: '國家', body: [
-        Text('節點的 HaLow 無線電照這個國家的規定使用頻率。這一版只能選台灣或美國。', style: TextStyle(fontSize: Fs.note, height: 1.55, color: t.sub)),
+        Text('節點的 HaLow 無線電照這個國家的規定使用頻率。台灣使用美國 US 的頻段。', style: TextStyle(fontSize: Fs.note, height: 1.55, color: t.sub)),
         BatCard(children: [
-          BatRow(icon: Icons.public, title: '目前', right: _reading ? '讀取中…' : (cur == null ? '讀不到' : (countries[cur] ?? cur))),
+          BatRow(
+              key: const Key('country-now'),
+              icon: Icons.public,
+              title: '目前',
+              right: _reading ? '讀取中…' : (cur == null ? '讀不到' : _countryName(cur))),
         ]),
         BatCard(children: [
           for (final e in countries.entries)
@@ -354,7 +374,7 @@ class _CountryPageState extends State<CountryPage> {
             ),
         ]),
         if (no != null && no.isNotEmpty) Text(no, key: const Key('country-why'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.sub)),
-        if (_line.isNotEmpty) Text(_line, key: const Key('country-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+        if (_line.isNotEmpty) SayLine(_line, key: const Key('country-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
       ], foot: [
         if ((cur == null || _again) && !_reading) BatButton('重新讀取', kind: BtnKind.secondary, onPressed: _sending ? null : _read),
         Text('後四碼 ${last4(widget.id)}', textAlign: TextAlign.center, style: TextStyle(fontSize: Fs.meta, color: t.sub)),

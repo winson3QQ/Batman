@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 3 §2.5 / §2.8 (design §5.4): the flows behind the new network pages, without widgets so every rule is
 // tested directly. The page owns the lease calls (acquire / hold / pageGone), keepScreenOn and the dialogs; these
 // classes own the order of the requests and what each reply means (only by ConsoleReply, plan §2.3).
@@ -10,6 +12,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show ChangeNotifier;
 import 'package:flutter/services.dart' show PlatformException;
 
+import '../../say.dart' show tech;
 import '../../ui/home_logic.dart' show whyNext;
 import '../nodelink/core.dart' show Why;
 import '../nodelink/handoff.dart';
@@ -214,7 +217,7 @@ class NetRun extends ChangeNotifier {
     } catch (e) {
       // code review A m-1 / B m2: a request that threw before it went out (a record that does not read, the phone's
       // keys): the row fails with its reason, never stays 「進行中」
-      r.line = '[REQ_FAIL] 操作沒有成功：${e is PlatformException ? e.code : e.runtimeType}';
+      r.line = '[REQ_FAIL] 操作沒有成功${tech(e is PlatformException ? e.code : e.runtimeType)}';
       // code review C N-4: joined, and the new secrets' request threw before it went out (§2.9)
       if (r.joined && r.note.isEmpty) r.note = '已加入，新密碼沒有送出';
       return _failed(r, retrying, key: e is PlatformException);
@@ -381,7 +384,7 @@ class CheckRun extends ChangeNotifier {
     try {
       end = await _run(clearNotY);
     } catch (e) {
-      lines.add('[REQ_FAIL] 操作沒有成功：${e is PlatformException ? e.code : e.runtimeType}');
+      lines.add('[REQ_FAIL] 操作沒有成功${tech(e is PlatformException ? e.code : e.runtimeType)}');
       end = CheckEnd.noAnswer;
     } finally {
       running = false;

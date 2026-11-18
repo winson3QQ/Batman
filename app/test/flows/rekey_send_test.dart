@@ -12,7 +12,7 @@ import 'package:batman_app/src/rust/api/owner.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../nodes_update_send_test.dart' show FakeRust, fSend, netId, step;
+import '../support/fake_node.dart' show FakeRust, fSend, netId, step;
 import 'owner_console_test.dart' show Rig, Session;
 
 /// The node answers a send with [sendText].
@@ -157,14 +157,14 @@ void main() {
     });
 
     // #329 PR 5 R18 (review A M3): a last four from Rust (`.last4`, `entryLast4`, `deviceLast4`) is never compared with
-    // == / != or through last4(); only sameLast4 (case-insensitive). The old console nodes.dart is the stated exception.
+    // == / != or through last4(); only sameLast4 (case-insensitive). (#329 PR 6: the old console's exception is gone.)
     test('source check R18: Rust last-four fields compared only through sameLast4', () {
       final bad = RegExp(r'(\.last4|entryLast4|deviceLast4)\b\s*[=!]=|[=!]=\s*[\w.!?]*(\.last4|entryLast4|deviceLast4)\b|\blast4\([^)]*\)\s*[=!]=');
       final hits = <String>[];
       var uses = 0;
       for (final f in Directory('lib').listSync(recursive: true).whereType<File>().where((f) => f.path.endsWith('.dart'))) {
         final p = f.path.replaceAll(r'\', '/');
-        if (p.endsWith('lib/nodes.dart') || p.contains('/src/rust/')) continue;
+        if (p.contains('/src/rust/')) continue;
         final lines = f.readAsLinesSync();
         for (var i = 0; i < lines.length; i++) {
           if (lines[i].trimLeft().startsWith('//')) continue;
@@ -200,7 +200,7 @@ void main() {
       final hits = <String>[], confirms = <String>[];
       for (final f in Directory('lib').listSync(recursive: true).whereType<File>().where((f) => f.path.endsWith('.dart'))) {
         final p = f.path.replaceAll(r'\', '/');
-        if (p.endsWith('lib/nodes.dart') || p.contains('/src/rust/')) continue; // the old console: PR 6 removes it
+        if (p.contains('/src/rust/')) continue;
         final lines = f.readAsLinesSync();
         for (var i = 0; i < lines.length; i++) {
           if (lines[i].trimLeft().startsWith('//')) continue;

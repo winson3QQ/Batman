@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 5 plan v16 §2.7 (boards 8.3, 8.4): removing a member / excluding an own node, and the new-secrets checklist.
 // The steps are the old console's _remove / _updates (nodes.dart:1348-1421, :1457-1499) unchanged:
 // - 8.3 reads every own node of removeOwnNodes(target) that the phone has a record of, one at a time (P19, no skip),
@@ -10,7 +12,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-import '../say.dart' show screenText;
+import '../say.dart' show SayLine, stripMarkers, tech;
 import '../src/flows/offline_op.dart';
 import '../src/flows/op_session.dart';
 import '../src/flows/rekey_send.dart';
@@ -87,7 +89,7 @@ class _RemoveConfirmPageState extends State<RemoveConfirmPage> {
     try {
       own = removeOwnNodes(recordPlain: plain, ownerPub: keys['owner']!, person: widget.owner, node: widget.node);
     } catch (e) {
-      return setState(() => _line = '[REQ_FAIL] ${e is String ? e : e.runtimeType}');
+      return setState(() => _line = '[REQ_FAIL] ${e is String ? e : tech(e.runtimeType)}');
     }
     final mine = (await teamDeps(a).nodeIds()).toSet();
     for (var i = 0; i < own.length; i++) {
@@ -112,7 +114,7 @@ class _RemoveConfirmPageState extends State<RemoveConfirmPage> {
         _progress = '';
       });
     } catch (e) {
-      setState(() => _line = '[REQ_FAIL] ${e is String ? e : e.runtimeType}');
+      setState(() => _line = '[REQ_FAIL] ${e is String ? e : tech(e.runtimeType)}');
     }
   }
 
@@ -150,7 +152,7 @@ class _RemoveConfirmPageState extends State<RemoveConfirmPage> {
     if (r case OfflineDone(:final value) when value.detail.startsWith('[REKEY]')) return _removed();
     setState(() {
       _running = false;
-      _line = r is OfflineDone<NetOpEnd> ? screenText(r.value.detail) : offlineLine(r);
+      _line = r is OfflineDone<NetOpEnd> ? stripMarkers(r.value.detail) : offlineLine(r);
     });
   }
 
@@ -196,14 +198,14 @@ class _RemoveConfirmPageState extends State<RemoveConfirmPage> {
         Text('指紋 ${widget.person.fpr}', style: TextStyle(fontSize: Fs.note, color: t.sub)),
         for (final s in widget.same) Text(s, key: const Key('remove-same'), style: TextStyle(fontSize: Fs.note, color: t.sub)),
         if (_progress.isNotEmpty) Text(_progress, key: const Key('remove-progress')),
-        if (plan != null) Text(screenText(plan.text), key: const Key('remove-plan')),
+        if (plan != null) SayLine(plan.text, key: const Key('remove-plan')),
         if (plan != null && plan.ok)
           CheckboxListTile(
               key: const Key('remove-tick'),
               value: _ticked,
               onChanged: _running ? null : (v) => setState(() => _ticked = v ?? false),
               title: Text(removeTickText())),
-        if (_line.isNotEmpty) Text(screenText(_line), key: const Key('remove-line')),
+        if (_line.isNotEmpty) SayLine(_line, key: const Key('remove-line')),
       ], foot: [
         if (_settled != null && !_unknown)
           BatButton(kJudgeAgain, key: const Key('remove-judge'), onPressed: _judging ? null : _judge)
@@ -291,7 +293,7 @@ class _RekeyPageState extends State<RekeyPage> {
         _phone = phone;
       });
     } catch (e) {
-      setState(() => _line = '[REQ_FAIL] ${e is String ? e : e.runtimeType}');
+      setState(() => _line = '[REQ_FAIL] ${e is String ? e : tech(e.runtimeType)}');
     }
   }
 
@@ -314,7 +316,7 @@ class _RekeyPageState extends State<RekeyPage> {
         _bundles[owner] = value.hex;
         _line = '';
       } else {
-        _line = r is OfflineDone<NetOpEnd> ? screenText(r.value.detail) : (r is OfflineUnknown ? '結果不明，請再按一次「複製更新包」' : offlineLine(r));
+        _line = r is OfflineDone<NetOpEnd> ? stripMarkers(r.value.detail) : (r is OfflineUnknown ? '結果不明，請再按一次「複製更新包」' : offlineLine(r));
       }
     });
   }
@@ -350,7 +352,7 @@ class _RekeyPageState extends State<RekeyPage> {
       canPop: !_running,
       child: BatPage(title: '換新的網路密碼', body: [
         Text(leaderVersionLine(_ver), key: const Key('net-version')),
-        if (_line.isNotEmpty) Text(_line, key: const Key('rekey-page-line')),
+        if (_line.isNotEmpty) SayLine(_line, key: const Key('rekey-page-line')),
         const BatLabel('1　先把更新包交給每位隊員'),
         Text('這些勾只是幫你記，app 不知道對方換好了沒', style: note),
         if (_people.isEmpty) Text('沒有需要更新包的隊員。', style: note),
@@ -395,7 +397,7 @@ class _RekeyPageState extends State<RekeyPage> {
         Padding(
           padding: const EdgeInsets.all(12),
           child: sent.notReached != null
-              ? Text(opLine(sent.notReached!), style: note)
+              ? SayLine(opLine(sent.notReached!), style: note)
               : RekeyResult(end: sent.end, line: sent.line, member: false),
         ),
     ]);

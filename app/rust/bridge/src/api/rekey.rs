@@ -23,15 +23,15 @@ pub(crate) fn fpr(owner_pub: &[u8; 65]) -> String {
 }
 
 fn last4(d: &str) -> String {
-    d[d.len().saturating_sub(4)..].to_string()
+    d[d.len().saturating_sub(4)..].to_ascii_uppercase()
 }
 
 fn key65(b: Vec<u8>, what: &str) -> Result<[u8; 65], String> {
-    b.try_into().map_err(|_| format!("手機金鑰格式不對（{what} is not 65 bytes）"))
+    b.try_into().map_err(|_| format!("手機金鑰格式不對\u{1E}{what} is not 65 bytes\u{1F}"))
 }
 
 fn hexn<const N: usize>(s: &str) -> Result<[u8; N], String> {
-    batman_proto::invite::from_hex(s).ok().and_then(|b| b.try_into().ok()).ok_or_else(|| "App 內部錯誤（not hex of the right length）".to_string())
+    batman_proto::invite::from_hex(s).ok().and_then(|b| b.try_into().ok()).ok_or_else(|| "App 內部錯誤\u{1E}not hex of the right length\u{1F}".to_string())
 }
 
 fn target_of(person: &str, node: &str) -> Result<Target, String> {
@@ -211,9 +211,9 @@ fn rekey_step(a: Option<rekey::Action>) -> Option<OwnerStep> {
         A::Done(E::Refused(r)) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 沒有開始：{}", refusal_text(&r))),
         A::Done(E::SignFailed) => OwnerStep::text(OwnerKind::Answer, "[REQ_FAIL] 手機的管理者金鑰無法簽章，什麼都沒有改變".into()),
         A::Done(E::PersistFailed(e)) => {
-            OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}（什麼都沒有改變）", e.map_or(STALE_RECORD.to_string(), |x| format!("手機儲存失敗（{x}）"))))
+            OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] {}（什麼都沒有改變）", e.map_or(STALE_RECORD.to_string(), |x| format!("手機儲存失敗\u{1E}{x}\u{1F}"))))
         }
-        A::Done(E::Broken(e)) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 中斷（{e}），什麼都沒有改變")),
+        A::Done(E::Broken(e)) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 中斷\u{1E}{e}\u{1F}，什麼都沒有改變")),
     })
 }
 
@@ -241,7 +241,7 @@ fn bundle_step(a: Option<BundleAction>) -> Option<OwnerStep> {
         },
         BundleAction::Done(BundleEnd::Refused(r)) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 沒有產生更新包：{}", bundle_refusal_text(&r))),
         BundleAction::Done(BundleEnd::SignFailed) => OwnerStep::text(OwnerKind::Answer, "[REQ_FAIL] 手機的管理者金鑰無法簽章，沒有產生更新包".into()),
-        BundleAction::Done(BundleEnd::Broken(e)) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 沒有產生更新包（{e}）")),
+        BundleAction::Done(BundleEnd::Broken(e)) => OwnerStep::text(OwnerKind::Answer, format!("[REQ_FAIL] 沒有產生更新包\u{1E}{e}\u{1F}")),
     })
 }
 
@@ -258,7 +258,7 @@ impl RemoveOp {
         }
         let t = target_of(&person, &node)?;
         let (f, a) = Rekey::start(&record_plain, record_gen, &key65(admin_pub, "admin_pub")?, &key65(owner_pub, "owner_pub")?, &t, &reads_of(reads)?);
-        let st = rekey_step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
+        let st = rekey_step(Some(a)).ok_or("App 內部錯誤\u{1E}no first step\u{1F}")?;
         Ok((RemoveOp { op: ROp::Rekey(f) }, st))
     }
 
@@ -267,7 +267,7 @@ impl RemoveOp {
     pub fn start_bundle(record_plain: Vec<u8>, admin_pub: Vec<u8>, owner_pub: Vec<u8>, person: String) -> Result<(RemoveOp, OwnerStep), String> {
         dev_gate()?;
         let (f, a) = UpdateBundle::start(&record_plain, &key65(admin_pub, "admin_pub")?, &key65(owner_pub, "owner_pub")?, &hexn::<65>(&person)?);
-        let st = bundle_step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
+        let st = bundle_step(Some(a)).ok_or("App 內部錯誤\u{1E}no first step\u{1F}")?;
         Ok((RemoveOp { op: ROp::Bundle(f) }, st))
     }
 
@@ -349,7 +349,7 @@ fn mupdate_text(e: &mupdate::Refusal) -> String {
         R::Fork => "⚠️ 這份更新包和你手機裡的網路紀錄不一致（另一份歷史），沒有匯入；請向隊長確認".into(),
         R::TooOld => "你的資料太舊，請隊長讓你的節點離開網路、再重新邀請你".into(),
         R::Older => "這份更新包比你的紀錄舊，已忽略".into(),
-        R::Invalid(w) => format!("內容驗證沒有通過（{w}）"),
+        R::Invalid(w) => format!("內容驗證沒有通過\u{1E}invalid: {w}\u{1F}"),
         R::NotForMe => "這份更新包裡沒有你任何一台節點的新密碼".into(),
         R::MissingOwn(l) => format!("這份更新包沒有你節點 …{l} 的新密碼，請隊長重新產生你的更新包"),
         R::NotForThisPhone => "這份更新包不是給這支手機的".into(),
@@ -434,6 +434,7 @@ const NO_SECRETS: &str = "這台的新密碼不在這支手機，請隊長重新
 
 pub(crate) fn update_text(e: &updflow::End, member: bool, last4: &str) -> String {
     use updflow::End as E;
+    let last4 = last4.to_ascii_uppercase(); // #329 PR 6 F14: the screen's last four are upper case
     let fail = "[REQ_FAIL] 沒有送出：";
     match e {
         E::Record => format!("{fail}{NET_DAMAGED}"),
@@ -455,10 +456,10 @@ pub(crate) fn update_text(e: &updflow::End, member: bool, last4: &str) -> String
         E::TooFar { rejoin: false } => format!("{fail}這台落後太多版，請隊長重新邀請這台"),
         E::Updated => format!("[UPDATED] 節點 …{last4} 已換成新密碼"),
         E::Applying => format!("[UPDATED] 節點 …{last4} 正在套用新密碼，稍後再看狀態頁"),
-        E::AppBug => "[REQ_FAIL] ⚠️ 節點沒有接受（代碼 11，原因 14：App 的問題，請回報）".into(),
+        E::AppBug => "[REQ_FAIL] ⚠️ 節點沒有接受（App 的問題，請回報）\u{1E}代碼 11，原因 14\u{1F}".into(),
         E::NotChanged => "[REQ_FAIL] 沒有換成功，可再試".into(),
         E::SignFailed => format!("{fail}手機的管理者金鑰無法簽章"),
-        E::Broken(w) => format!("[REQ_FAIL] 中斷（{w}）"),
+        E::Broken(w) => format!("[REQ_FAIL] 中斷\u{1E}{w}\u{1F}"),
     }
 }
 
@@ -506,6 +507,7 @@ pub(crate) fn update_hint_of(info: Option<&Value>, node: Option<&Verified>, owne
 /// §2.0 rule 2's question for this node (None-like "" when it was never removed).
 pub(crate) fn removed_question(record_plain: &[u8], node: Option<&Verified>, last4: &str) -> String {
     let (Ok(r), Some(n)) = (netrec::decode(record_plain), node) else { return String::new() };
+    let last4 = last4.to_ascii_uppercase(); // #329 PR 6 F14
     let h = netrec::dac_hash(&n.dac_pub);
     if !r.removed_ever().is_ok_and(|v| v.contains(&h)) {
         return String::new();
@@ -585,9 +587,9 @@ mod pr5_rekey_texts {
 
     #[test]
     fn rekey_texts_are_pinned() {
-        assert_eq!(update_text(&End::AlreadyCurrent, false, "ab12"), "[UPDATED] 節點 …ab12 已是新密碼");
-        assert_eq!(update_text(&End::Updated, true, "ab12"), "[UPDATED] 節點 …ab12 已換成新密碼");
-        assert_eq!(update_text(&End::Applying, false, "ab12"), "[UPDATED] 節點 …ab12 正在套用新密碼，稍後再看狀態頁");
+        assert_eq!(update_text(&End::AlreadyCurrent, false, "ab12"), "[UPDATED] 節點 …AB12 已是新密碼");
+        assert_eq!(update_text(&End::Updated, true, "ab12"), "[UPDATED] 節點 …AB12 已換成新密碼");
+        assert_eq!(update_text(&End::Applying, false, "ab12"), "[UPDATED] 節點 …AB12 正在套用新密碼，稍後再看狀態頁");
         assert_eq!(
             update_text(&End::Unfinished, false, "ab12"),
             "[REQ_FAIL] 沒有送出：節點還有沒完成的變更，等一下再按；超過 10 分鐘仍如此，重新開機一次"
@@ -612,5 +614,27 @@ mod retest_update_texts {
             assert!(t.starts_with("這不是"), "{t}");
             assert!(!t.contains(w), "the internal word in [{t}]");
         }
+    }
+}
+
+/// #329 PR 6 D7a (2) / T6-6: rekey.rs:352 (F6) and :458 (F5) — the internal word and the codes are technical; F14: the
+/// last four are upper case on the screen.
+#[cfg(test)]
+mod pr6_say {
+    use super::{mupdate_text, removed_question, update_text};
+    use crate::say_scan::{assert_split, split_code};
+    use batman_proto::mupdate::Refusal;
+    use batman_proto::updflow::End;
+
+    #[test]
+    fn rekey_sentences_split() {
+        assert_split(&mupdate_text(&Refusal::Invalid("signature")), &["invalid: signature"]);
+        let t = update_text(&End::AppBug, false, "ab12");
+        assert_split(&t, &["\u{1E}代碼 11，原因 14\u{1F}"]);
+        assert!(split_code(&t).0.contains("App 的問題，請回報"), "the next step stays on the screen: {t}");
+        assert!(update_text(&End::Updated, false, "7d2c").contains("…7D2C"));
+        assert!(!update_text(&End::Updated, false, "7d2c").contains("7d2c"));
+        // no record / node -> "" (the upper-casing does not change that)
+        assert_eq!(removed_question(&[], None, "7d2c"), "");
     }
 }

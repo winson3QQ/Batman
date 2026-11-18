@@ -21,7 +21,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../flows/op_session_test.dart' show Fx;
 import '../flows/owner_console_pr4_test.dart' show FakeSwLink, P4Session;
-import '../nodes_update_send_test.dart' as nus show FakeRust;
+import '../support/fake_node.dart' as nus show FakeRust;
 import 'pages_test.dart' show app, host, id;
 import 'ui_state_test.dart' show MemStore;
 
@@ -40,12 +40,12 @@ class Rust extends nus.FakeRust {
   }
 }
 
-StatusView view({String netId = '', bool canLeave = true, String unfinished = '', bool under = false, String warning = ''}) =>
+StatusView view({String netId = '', bool canLeave = true, String unfinished = '', bool under = false, String warning = '', String lagNote = ''}) =>
     StatusView(
         color: 'green',
         row: '3',
         sentence: '已連上隊伍網路',
-        lagNote: '',
+        lagNote: lagNote,
         warning: warning,
         nodeState: 2,
         netId: netId,
@@ -86,6 +86,16 @@ void main() {
   }
 
   group('node page', () {
+    // #329 PR 6 test migration gap 2 (old member_ui_test :159): Rust decides the lag small print (rows 3 / 4,
+    // statuspage.rs); the node page shows it under the verdict while the read is fresh, and not on old data.
+    for (final fresh in [true, false]) {
+      testWidgets('lagNote: ${fresh ? 'shown on a fresh read' : 'not shown on old data'}', (t) async {
+        final a = app();
+        read(a, view(lagNote: '約 4 分鐘後才會更新'), fresh: fresh);
+        await t.pumpWidget(host(NodePage(app: a, id: id, ui: UiState(MemStore()))));
+        expect(find.textContaining('約 4 分鐘後才會更新'), fresh ? findsOneWidget : findsNothing);
+      });
+    }
     for (final (under, order) in [(true, ['未完成', '注意']), (false, ['注意', '未完成'])]) {
       testWidgets('T-N2: the unfinished-change line ${under ? 'right under the verdict' : 'after the ⚠️ line'}', (t) async {
         final a = app();
@@ -190,7 +200,7 @@ void main() {
     testWidgets('T-L4: the dialog is Rust\'s, from the fresh read\'s network and the device id\'s own last four', (t) async {
       await openLeave(t);
       expect(rust.dialogs, ['7d2c ab12 admin=false member=false']);
-      expect(find.text('要讓節點 …7d2c 離開隊伍網路嗎？'), findsOneWidget);
+      expect(find.text('要讓節點 …7D2C 離開隊伍網路嗎？'), findsOneWidget); // #329 PR 6: the last four upper case on screen (device 2026-11-18)
     });
 
     testWidgets('T-L1 / T-L2 / T-L3: left -> the read after it on the same session (cut once); the lease back at once',
@@ -271,6 +281,19 @@ void main() {
       await t.pump(); // a popped route goes on the frame after its transition
       await t.pump(const Duration(seconds: 5));
       expect(find.byType(LeavePage), findsOneWidget);
+    });
+
+    // #329 PR 6 test migration gap 3 (old member_ui_test :451 「a double tap opens one dialog」): the page is its own
+    // confirmation now; two quick taps on 離開網路 send network/leave once, on one login.
+    testWidgets('a double tap on 離開網路 sends network/leave once', (t) async {
+      final (f, _) = await openLeave(t);
+      final at = t.getCenter(find.widgetWithText(FilledButton, Btn.leaveNetwork));
+      await t.tapAt(at);
+      await t.pump();
+      await t.tapAt(at); // the same spot: the label is 「正在離開…」 by now
+      await settle(t, f);
+      expect((f.rigs.first.session as P4Session).asked.where((q) => q == 'network/leave').length, 1);
+      expect(f.logins, 1);
     });
 
     testWidgets('取消 sends nothing', (t) async {

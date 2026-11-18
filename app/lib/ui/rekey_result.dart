@@ -3,7 +3,7 @@
 // of the two success sentences, and the fixed rule text of the leader or the member.
 import 'package:flutter/material.dart';
 
-import '../say.dart' show screenText;
+import '../say.dart' show SayLine;
 import '../src/flows/rekey_send.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -50,7 +50,7 @@ class RekeyResult extends StatelessWidget {
       Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         if (tick) Icon(Icons.check_circle_outline, key: const Key('rekey-tick'), color: Look.ok.ink(t)),
         if (tick) const SizedBox(width: 8),
-        Expanded(child: Text(screenText(line), key: const Key('rekey-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink))),
+        Expanded(child: SayLine(line, key: const Key('rekey-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink))),
       ]),
       if (end == RekeyEnd.applying) Text('狀態頁就是那台的節點頁', style: note),
       if (member) ...[

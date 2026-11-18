@@ -29,13 +29,16 @@ const _platform = MethodChannel('dev.batman/platform');
 /// The card of the lines the page has said (tests: 「no line said」 = no card).
 const claimLinesKey = Key('claim-lines');
 
+/// The folded 「開發用」 inputs (dev builds only; tests open it).
+const claimDevFoldKey = Key('claim-dev-fold');
+
 /// #329 PR 3 §2.7: what ClaimPage pops when a node was added (claimed, recovered, or claimed over): its device id.
 class ClaimDone {
   const ClaimDone(this.id);
   final String id;
 }
 
-void _log(String s) => debugPrint('BMAPP claim $s');
+void _log(String s) => debugPrint('BMAPP claim ${logText(s)}'); // #329 PR 6 D7: the technical marks as 〔 〕
 
 /// 254-app-replay v6.1 §19.2-7: how the T4 list and confirmation name each pending — the last 6 characters of the
 /// device id, or the whole id where two ids share them.
@@ -169,7 +172,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
       await _recover(id, null, store, ClaimRecords(store, null, _say), t3: t3, intro: '[RECOVERING] 從認領暫存恢復節點 $label');
     } catch (e) {
       final k = _keyRefused(e);
-      _say(k != null ? '[CLAIM_FAIL] $k' : '[CLAIM_FAIL] 恢復中斷：$e');
+      _say(k != null ? '[CLAIM_FAIL] $k' : '[CLAIM_FAIL] 恢復中斷：${sayErr(e)}');
     } finally {
       rawIdle();
       await _loadPending();
@@ -180,9 +183,9 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
   void _say(String s) {
     _log(s);
     if (mounted) {
-      setState(() => _lines.add(screenText(s)));
+      setState(() => _lines.add(s)); // the whole line: SayLine shows its main part and its technical part
     } else {
-      widget.goneNote?.call(screenText(s)); // F41: the page was closed while the claim ran
+      widget.goneNote?.call(s); // F41: the page was closed while the claim ran (J MINOR-9: the whole line, split where shown)
     }
   }
 
@@ -233,7 +236,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
       _log('已讀取節點 …${q.deviceId.substring(14)} 的 QR 碼');
     } catch (e) {
       if (mounted) setState(() => _qr = null);
-      _say('這不是認領用的 QR 碼：$e');
+      _say('這不是認領用的 QR 碼：${sayErr(e)}');
     }
   }
 
@@ -303,7 +306,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
       _heldNode = t == ClaimTarget.node || t == ClaimTarget.nodeAndPending;
       _heldPending = t == ClaimTarget.pending || t == ClaimTarget.nodeAndPending;
     } catch (e) {
-      _say('$unreadable：$e');
+      _say('$unreadable：${sayErr(e)}');
       return false;
     }
     switch (t) {
@@ -316,7 +319,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
           if (s == null) throw '認領紀錄不見了';
           same = await store.matches(await store.open(s), q);
         } catch (e) {
-          _say('$unreadable：$e');
+          _say('$unreadable：${sayErr(e)}');
           return false;
         }
         if (same) {
@@ -326,7 +329,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
         return _ask('要改用這張 QR 碼嗎？', otherQrText, '改用這張 QR 碼', '沒有改用這張 QR 碼，手機裡的紀錄沒有改動');
       case ClaimTarget.node:
       case ClaimTarget.nodeAndPending:
-        return _ask('節點 …${q.deviceId.substring(14)} 已經認領過', reclaimText(pending: t == ClaimTarget.nodeAndPending), '重新認領',
+        return _ask('節點 …${q.deviceId.substring(14).toUpperCase()} 已經認領過', reclaimText(pending: t == ClaimTarget.nodeAndPending), '重新認領',
             '沒有重新認領，手機裡的紀錄沒有改動');
     }
   }
@@ -407,7 +410,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
       final ctrl = await _ble.readCharacteristic(
           QualifiedCharacteristic(characteristicId: provdCtrl, serviceId: provdService, deviceId: id));
       final fl = await frameLimit(ctrl: ctrl, mtu: mtu);
-      _say('已連上節點（技術資訊：MTU $mtu，每段 $fl 位元組）');
+      _say('已連上節點${tech('MTU $mtu，每段 $fl 位元組')}');
 
       final keys = (await _platform.invokeMapMethod<String, dynamic>('publicKeys'))!;
       final owner = keys['owner'] as Uint8List, ownerEnc = keys['ownerEnc'] as Uint8List;
@@ -423,7 +426,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
       final inbox = StreamController<List<int>>();
       notify = _ble
           .subscribeToCharacteristic(QualifiedCharacteristic(characteristicId: provdTx, serviceId: provdService, deviceId: id))
-          .listen(inbox.add, onError: (Object e) => done.isCompleted ? null : done.complete('接收資料出錯：$e'));
+          .listen(inbox.add, onError: (Object e) => done.isCompleted ? null : done.complete('接收資料出錯${tech(e)}'));
 
       // one step at a time: a step's writes / record finish before the next frame is fed in
       Future<void> run(ClaimStep? st) async {
@@ -457,7 +460,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
       await run(first);
       _say('已送出認領要求，等待節點回應…');
       final pump = inbox.stream.asyncMap((f) => run(session.onFrame(frame: f))).listen((_) {},
-          onError: (Object e) => done.isCompleted ? null : done.complete(_keyRefused(e) ?? '處理出錯：$e'));
+          onError: (Object e) => done.isCompleted ? null : done.complete(_keyRefused(e) ?? '處理出錯${tech(e)}'));
       final r = await done.future.timeout(const Duration(seconds: 90), onTimeout: () => '90 秒內節點沒有回應（這次的紀錄先保留，可以稍後再試）');
       await pump.cancel();
       await inbox.close();
@@ -493,7 +496,7 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
       }
     } catch (e) {
       final k = _keyRefused(e);
-      _say(k != null ? '[CLAIM_FAIL] $k' : '[CLAIM_FAIL] 認領中斷：$e');
+      _say(k != null ? '[CLAIM_FAIL] $k' : '[CLAIM_FAIL] 認領中斷：${sayErr(e)}');
     } finally {
       await notify?.cancel();
       await conn?.cancel();
@@ -536,19 +539,16 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
         // design §5.3 / §3.3: one explanation of 認領, one main action
         Text('掃描節點機身上的 QR code，把它加入這支手機（這一步叫「認領」）。之後這台節點只聽這支手機的設定。',
             style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
-        if (_dev)
-          TextField(
-              controller: _typed,
-              obscureText: true,
-              autocorrect: false,
-              enableSuggestions: false,
-              decoration: const InputDecoration(labelText: '開發用：QR 碼內容（16 進位）；留空就從剪貼簿讀取')),
-        BatButton(Btn.scanQr, onPressed: (_busy || _scanning) ? null : _scan),
-        if (_dev) BatButton(Btn.pasteQr, kind: BtnKind.secondary, onPressed: _busy ? null : _paste),
-        if (_recovery != null) // 254-app-replay §3-6
-          BatButton(Btn.stopRecovery, onPressed: () => _recovery?.cancel())
-        else
-          BatButton(Btn.claim, onPressed: (_qr == null || _busy) ? null : _claim),
+        // #329 PR 6 P2-2 / P2-3b: one primary button at a time — no code: 「掃描 QR」; a code read: 「認領」 (掃描 QR
+        // secondary); a recovery running: 「停止恢復」 (primary, not danger; scanning off)
+        if (_recovery != null) ...[
+          BatButton(Btn.stopRecovery, onPressed: () => _recovery?.cancel()), // 254-app-replay §3-6
+          const BatButton(Btn.scanQr, kind: BtnKind.secondary, onPressed: null),
+        ] else if (_qr != null) ...[
+          BatButton(Btn.claim, onPressed: _busy ? null : _claim),
+          BatButton(Btn.scanQr, kind: BtnKind.secondary, onPressed: (_busy || _scanning) ? null : _scan),
+        ] else
+          BatButton(Btn.scanQr, onPressed: (_busy || _scanning) ? null : _scan),
         if (_pending.isNotEmpty) // 254-app-replay T4 (§19.2-1): dev builds with a claim-pending only
           BatButton(Btn.fromPending, kind: BtnKind.secondary, onPressed: (_busy || _scanning) ? null : _fromPending),
         if (_lines.isNotEmpty)
@@ -556,9 +556,26 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
             for (final l in _lines)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                child: Text(l, style: TextStyle(fontSize: Fs.body, height: 1.5, color: t.ink)),
+                child: SayLine(l, style: TextStyle(fontSize: Fs.body, height: 1.5, color: t.ink)),
               ),
           ]),
+        if (_dev) // design §5.3: the dev inputs only in a dev build — at the bottom, folded
+          ExpansionTile(
+            key: claimDevFoldKey,
+            title: Text('開發用', style: TextStyle(fontSize: Fs.body, color: t.ink)),
+            tilePadding: EdgeInsets.zero,
+            childrenPadding: const EdgeInsets.only(bottom: 8),
+            children: [
+              TextField(
+                  controller: _typed,
+                  obscureText: true,
+                  autocorrect: false,
+                  enableSuggestions: false,
+                  decoration: const InputDecoration(labelText: 'QR 內容（16 進位）', helperText: '留空就從剪貼簿讀取')),
+              const SizedBox(height: 8),
+              BatButton(Btn.pasteQr, kind: BtnKind.secondary, onPressed: _busy ? null : _paste),
+            ],
+          ),
       ],
     );
   }

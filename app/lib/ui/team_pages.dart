@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 5 plan v16 §2.7 (boards 8.1, 7.1, 7.3–7.7, 8.2): the leader's team pages. The steps are the old console's
 // (_members, _makeInvite, _checkRequest, SasConfirmView; nodes.dart:1311-1344, :798-864) unchanged: every record
 // write is an OfflineOp (R10, re-read under the lease R11), the codes go through CodeView (R1–R4), the confirmation
@@ -7,7 +9,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../member_ui.dart' show sasRule, showDupNote;
-import '../say.dart' show screenText;
+import '../say.dart' show SayLine, stripMarkers, tech;
 import '../secure_screen.dart';
 import '../src/flows/offline_op.dart';
 import '../src/nodelink/app_link.dart';
@@ -25,7 +27,7 @@ import 'widgets.dart';
 /// The line an offline operation ends with when it has no result of its own (R10 / R12).
 String offlineLine(OfflineReply r) => switch (r) {
       OfflineBusy(:final name) => '另一個操作還在進行：$name',
-      OfflineFailed(:final line) => screenText(line),
+      OfflineFailed(:final line) => stripMarkers(line), // technical parts kept: shown through SayLine
       OfflineUnknown() => '結果不明，請再做一次',
       OfflineDone() => '',
     };
@@ -102,7 +104,7 @@ class _MembersPageState extends State<MembersPage> {
         _need = need;
       });
     } catch (e) {
-      setState(() => _line = '[REQ_FAIL] ${e is String ? e : e.runtimeType}');
+      setState(() => _line = '[REQ_FAIL] ${e is String ? e : tech(e.runtimeType)}');
     }
   }
 
@@ -122,7 +124,7 @@ class _MembersPageState extends State<MembersPage> {
       if (a.ticks.removedThisRun(widget.netId) && left > 0)
         BatBanner(look: Look.warn, title: '還有 $left 位隊員沒交更新包'),
       Text('移除隊員之後，要用「產生更新包」把新密碼交給每位留下的隊員，並把新密碼送到你的每台節點。', key: const Key('members-rule'), style: note),
-      if (_line.isNotEmpty) Text(_line, style: note),
+      if (_line.isNotEmpty) SayLine(_line, style: note),
       if (people != null)
         BatCard(children: [
           for (final p in people)
@@ -232,7 +234,7 @@ class _InvitePageState extends State<InvitePage> {
       if (route != null && route.isActive && mounted) Navigator.of(context).removeRoute(route);
       return;
     }
-    setState(() => _line = r is OfflineDone<NetOpEnd> ? screenText(r.value.detail) : offlineLine(r));
+    setState(() => _line = r is OfflineDone<NetOpEnd> ? stripMarkers(r.value.detail) : offlineLine(r));
   }
 
   @override
@@ -244,7 +246,7 @@ class _InvitePageState extends State<InvitePage> {
             BatRow(icon: Icons.qr_code, title: '在旁邊', sub: '讓隊員掃我的畫面', enabled: !_running, onTap: () => _make(true)),
             BatRow(icon: Icons.ios_share, title: '不在旁邊', sub: '用訊息把文字傳給他，再用電話核對確認碼', enabled: !_running, onTap: () => _make(false)),
           ]),
-          if (_line.isNotEmpty) Text(_line, key: const Key('invite-line')),
+          if (_line.isNotEmpty) SayLine(_line, key: const Key('invite-line')),
         ]),
       );
 }
@@ -271,6 +273,9 @@ class InviteCodePage extends StatelessWidget {
 
 // ---- 7.4 收申請 → 7.5 核對 → 7.6 同意碼 / 7.7 不同 ----------------------------------------------------------------
 
+/// 7.5's main button.
+const kApproveSame = '數字一樣，同意加入';
+
 class RequestPage extends StatefulWidget {
   const RequestPage({super.key, required this.app, required this.netId});
   final AppLink app;
@@ -292,7 +297,7 @@ class _RequestPageState extends State<RequestPage> {
     try {
       jr = netCheckJoinreq(recordPlain: plain, hex: hex);
     } catch (e) {
-      return setState(() => _line = '[REQ_FAIL] 申請不能用：${e is String ? e : e.runtimeType}');
+      return setState(() => _line = '[REQ_FAIL] 申請不能用：${e is String ? e : tech(e.runtimeType)}');
     }
     var previousOk = false;
     if (jr.previous.isNotEmpty) {
@@ -308,17 +313,23 @@ class _RequestPageState extends State<RequestPage> {
   @override
   Widget build(BuildContext context) => BatPage(title: '收隊員的申請', body: [
         const Text('掃描隊員的申請 QR，或貼上他用訊息傳來的文字。一張邀請可以收多份申請。'),
+        if (_line.isNotEmpty) SayLine(_line, key: const Key('request-line')),
+      ], foot: [
+        // #329 PR 6 (7.4): the main action at the bottom
         CodeInput(devTrust: widget.app.devTrust, onText: _got, onError: (w) => setState(() => _line = w)),
-        if (_line.isNotEmpty) Text(screenText(_line), key: const Key('request-line')),
       ]);
 }
 
 /// The confirmation code, big, with the rule and one button (the old SasConfirmView's behaviour: one press only),
 /// on a page that cannot be captured; where it cannot be protected the code still shows (D6), with a warning.
 class SasCheck extends StatefulWidget {
-  const SasCheck({super.key, required this.sas, required this.confirmLabel, required this.onConfirm, this.notice});
+  const SasCheck(
+      {super.key, required this.sas, required this.confirmLabel, required this.onConfirm, this.notice, this.withButton = true});
   final String sas, confirmLabel;
   final String? notice;
+
+  /// false: the page puts the confirm button in its foot itself (#329 PR 6, 7.5: the main action at the bottom)
+  final bool withButton;
 
   /// called once per build of this widget (a busy / failed reply rebuilds it with a new key: B-m7)
   final Future<void> Function() onConfirm;
@@ -346,15 +357,17 @@ class _SasCheckState extends State<SasCheck> {
           child: code()),
       const SizedBox(height: 8),
       Text(sasRule, key: const Key('sasRule'), style: TextStyle(fontWeight: FontWeight.bold, color: t.ink)),
-      const SizedBox(height: 16),
-      BatButton(widget.confirmLabel,
-          key: const Key('sasConfirm'),
-          onPressed: _pressed
-              ? null
-              : () async {
-                  setState(() => _pressed = true);
-                  await widget.onConfirm();
-                }),
+      if (widget.withButton) ...[
+        const SizedBox(height: 16),
+        BatButton(widget.confirmLabel,
+            key: const Key('sasConfirm'),
+            onPressed: _pressed
+                ? null
+                : () async {
+                    setState(() => _pressed = true);
+                    await widget.onConfirm();
+                  }),
+      ],
     ]);
   }
 }
@@ -405,7 +418,7 @@ class _ApprovePageState extends State<ApprovePage> {
     setState(() {
       _running = false;
       _tries++; // B-m7: a new SasCheck, its button pressable again
-      _line = r is OfflineDone<NetOpEnd> ? screenText(r.value.detail) : offlineLine(r);
+      _line = r is OfflineDone<NetOpEnd> ? stripMarkers(r.value.detail) : offlineLine(r);
     });
   }
 
@@ -417,9 +430,12 @@ class _ApprovePageState extends State<ApprovePage> {
       child: BatPage(title: '核對確認碼', body: [
         Text('核對隊員的申請：${jr.name}（…${jr.deviceSuffix}）${jr.replacesApproved ? '，重新同意' : ''}', key: const Key('approve-title')),
         if (jr.updateFirst) const Text('這個人還有沒換的版本：請他先貼更新包，再貼這份同意'),
-        SasCheck(key: ValueKey(_tries), sas: jr.sas, confirmLabel: '數字一樣，同意加入', onConfirm: _approve),
-        if (_line.isNotEmpty) Text(_line, key: const Key('approve-line')),
+        SasCheck(key: ValueKey(_tries), sas: jr.sas, confirmLabel: kApproveSame, onConfirm: _approve, withButton: false),
+        if (_line.isNotEmpty) SayLine(_line, key: const Key('approve-line')),
       ], foot: [
+        // #329 PR 6 (7.5): the main action at the bottom, above 「數字不一樣」; one press until the reply (B-m7: a failed
+        // reply makes it pressable again)
+        BatButton(kApproveSame, key: const Key('sasConfirm'), onPressed: _running ? null : _approve),
         BatButton('數字不一樣',
             kind: BtnKind.secondary, // T-C3: one primary (確認碼的按鈕)
             onPressed: _running

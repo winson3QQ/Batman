@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 5 plan v16 §2.5 (R10–R12): a write that does not reach a node (invite, approve, remove, update bundles,
 // imports, dropping a request) still holds the session lease and writes only through RecordWriter (design §4.4).
 // The old console's _runOp / _runRemove (nodes.dart:773-795, :1425-1448) are runNetOp here, unchanged in their steps.

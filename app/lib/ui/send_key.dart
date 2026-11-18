@@ -3,7 +3,7 @@
 // (nothing sent: no network, no record, not reached) shows its own line.
 import 'package:flutter/material.dart';
 
-import '../say.dart' show screenText;
+import '../say.dart' show SayLine;
 import '../src/flows/rekey_send.dart';
 import '../src/nodelink/app_link.dart';
 import 'rekey_result.dart';
@@ -52,9 +52,9 @@ class _SendKeyButtonState extends State<SendKeyButton> {
         Padding(
           padding: const EdgeInsets.all(12),
           child: s.notReached != null
-              ? Text(opLine(s.notReached!), key: const Key('send-key-line'))
+              ? SayLine(opLine(s.notReached!), key: const Key('send-key-line'))
               : s.member == null
-                  ? Text(screenText(s.line), key: const Key('send-key-line'))
+                  ? SayLine(s.line, key: const Key('send-key-line'))
                   : RekeyResult(end: s.end, line: s.line, member: s.member!, version: s.version),
         ),
     ]);

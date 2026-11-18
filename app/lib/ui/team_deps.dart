@@ -1,9 +1,12 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 5 plan v16: the app's parts for the team pages — OfflineOp (R10), its platform, sendNewKey (R17), and the
 // small readers every team page uses. Tests build their own fakes of the same shapes.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../say.dart' show logText;
 import '../src/flows/offline_op.dart';
 import '../src/flows/rekey_send.dart';
 import '../src/nodelink/app_link.dart';
@@ -22,7 +25,7 @@ OfflineDeps offlineDeps(AppLink a) => OfflineDeps(
   busyName: () => a.reg.current?.name,
   writer: a.writer,
   after: a.link.after,
-  log: (l) => debugPrint('BMAPP $l'),
+  log: (l) => debugPrint('BMAPP ${logText(l)}'), // #329 PR 6 D7: the technical marks as 〔 〕
 );
 
 /// R10: the keys and the record store for offline work (the same calls ConsolePlatform makes, plus ecdh).

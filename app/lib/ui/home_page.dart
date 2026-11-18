@@ -19,6 +19,7 @@ import 'intro_pages.dart';
 import 'join_pages.dart' show JoinTeamPage, MyRequestPage;
 import 'net_pages.dart' show NetFormPage;
 import 'team_hub.dart' show PickPendPage;
+import 'team_status_page.dart' show TeamPage, anyTeamVisible;
 import 'node_page.dart';
 import 'settings_page.dart';
 import 'theme.dart';
@@ -279,11 +280,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
     final firstRounds = a.link.core.roundsRun < 3;
     final h = decideHome(
         HomeInputs(nodes: infos, blocked: a.link.core.blocked, firstRounds: firstRounds, todos: todos, records: nets.records));
-    // the status area's time is only ever a fresh read's: an older one is not 「讀取於」 (review r3 E-m8 / C-m8)
-    final freshest = infos.where((n) => n.fresh).map((n) => n.readWall).whereType<DateTime>().fold<DateTime?>(null, (x, y) => x == null || y.isAfter(x) ? y : x);
-    // a row about one node shows that node's read time, and only a fresh one (review r2 C-m8)
-    final about = h.node == null ? null : infos.where((n) => n.id == h.node).firstOrNull;
-    final shownTime = about != null ? (about.fresh ? about.readWall : null) : freshest;
+    // #329 PR 6 D9: 「讀取於」 for a fresh read, 「上次讀取」 for an older one (review r2 C MINOR-8's rule); a row
+    // about one node (not a list of several) shows that node's time
+    final shownTime = heroTime(infos,
+        about: h.action == HomeAction.showList ? null : h.node, now: DateTime.now());
     final actionText = switch (h.action) {
       HomeAction.allowBluetooth => Btn.allowBluetooth,
       HomeAction.addNode => Btn.addNode,
@@ -303,7 +303,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
           icon: Icon(Icons.settings_outlined, color: t.ink),
           onPressed: () {
             a.link.setPage(nl.Page.other); // §4.3.2: no reads while the settings are on screen (T-L8; review A-m3)
-            _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(app: a, ui: widget.ui, devTrust: widget.devTrust, notes: widget.notes))));
+            _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => SettingsPage(app: a, ui: widget.ui, devTrust: widget.devTrust, notes: widget.notes, keys: widget.keys))));
           },
         ),
       ],
@@ -312,7 +312,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
           look: h.look,
           text: h.text,
           next: h.next,
-          time: shownTime == null || h.look == Look.busy ? null : '讀取於 ${hhmmss(shownTime)}',
+          time: h.look == Look.busy ? null : shownTime,
           onRefresh: h.look == Look.busy ? null : a.link.refresh,
           extra: actionText == null
               ? null
@@ -379,16 +379,30 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
               }),
           ]),
         ],
-        const BatLabel('可以做的事'),
-        BatCard(children: [
-          BatRow(
-            icon: Icons.add,
-            title: Btn.addNode,
-            sub: widget.keys.refusal(KeyUse.claim) ?? '把另一台節點加入這支手機',
-            enabled: widget.keys.claim,
-            onTap: _addNode,
-          ),
-        ]),
+        // #329 PR 6 (home_no_node): one 「新增節點」 on the page — when the status area already offers it, not here too
+        // (a refusal keeps its reason row); D5(e) (design §5.1 :703): 「看全隊狀態」 only while some own node's team
+        // section is visible (version N: never)
+        if (h.action != HomeAction.addNode || !widget.keys.claim || anyTeamVisible(a)) ...[
+          const BatLabel('可以做的事'),
+          BatCard(children: [
+            if (h.action != HomeAction.addNode || !widget.keys.claim)
+              BatRow(
+                icon: Icons.add,
+                title: Btn.addNode,
+                sub: widget.keys.refusal(KeyUse.claim) ?? '把另一台節點加入這支手機',
+                enabled: widget.keys.claim,
+                onTap: _addNode,
+              ),
+            if (anyTeamVisible(a))
+              BatRow(
+                key: const Key('home-team'),
+                icon: Icons.groups_outlined,
+                title: '看全隊狀態',
+                sub: '每台自己的節點看到的隊員',
+                onTap: () => _back(Navigator.of(context).push(MaterialPageRoute(builder: (_) => TeamPage(app: a, ui: widget.ui)))),
+              ),
+          ]),
+        ],
       ],
     );
   }

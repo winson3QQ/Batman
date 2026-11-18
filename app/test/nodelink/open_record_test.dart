@@ -5,7 +5,7 @@ import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../nodes_update_send_test.dart' show FakeRust;
+import '../support/fake_node.dart' show FakeRust;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

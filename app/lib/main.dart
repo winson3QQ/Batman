@@ -7,15 +7,16 @@ import 'package:flutter/services.dart';
 
 import 'claim.dart';
 import 'key_abilities.dart';
-import 'nodes.dart';
 import 'scan.dart';
 import 'src/nodelink/app_link.dart';
 import 'src/nodelink/core.dart' as nlcore show Page;
-import 'src/nodelink/node_list.dart';
+import 'src/nodelink/node_link.dart' show NodeLink;
 import 'src/nodelink/raw_use.dart';
 import 'src/rust/api/owner.dart' show listNodes, listPending;
 import 'src/rust/api/simple.dart';
 import 'src/rust/frb_generated.dart';
+import 'say.dart' show SayLine, logText, sayErr;
+import 'ui/home_logic.dart' show last4;
 import 'ui/home_page.dart';
 import 'ui/intro_pages.dart';
 import 'ui/theme.dart';
@@ -23,6 +24,14 @@ import 'ui/widgets.dart';
 import 'ui/ui_state.dart';
 
 const _platform = MethodChannel('dev.batman/platform');
+
+/// #329 PR 6 §3 row 2.4: the key-check page's title bar, its next step when a retry cannot help, and the line above
+/// its technical information.
+const startupKeysTitle = '手機金鑰';
+const startupNoRetryNext = '請找維修人員，把下面的技術資訊給他看。';
+const startupTechAsk = '請把技術資訊給維修人員看（可以按「複製文字」）。';
+/// #329 PR 6 D1: the older start page's instruction when NodeLink did not start (no retry on the same AppLink, F15).
+const restartLine = '請完全關閉 app 再開；仍然如此請找維修人員';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -123,10 +132,12 @@ class _StartupCheckState extends State<StartupCheck> {
           // cannot be read; an unfinished claim is listed as such. A first run happens only with no record at all.
           if (!_firstRunFailed) {
             final dir = '${(await _platform.invokeMethod<String>('filesDir'))!}/records';
+            final nodes = await listNodes(dir: dir), pend = await listPending(dir: dir);
             index = [
-              for (final n in await listNodes(dir: dir)) '節點 $n',
-              for (final n in await listPending(dir: dir)) '節點 $n（認領沒有確認）',
+              for (final n in nodes) '節點 ${last4(n)}', // #329 PR 6 P1-3: the last four (the whole id: 技術資訊)
+              for (final n in pend) '節點 ${last4(n)}（認領沒有確認）',
             ];
+            tech.addAll([for (final n in nodes) '節點紀錄：$n', for (final n in pend) '認領暫存：$n']);
           }
         } else {
           // one line per reason (claim and recovery share theirs when the owner key is the cause)
@@ -143,9 +154,10 @@ class _StartupCheckState extends State<StartupCheck> {
       index = [];
       lines
         ..clear()
-        ..add('啟動檢查失敗：$e');
+        ..add('啟動檢查失敗：${sayErr(e)}');
     }
-    debugPrint('BMAPP ${[...lines, ...tech].join(' | ')}');
+    // review pr6 B-1: logcat keeps the last four only (the whole id stays in 技術資訊 on screen and in its copy)
+    debugPrint('BMAPP ${NodeLink.mask(logText([...lines, ...tech].join(' | ')))}');
     final make = widget.makeLink;
     if (agree && keys.appUsable && _app == null && make != null) {
       // review pr1 A-m5: a NodeLink that cannot be built leaves the startup result on screen, never a spinner
@@ -157,7 +169,10 @@ class _StartupCheckState extends State<StartupCheck> {
         unawaited(a.nets.recompute()); // #329 PR 3 §2.6: once the startup check passed
         _app = a;
       } catch (e) {
-        lines.add('節點自動讀取沒有啟動：$e');
+        // #329 PR 6 D1: the reason on screen, the exception in the technical detail; no retry (F15: a second start
+        // on the same AppLink would leave half its subscriptions behind)
+        lines.add('節點自動讀取沒有啟動');
+        tech.add('NodeLink start: $e');
         debugPrint('BMAPP nodelink start failed: $e');
       }
     }
@@ -258,21 +273,32 @@ class _StartupCheckState extends State<StartupCheck> {
       // §5.2 board 2.4: the key check did not pass; the reason, what the phone holds (names only), a retry when it
       // may help, the technical detail folded away. No gate is relaxed (KeyGate is the existing check).
       final lines = _report!.split('\n');
+      // #329 PR 6 §3 row 2.4: a title bar; with no retry, the next step is the repair person (and the copy below)
+      final next = [...lines.skip(1), if (!_retry) startupNoRetryNext];
       return BatPage(
-        title: '',
+        title: startupKeysTitle,
         body: [
-          StatusHero(look: Look.bad, text: lines.first, next: lines.length > 1 ? lines.skip(1).join('\n') : null),
+          StatusHero(look: Look.bad, text: lines.first, next: next.isEmpty ? null : next.join('\n')),
           if (_index.isNotEmpty) ...[
             BatLabel(_retry ? '手機裡有這些節點的紀錄（沒有打開，也沒有刪除）：' : '這些節點需要重燒卡回收：'),
             BatCard(children: [for (final n in _index) BatRow(icon: Icons.router_outlined, title: n)]),
           ],
           BatCard(children: [
             ExpansionTile(
+                key: const Key('startup-tech'),
                 title: Text('技術資訊（給維修人員看）', style: TextStyle(fontSize: Fs.body, color: t.ink)),
                 children: [
                   Padding(
                     padding: const EdgeInsets.all(14),
-                    child: SelectableText(_tech, style: TextStyle(fontFamily: 'monospace', fontSize: Fs.meta, color: t.ink)),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                      Text(startupTechAsk, style: TextStyle(fontSize: Fs.note, color: t.ink)),
+                      const SizedBox(height: 8),
+                      SelectableText(_tech, style: TextStyle(fontFamily: 'monospace', fontSize: Fs.meta, color: t.ink)),
+                      const SizedBox(height: 8),
+                      BatButton(Btn.copyText,
+                          kind: BtnKind.secondary,
+                          onPressed: () => Clipboard.setData(ClipboardData(text: logText('$_report\n$_tech')))),
+                    ]),
                   ),
                 ]),
           ]),
@@ -294,33 +320,18 @@ class _StartupCheckState extends State<StartupCheck> {
         child: _report == null
             ? const Center(child: CircularProgressIndicator())
             : ListView(children: [
-                Text(_report!, style: TextStyle(fontSize: 16, color: _ok ? null : Colors.red)),
+                // #329 PR 6 D1: only reached when the check passed but NodeLink did not start (the home page needs
+                // it). The reason, what to do, no 「再試一次」 (F15) and no older console.
+                SayLine(_report!, style: const TextStyle(fontSize: 16)), // review pr6 B-4: split like every sentence
+                const SizedBox(height: 8),
+                Text(restartLine, style: const TextStyle(fontSize: 16)),
                 const SizedBox(height: 16),
-                // while the levels cannot be read nothing is lost yet: no re-flash advice, only what the phone holds
-                if (_index.isNotEmpty)
-                  Text(_retry ? '手機裡有這些節點的紀錄（沒有打開，也沒有刪除）：' : '這些節點需要重燒卡回收：',
-                      style: const TextStyle(fontSize: 16)),
-                for (final n in _index) SelectableText(n, style: const TextStyle(fontFamily: 'monospace')),
-                if (_retry)
-                  FilledButton(
-                      onPressed: () {
-                        setState(() => _report = null);
-                        _run();
-                      },
-                      child: const Text('再試一次')),
-                if (_ok && _app != null) NodeStatusList(link: _app!.link),
-                // only an app that passed the startup check talks to nodes; the everyday actions first
-                if (_ok)
-                  FilledButton(
-                      onPressed: () => _open('我的節點', (a, u) => NodesPage(ble: a?.ble, use: u)),
-                      child: const Text('我的節點')),
-                if (_ok)
-                  OutlinedButton(
-                      onPressed: _keys.claim // off: the reason is in the report above
-                          ? () => _open('新增節點', (a, u) => ClaimPage(ble: a?.ble, use: u))
-                          : null,
-                      child: const Text('認領節點')),
-                if (_ok)
+                OutlinedButton(
+                    onPressed: _keys.claim // off: the reason is in the report above
+                        ? () => _open('新增節點', (a, u) => ClaimPage(ble: a?.ble, use: u))
+                        : null,
+                    child: const Text('認領節點')),
+                if (_devTrust) // the BLE test page: dev builds only (D1)
                   TextButton(
                       onPressed: () => _open('附近的節點', (a, u) => ScanPage(ble: a?.ble, use: u)),
                       child: const Text('附近的節點（開發用：藍牙測試）')),

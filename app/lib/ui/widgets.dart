@@ -1,6 +1,7 @@
 // #329 design §3.2: the only components the new screens may use. Sizes follow the canvas v5 (gen-lib.js).
 import 'package:flutter/material.dart';
 
+import '../say.dart' show SayLine, TechFold, screenText, techText;
 import 'theme.dart';
 
 /// The five looks of a status (§3.2 StatusHero): each has its own icon shape, not only a colour.
@@ -88,7 +89,8 @@ List<Widget> _gap(List<Widget> ws, double g) => [
       for (var i = 0; i < ws.length; i++) ...[if (i > 0) SizedBox(height: g), ws[i]]
     ];
 
-/// The status area: icon + word + one sentence + next step + read time + 重新整理.
+/// The status area: icon + word + one sentence + next step + read time + 重新整理. #329 PR 6 D7: [text] and [next] show
+/// their main parts (every line of [next] keeps its words); their technical parts go under one collapsed 技術資訊 row.
 class StatusHero extends StatelessWidget {
   const StatusHero({super.key, required this.look, required this.text, this.next, this.time, this.onRefresh, this.extra});
   final Look look;
@@ -102,6 +104,7 @@ class StatusHero extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = BatTheme.of(context);
     final ink = look.ink(t);
+    final tech = [techText(text), if (next != null) techText(next!)].where((s) => s.isNotEmpty).join('；');
     return Container(
       decoration: BoxDecoration(color: look.bg(t), borderRadius: BorderRadius.circular(16)),
       padding: const EdgeInsets.all(16),
@@ -114,11 +117,12 @@ class StatusHero extends StatelessWidget {
               Text(look.word,
                   style: TextStyle(fontSize: Fs.meta, fontWeight: FontWeight.w700, letterSpacing: 0.8, color: ink)),
               const SizedBox(height: 2),
-              Text(text, style: TextStyle(fontSize: Fs.hero - 3, fontWeight: FontWeight.w700, height: 1.35, color: ink)),
+              Text(screenText(text), style: TextStyle(fontSize: Fs.hero - 3, fontWeight: FontWeight.w700, height: 1.35, color: ink)),
             ]),
           ),
         ]),
-        if (next != null) Text(next!, style: TextStyle(fontSize: Fs.body, height: 1.6, color: ink)),
+        if (next != null) Text(screenText(next!), style: TextStyle(fontSize: Fs.body, height: 1.6, color: ink)),
+        if (tech.isNotEmpty) TechFold(tech, key: const Key('hero-tech')),
         ...?extra,
         if (time != null || onRefresh != null)
           Row(children: [
@@ -267,7 +271,7 @@ class BatBanner extends StatelessWidget {
             Text(title, style: TextStyle(fontSize: Fs.body, fontWeight: FontWeight.w700, height: 1.4, color: ink)),
             if (text != null) ...[
               const SizedBox(height: 4),
-              Text(text!, style: TextStyle(fontSize: Fs.note, height: 1.55, color: ink)),
+              SayLine(text!, style: TextStyle(fontSize: Fs.note, height: 1.55, color: ink)), // #329 PR 6 D7
             ],
             if (action != null)
               TextButton(

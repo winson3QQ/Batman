@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 5 plan v16 §2.9: sending the new secrets to a node.
 // R17 sendNewKey is the only way the new pages send them (8.4, 8.5, the node page's 更多, the hint card); NetRun's
 // send after a join is the one other caller of sendUpdateFor (it already holds the session). R14 rekeyEnd sorts

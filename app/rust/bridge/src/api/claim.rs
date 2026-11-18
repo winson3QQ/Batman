@@ -16,8 +16,8 @@ pub struct ClaimQr {
 
 pub fn parse_claim_qr(text: String) -> Result<ClaimQr, String> {
     let raw = hex_decode(text.trim()).ok_or("QR 碼內容不是 16 進位文字")?;
-    let v = cbor::decode(&raw).map_err(|e| format!("QR 碼內容看不懂（{e}）"))?;
-    let Value::Map(m) = &v else { return Err("QR 碼格式不對（not a map）".into()) };
+    let v = cbor::decode(&raw).map_err(|e| format!("QR 碼內容看不懂\u{1E}{e}\u{1F}"))?;
+    let Value::Map(m) = &v else { return Err("QR 碼格式不對\u{1E}not a map\u{1F}".into()) };
     if m.len() != 2 {
         return Err("QR 碼格式不對（只能有欄位 1 和 2）".into());
     }
@@ -41,18 +41,18 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 
 /// CTRL characteristic {1:1, 2:0, 3: node frame size, 4: max message} -> the frame limit min(CTRL 3, MTU - 3).
 pub fn frame_limit(ctrl: Vec<u8>, mtu: u32) -> Result<u32, String> {
-    let v = cbor::decode(&ctrl).map_err(|e| format!("看不懂節點的連線參數（CTRL：{e}）"))?;
-    let n = v.get(3).and_then(Value::as_uint).ok_or("節點的連線參數不完整（CTRL key 3 missing）")?;
+    let v = cbor::decode(&ctrl).map_err(|e| format!("看不懂節點的連線參數\u{1E}CTRL：{e}\u{1F}"))?;
+    let n = v.get(3).and_then(Value::as_uint).ok_or("節點的連線參數不完整\u{1E}CTRL key 3 missing\u{1F}")?;
     let lim = n.min(mtu.saturating_sub(3) as u64);
     if lim < 20 {
-        return Err(format!("藍牙連線的封包太小，無法傳輸（{lim}：CTRL {n}，MTU {mtu}）"));
+        return Err(format!("藍牙連線的封包太小，無法傳輸\u{1E}{lim}：CTRL {n}，MTU {mtu}\u{1F}"));
     }
     Ok(lim as u32)
 }
 
 /// sig_enc's input ("batman-owner-enc-v1" ‖ owner_enc_pub); Kotlin signs it with the owner key.
 pub fn owner_enc_sign_input(owner_enc_pub: Vec<u8>) -> Result<Vec<u8>, String> {
-    let p: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?;
+    let p: [u8; 65] = owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對\u{1E}owner_enc_pub is not 65 bytes\u{1F}")?;
     Ok(sig::owner_enc_input(&p))
 }
 
@@ -122,9 +122,9 @@ pub fn claim_target(dir: String, device_id: String) -> Result<ClaimTarget, Strin
 /// first step (§5.2-1: on NX success the new pending, with the same K, replaces the old one); otherwise the user is
 /// asked first, and the old pending is copied aside before it is replaced (254-app-claim-noover R4).
 pub fn pending_matches_qr(record: Vec<u8>, qr: &ClaimQr) -> Result<bool, String> {
-    let v = cbor::decode(&record).map_err(|_| "手機裡的認領紀錄看不懂（pending is not CBOR）")?;
-    let id = v.get(1).and_then(Value::as_text).ok_or("手機裡的認領紀錄不完整（pending key 1）")?;
-    let k = v.get(2).and_then(Value::as_bytes).ok_or("手機裡的認領紀錄不完整（pending key 2）")?;
+    let v = cbor::decode(&record).map_err(|_| "手機裡的認領紀錄看不懂\u{1E}pending is not CBOR\u{1F}")?;
+    let id = v.get(1).and_then(Value::as_text).ok_or("手機裡的認領紀錄不完整\u{1E}pending key 1\u{1F}")?;
+    let k = v.get(2).and_then(Value::as_bytes).ok_or("手機裡的認領紀錄不完整\u{1E}pending key 2\u{1F}")?;
     Ok(id == qr.device_id && k == &qr.k[..])
 }
 
@@ -135,7 +135,7 @@ pub fn store_keep_copy(dir: String, rel: String) -> Result<bool, String> {
     let kind = match rel.split('/').next() {
         Some("node") => FORGOTTEN_NODE,
         Some("claim-pending") => FORGOTTEN_PENDING,
-        _ => return Err("App 內部錯誤（no copy kind for this record）".into()),
+        _ => return Err("App 內部錯誤\u{1E}no copy kind for this record\u{1F}".into()),
     };
     store::Store::new(dir).copy_aside(&rel, kind).map(|c| c.is_some()).map_err(|e| format!("{e:?}"))
 }
@@ -182,9 +182,14 @@ impl ClaimStep {
     fn new(kind: StepKind) -> ClaimStep {
         ClaimStep { kind, frames: vec![], path: String::new(), record: vec![], pending_path: String::new(), detail: String::new() }
     }
-    /// `text`: what happened, for the user; `code`: the design's case (+ detail) in parentheses, for support.
+    /// `text`: what happened, for the user; `code`: the design's case (+ detail), for support, as the technical part
+    /// (#329 PR 6 D7: U+001E … U+001F; a detail that is itself a sentence loses its own markers, never nested).
     fn ended(text: &str, code: &str, detail: String) -> ClaimStep {
-        let d = if detail.is_empty() { format!("{text}（{code}）") } else { format!("{text}（{code}：{detail}）") };
+        let d = if detail.is_empty() {
+            format!("{text}\u{1E}{code}\u{1F}")
+        } else {
+            format!("{text}\u{1E}{code}：{}\u{1F}", detail.replace(['\u{1E}', '\u{1F}'], ""))
+        };
         ClaimStep { detail: d, ..ClaimStep::new(StepKind::Ended) }
     }
 }
@@ -250,14 +255,14 @@ impl ClaimSession {
         let input = Input {
             device_id: qr.device_id.clone(),
             k: qr.k.clone().try_into().map_err(|_| "QR 碼裡的認領金鑰長度不對")?,
-            owner_pub: owner_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_pub is not 65 bytes）")?,
-            owner_enc_pub: owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對（owner_enc_pub is not 65 bytes）")?,
-            sig_enc: sig_enc.try_into().map_err(|_| "手機簽章格式不對（sig_enc is not 64 bytes）")?,
+            owner_pub: owner_pub.try_into().map_err(|_| "手機金鑰格式不對\u{1E}owner_pub is not 65 bytes\u{1F}")?,
+            owner_enc_pub: owner_enc_pub.try_into().map_err(|_| "手機金鑰格式不對\u{1E}owner_enc_pub is not 65 bytes\u{1F}")?,
+            sig_enc: sig_enc.try_into().map_err(|_| "手機簽章格式不對\u{1E}sig_enc is not 64 bytes\u{1F}")?,
             frame_limit: frame_limit as usize,
         };
         let (claim, a) = Claim::start(input);
         let mut s = ClaimSession { claim, pending: None, dev_soft_enc, writes_after_persist: 0, end: None };
-        let step = s.step(Some(a)).ok_or("App 內部錯誤（no first step）")?;
+        let step = s.step(Some(a)).ok_or("App 內部錯誤\u{1E}no first step\u{1F}")?;
         Ok((s, step))
     }
 
@@ -414,7 +419,7 @@ mod tests {
         let creds = || Creds { owner_tag_key: [5; 32], adv_owner_key: [6; 32], root_password: "pw".into() };
         let st = s.step(Some(Action::Done(End::Finished(ClaimFinish::Claimed(creds()))))).unwrap();
         assert!(st.kind == StepKind::Ended, "claimed without a pending: {}", st.detail);
-        assert_eq!(st.detail, "連線或資料出錯，這次的紀錄先保留（Broken：手機沒有這次認領的暫存紀錄）");
+        assert_eq!(st.detail, "連線或資料出錯，這次的紀錄先保留\u{1E}Broken：手機沒有這次認領的暫存紀錄\u{1F}");
         let p = Pending {
             device_id: q.device_id.clone(), k: [7; 32], node_cert: vec![9; 10], dac_der: vec![8; 5], ecdh_pub: [4; 65],
             owner_pub: [4; 65], owner_enc_pub: [4; 65],
@@ -435,11 +440,11 @@ mod tests {
         assert_eq!(v.get(7).and_then(Value::as_text), Some("pw"));
         let st = s.step(Some(Action::Done(End::Finished(ClaimFinish::TryReplay)))).unwrap();
         assert!(st.kind == StepKind::Ended, "{}", st.detail);
-        assert_eq!(st.detail, "QR 不符，或認領仍在收尾 — 請確認 QR 後稍後再試（TryReplay）", "254-app-replay §4: neutral, never \"someone else\"");
+        assert_eq!(st.detail, "QR 不符，或認領仍在收尾 — 請確認 QR 後稍後再試\u{1E}TryReplay\u{1F}", "254-app-replay §4: neutral, never \"someone else\"");
         let st = s.step(Some(Action::Done(End::Msg2Undecryptable))).unwrap();
-        assert_eq!(st.detail, "連到的不是這台節點，或 QR 碼不對（Msg2Undecryptable）");
+        assert_eq!(st.detail, "連到的不是這台節點，或 QR 碼不對\u{1E}Msg2Undecryptable\u{1F}");
         let st = s.step(Some(Action::Done(End::Broken("lost".into())))).unwrap();
-        assert_eq!(st.detail, "連線或資料出錯，這次的紀錄先保留（Broken：lost）");
+        assert_eq!(st.detail, "連線或資料出錯，這次的紀錄先保留\u{1E}Broken：lost\u{1F}");
     }
 
     // 254-app-replay R1 / D16: replay_due over the whole table — the claim/finish frames handed over or not, times every
@@ -500,7 +505,7 @@ mod tests {
         let (mut s, _) = ClaimSession::start(&q, vec![4; 65], vec![4; 65], vec![1; 64], 244, false).unwrap();
         let o = batman_proto::envelope::Outcome::Err { code: 7, detail: Value::Map(vec![]) };
         let st = s.step(Some(Action::Done(End::Finished(batman_proto::flow::claim_finish(&o))))).unwrap();
-        assert_eq!(st.detail, "節點忙碌或結果不明，請再按一次「認領」（這次的紀錄先保留）（Unknown）");
+        assert_eq!(st.detail, "節點忙碌或結果不明，請再按一次「認領」（這次的紀錄先保留）\u{1E}Unknown\u{1F}");
     }
 
     // R1 through a fake node (N3 / N5): inside provd's cache window NX opens and claim/finish answers 9 -> due, and

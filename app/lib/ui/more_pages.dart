@@ -1,3 +1,5 @@
+// (review pr6 A-9) "nodes.dart" / "nodes.dart:<line>" below = the old console, deleted by #329 PR 6: see
+// `git show c4905ed:app/lib/nodes.dart` (main before PR 6).
 // #329 PR 4 §2.6 / §2.7 (design §5.5 board 5.7, board 10.3): 「更多」 of a node — nickname, country, leave the network,
 // technical data, remove from this phone — and the leave page. The leave is 254-app-leave v4.1 as the old console does
 // it (leaveFlow / sendLeave, unchanged); only who answers its four questions changes: one OpSession.once holds the
@@ -7,7 +9,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../member_ui.dart' show LeaveResult, StatusFields, leaveFlow, leaveNotAsked, memberEntryOf;
-import '../say.dart' show screenText;
+import '../say.dart' show SayLine, stripMarkers, upperLast4;
 import '../src/flows/op_session.dart';
 import '../src/flows/owner_console.dart';
 import '../src/nodelink/app_link.dart';
@@ -275,7 +277,7 @@ class _LeavePageState extends State<LeavePage> {
       _running = false;
       _done = true;
       if (op.end == OpEnd.done && r != null) {
-        _line = screenText(r.line ?? leaveNotAsked);
+        _line = stripMarkers(r.line ?? leaveNotAsked);
         _after = r.fields;
         _stale = r.stale;
       } else {
@@ -293,11 +295,11 @@ class _LeavePageState extends State<LeavePage> {
       canPop: !_running,
       child: BatPage(title: Btn.leaveNetwork, body: [
         if (d != null && !_done) ...[
-          Text(d[0], style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
-          Text(d[1], style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+          Text(upperLast4(d[0]), style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
+          Text(upperLast4(d[1]), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
         ],
         if (_running) Text('正在離開網路…（最多約 6 分鐘，請不要關掉這個畫面）', style: TextStyle(fontSize: Fs.body, color: t.sub)),
-        if (_line.isNotEmpty) Text(_line, key: const Key('leave-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
+        if (_line.isNotEmpty) SayLine(_line, key: const Key('leave-line'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
         if (f != null) ...[
           // leave v4.1 §2: the unfinished-change line right under the verdict when key 10 is absent, else after the ⚠️ line
           Text(f.sentence, key: const Key('leave-after'), style: TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink)),
