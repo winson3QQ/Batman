@@ -178,12 +178,7 @@ String hhmmss(DateTime t) => '${hhmm(t)}:${t.second.toString().padLeft(2, '0')}'
     final look = switch (n.state.view) { 'green' => Look.ok, 'yellow' => Look.warn, 'red' => Look.bad, _ => Look.unk };
     return (look, v.sentence, meta);
   }
-  if (n.state.kind == Kind.read && when != null) {
-    final was = n.notInNetwork
-        ? '，當時還沒加入隊伍網路' // the same words as the fresh row, not 「有問題」 (review r2 D-m6)
-        : switch (n.state.view) { 'green' => '，當時正常', 'yellow' => '，當時要注意', 'red' => '，當時有問題', _ => '' };
-    return (Look.unk, '上次讀取 ${hhmm(when)}$was', tail);
-  }
+  if (n.state.kind == Kind.read && when != null) return (Look.unk, '上次讀取 ${hhmm(when)}${wasTail(n)}', tail);
   if (n.state.responded) return (Look.unk, '有回應，還沒拿到狀態', meta);
   if (n.state.last == Concl.notYet && !firstRounds) return (Look.unk, '附近有還沒認出來的裝置，還在找', meta);
   if (before != null && !firstRounds) return (Look.unk, before, tail);
@@ -200,3 +195,53 @@ String whyNext(Why w) => switch (w) {
       Why.noPermission => '請回首頁按「允許藍牙權限」。',
       Why.keys => '這支手機的金鑰現在不能用。請重新開啟 app；一直如此請找維修人員。',
     };
+
+/// What an older read of [n] said (a read of this run that is no longer fresh): one of the four tails, '' for any other.
+String wasTail(NodeInfo n) {
+  if (n.state.kind != Kind.read) return '';
+  return n.notInNetwork
+      ? '，當時還沒加入隊伍網路' // the same words as the fresh row, not 「有問題」 (review r2 D-m6)
+      : switch (n.state.view) { 'green' => '，當時正常', 'yellow' => '，當時要注意', 'red' => '，當時有問題', _ => '' };
+}
+
+/// A node's last read for the status area: this run's (`readWall`, with [wasTail]) or, without one, an earlier run's
+/// (UiState `prev`, with its own kind's tail; §4.6); `prev` = from an earlier run (only those can be 「之前讀過」).
+(DateTime, String, bool)? _lastRead(NodeInfo n) {
+  final w = n.readWall;
+  if (w != null) return (w, wasTail(n), false);
+  final p = n.prev;
+  if (p == null || p.readAt == null) return null;
+  final was = switch (p.look) { 'ok' => '，當時正常', 'warn' => '，當時要注意', 'bad' => '，當時有問題', _ => '' };
+  return (DateTime.fromMillisecondsSinceEpoch(p.readAt! * 1000), was, true);
+}
+
+/// #329 PR 6 D9: the status area's time. A row about one node ([about]): fresh -> 「讀取於 HH:MM:SS」, older ->
+/// 「上次讀取 HH:MM」 + what it said then (the four tails; none for an identity mismatch or a refused login: that row is
+/// not about what the node said). Any other row: the newest fresh read -> 「讀取於」, none fresh -> the newest read ->
+/// 「上次讀取 HH:MM」 (no tail: it is not about one node). An earlier run's time after [now] -> 「之前讀過」 (as the node
+/// row, home_logic.dart nodeRowWords; plan §11: only for those). Never read -> null (nothing shown).
+String? heroTime(List<NodeInfo> ns, {String? about, required DateTime now}) {
+  String older((DateTime, String, bool) l, {required bool tail}) =>
+      l.$3 && l.$1.isAfter(now) ? '之前讀過' : '上次讀取 ${hhmm(l.$1)}${tail ? l.$2 : ''}';
+  if (about != null) {
+    final n = ns.where((x) => x.id == about).firstOrNull;
+    if (n == null) return null;
+    final w = n.readWall;
+    if (n.fresh && w != null) return '讀取於 ${hhmmss(w)}';
+    final l = _lastRead(n);
+    if (l == null) return null;
+    return older(l, tail: n.shownWhy != Why.identity && n.shownWhy != Why.refused);
+  }
+  DateTime? f;
+  for (final n in ns) {
+    final w = n.readWall;
+    if (n.fresh && w != null && (f == null || w.isAfter(f))) f = w;
+  }
+  if (f != null) return '讀取於 ${hhmmss(f)}';
+  (DateTime, String, bool)? o;
+  for (final n in ns) {
+    final l = _lastRead(n);
+    if (l != null && (o == null || l.$1.isAfter(o.$1))) o = l;
+  }
+  return o == null ? null : older(o, tail: false);
+}

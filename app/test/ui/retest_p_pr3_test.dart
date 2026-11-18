@@ -32,7 +32,7 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../flows/net_run_test.dart' show World, ans, pend;
-import '../nodes_update_send_test.dart' show step;
+import '../support/fake_node.dart' show step;
 import 'net_pages_test.dart' as npt show deps;
 import 'pages_test.dart' show FakeRust, app, host, id;
 import 'ui_state_test.dart' show MemStore;

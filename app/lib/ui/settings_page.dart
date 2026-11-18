@@ -1,12 +1,15 @@
-// #329 design §5.8 / §12 PR 2: settings and about; the older console, the old claim page and the BLE test page
-// move into 開發者選項 (devTrust builds only), each under a raw lease.
+// #329 design §5.8 / §12 PR 2: settings and about; the old claim page and the BLE test page move into 開發者選項
+// (devTrust builds only), each under a raw lease. PR 6: the old console is gone; its last uses are the dev pages
+// (dev_pages.dart); 診斷 (10.5) is in every build.
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../claim.dart';
-import '../nodes.dart';
+import '../key_abilities.dart';
 import '../scan.dart';
 import '../src/nodelink/app_link.dart';
+import 'dev_pages.dart';
+import 'diag_page.dart';
 import 'home_page.dart' show openUnderLease;
 import 'team_hub.dart';
 import 'theme.dart';
@@ -16,11 +19,18 @@ import 'widgets.dart';
 const _platform = MethodChannel('dev.batman/platform');
 
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key, required this.app, required this.ui, required this.devTrust, this.notes = const []});
+  const SettingsPage(
+      {super.key, required this.app, required this.ui, required this.devTrust, this.notes = const [], this.keys});
   final AppLink app;
   final UiState ui;
   final bool devTrust;
   final List<String> notes;
+
+  /// #329 PR 6 (F11): HomePage's startup key check; null = not known (the owner-key entries are grey then).
+  final KeyAbilities? keys;
+
+  /// Why an entry that uses the owner key cannot be used now (null = it can).
+  String? get _ownerNo => keys == null ? '沒有啟動時的金鑰檢查結果' : keys!.refusal(KeyUse.login);
 
   @override
   Widget build(BuildContext context) {
@@ -60,14 +70,36 @@ class SettingsPage extends StatelessWidget {
               sub: '邀請隊員、加入隊長的網路、移除隊員與換密碼',
               onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => TeamHubPage(app: app, ui: ui)))),
         ]),
+      // #329 PR 6 D6 (design §5.8 10.5): every build
+      BatCard(children: [
+        BatRow(
+            key: const Key('settings-diag'),
+            icon: Icons.monitor_heart_outlined,
+            title: '診斷',
+            sub: 'app 版本、金鑰、每台節點的技術資訊',
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => DiagPage(app: app, keys: keys)))),
+      ]),
       if (devTrust) ...[
         const BatLabel(Btn.devOptions),
         BatCard(children: [
+          // #329 PR 6 D2 / D3 / D4a: the entries that use the owner key are grey with the keys' reason (§5.1 :703)
+          for (final (k, icon, title, page) in [
+            ('dev-ssh', Icons.vpn_key_outlined, 'SSH 金鑰', () => SshKeysPage(app: app, ui: ui)),
+            ('dev-settings', Icons.tune, '查看節點設定', () => NodeSettingsPage(app: app, ui: ui)),
+            ('dev-orphans', Icons.link_off, '忘記加入中的節點', () => OrphanJoinsPage(app: app, ui: ui)),
+          ])
+            BatRow(
+                key: Key(k),
+                icon: icon,
+                title: title,
+                sub: _ownerNo,
+                enabled: _ownerNo == null,
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => page()))),
           BatRow(
-              icon: Icons.terminal,
-              title: '舊版控制台',
-              sub: '建網、加入、邀請、更新等（新畫面完成前）',
-              onTap: () => openUnderLease(context, app, '舊版控制台', (u) => NodesPage(ble: app.ble, use: u))),
+              key: const Key('dev-log'),
+              icon: Icons.notes,
+              title: '文字紀錄',
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => LogPage(app: app)))),
           BatRow(
               icon: Icons.qr_code,
               title: '新增節點（舊版頁面）',

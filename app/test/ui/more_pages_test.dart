@@ -21,7 +21,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../flows/op_session_test.dart' show Fx;
 import '../flows/owner_console_pr4_test.dart' show FakeSwLink, P4Session;
-import '../nodes_update_send_test.dart' as nus show FakeRust;
+import '../support/fake_node.dart' as nus show FakeRust;
 import 'pages_test.dart' show app, host, id;
 import 'ui_state_test.dart' show MemStore;
 

@@ -9,6 +9,7 @@ import 'api/owner.dart';
 import 'api/rekey.dart';
 import 'api/replay.dart';
 import 'api/simple.dart';
+import 'api/ssh.dart';
 import 'api/swupdate.dart';
 
 import 'dart:async';

@@ -396,3 +396,17 @@ fn t_a6c_version_n_writes_no_mesh_address() {
     let Some(V::Array(list)) = p.get(4) else { panic!("no members") };
     assert!(list.iter().all(|m| m.get(7).is_none()), "version N wrote key 7: {list:?}");
 }
+
+/// #329 PR 6 D11 / T6-9: a network this app makes always carries country US in its signed netcfg (key 5), whatever the
+/// channel: the only country a join (the leader's join2 or a member's) later asks a node for.
+#[test]
+fn d11_every_network_this_app_makes_is_us() {
+    let v = vectors();
+    for ch in [40, 42] {
+        let (c, mut n) = pair(&v);
+        let (j, a) = Join::start(c, input(&v, ch));
+        let (_, rec) = drive(&mut n, j, a);
+        assert_eq!(n.netcfg.unwrap().get(5).and_then(|x| x.as_text()), Some("US"), "channel {ch}");
+        assert!(rec.is_some(), "the record was made");
+    }
+}

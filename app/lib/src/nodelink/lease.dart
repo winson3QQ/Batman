@@ -78,14 +78,14 @@ class Lease {
       return;
     }
     _deadline = reg.after(kind == LeaseKind.raw ? LeaseRegistry.rawGoneMax : LeaseRegistry.goneMax, () {
-      if (!_ended) reg._revoke(this);
+      if (!_ended) reg._revoke(this, cap: kind == LeaseKind.raw ? '900 s' : '420 s');
     });
   }
 
   /// #329 PR 5 R12: OfflineOp's 60 s cap takes the lease back the way the 420 s cap does: RecordWriter refuses this
   /// lease from now on and the home page shows a todo; [todo] is that todo's sentence (an offline operation touches
   /// no node). Only OfflineOp calls this (a source check in offline_op_test holds it).
-  void revoke({String? todo}) => reg._revoke(this, todo: todo);
+  void revoke({String? todo}) => reg._revoke(this, todo: todo, cap: '60 s');
 
   Future<void> release() async {
     if (_ended) return;
@@ -110,6 +110,9 @@ class LeaseRegistry {
   late Token _current = Token._(_ids++, 'NodeLink');
   Lease? _lease;
   final List<LeaseListener> listeners = [];
+
+  /// #329 PR 6 D4: where a lease taken back is written (the app: NodeLink.note, the text log). Set once by AppLink.
+  void Function(String line)? log;
 
   /// Todo items for the home page (§5.1): 「上一個操作可能沒有存完：<名稱>」. Memory only; the page clears them.
   final List<String> unsavedTodos = [];
@@ -145,11 +148,12 @@ class LeaseRegistry {
     }
   }
 
-  void _revoke(Lease l, {String? todo}) {
+  void _revoke(Lease l, {String? todo, required String cap}) {
     if (!identical(_lease, l)) return;
     l._ended = true;
     final t = l.token;
     final title = '上一個操作可能沒有存完：${l.name}';
+    log?.call('lease taken back after $cap: ${l.name}'); // #329 PR 6 D4: the text log keeps it (design :342)
     unsavedTodos.add(title);
     if (todo != null) unsavedText[title] = todo;
     for (final x in listeners) {

@@ -18,18 +18,38 @@ class NoLease implements Exception {
   String toString() => 'RecordWriter: $what refused (no valid lease)';
 }
 
+/// #329 PR 6 D4: a record's name for the log, its id cut to the last four (`node/…4f2a`).
+String shortRel(String rel) {
+  final i = rel.indexOf('/');
+  if (i < 0) return rel;
+  final id = rel.substring(i + 1);
+  return '${rel.substring(0, i)}/${id.length > 4 ? '…${id.substring(id.length - 4)}' : id}';
+}
+
 class RecordWriter {
   RecordWriter(this.reg, this.store, {this.log});
   final LeaseRegistry reg;
   final RecordStore store;
+
+  /// #329 PR 6 D4: a refused or failed write, one line (the kind, the operation, the record's last four); the app
+  /// passes NodeLink.note (the text log, design :342).
   final void Function(String line)? log;
 
-  Lease _check(Lease? l, String what) {
+  Lease _check(Lease? l, String op, String rel) {
     if (l == null || !l.valid || !identical(reg.current, l)) {
-      log?.call('RecordWriter refused $what');
-      throw NoLease(what);
+      log?.call('RecordWriter refused $op ${shortRel(rel)}');
+      throw NoLease('$op $rel');
     }
     return l;
+  }
+
+  Future<T> _store<T>(String op, String rel, Future<T> Function() f) async {
+    try {
+      return await f();
+    } catch (e) {
+      log?.call('RecordWriter $op ${shortRel(rel)} failed: ${e.runtimeType}');
+      rethrow;
+    }
   }
 
   void _note(Lease l, String rel) {
@@ -37,26 +57,26 @@ class RecordWriter {
   }
 
   Future<BigInt> writeCas(Lease? l, String rel, BigInt expectedGen, List<int> sealed) async {
-    final lease = _check(l, 'writeCas $rel');
-    final g = await store.writeCas(rel, expectedGen, sealed);
+    final lease = _check(l, 'writeCas', rel);
+    final g = await _store('writeCas', rel, () => store.writeCas(rel, expectedGen, sealed));
     _note(lease, rel);
     return g;
   }
 
   Future<void> writeSealed(Lease? l, String rel, BigInt generation, List<int> sealed) async {
-    final lease = _check(l, 'writeSealed $rel');
-    await store.writeSealed(rel, generation, sealed);
+    final lease = _check(l, 'writeSealed', rel);
+    await _store('writeSealed', rel, () => store.writeSealed(rel, generation, sealed));
     _note(lease, rel);
   }
 
   Future<void> remove(Lease? l, String rel) async {
-    final lease = _check(l, 'remove $rel');
-    await store.remove(rel);
+    final lease = _check(l, 'remove', rel);
+    await _store('remove', rel, () => store.remove(rel));
     _note(lease, rel);
   }
 
   Future<bool> keepCopy(Lease? l, String rel) async {
-    _check(l, 'keepCopy $rel');
-    return store.keepCopy(rel);
+    _check(l, 'keepCopy', rel);
+    return _store('keepCopy', rel, () => store.keepCopy(rel));
   }
 }

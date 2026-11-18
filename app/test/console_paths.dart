@@ -1,6 +1,6 @@
-// #329 PR 3 §2.3 (防漂移): the console paths pinned in step 1, as one table. The old console (nodes_update_send_test,
-// a page test) and OwnerConsole (flows/owner_console_test) both run every row and must send the same requests in the
-// same order and end with the same line; a copy that drifts from the old console fails here.
+// #329 PR 3 §2.3 (防漂移): the console paths pinned in step 1, as one table. Until #329 PR 6 the old console
+// (nodes_update_send_test, a page test) ran every row too; with it deleted (plan §3 I2: the drift guard is struck)
+// OwnerConsole (flows/owner_console_test) still runs every row and must send these requests and end with these lines.
 
 class ConsolePath {
   const ConsolePath(this.name, {required this.action, this.joinMode = 'plain', this.poll = false, this.answer, required this.sends, required this.ends});

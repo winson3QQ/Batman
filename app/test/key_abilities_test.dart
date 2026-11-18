@@ -5,7 +5,8 @@
 // - admin not hardware -> no network;
 // - owner_enc not allowed (field: SOFTWARE) -> no claim / recovery; dev + SOFTWARE owner_enc -> allowed, with the notice;
 // - no answer, a missing entry, an entry that is not a bool, a platform error -> nothing allowed (fail closed).
-// The gate inside a claim is in claim_target_test; here: the decision, the start page, and the login of 「我的節點」.
+// The gate inside a claim is in claim_target_test; here: the decision and the start page. (The old console's login gate
+// 「我的節點: login not allowed」 went with it in #329 PR 6; NodeLink's live key check before a login is login_for_test.)
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -19,7 +20,6 @@ import 'package:batman_app/src/rust/api/claim.dart' show SealParams;
 import 'package:batman_app/src/rust/api/owner.dart' show SealedRecord;
 import 'package:batman_app/ui/cbor_mini.dart';
 import 'package:batman_app/claim.dart';
-import 'package:batman_app/nodes.dart';
 import 'package:batman_app/scan.dart';
 import 'package:batman_app/ui/home_page.dart';
 import 'package:batman_app/src/nodelink/app_link.dart';
@@ -100,12 +100,6 @@ class FakeRust implements RustLibApi {
   @override
   Future<List<String>> crateApiOwnerListPending({required String dir}) async => ['00000000000000beef'];
 
-  @override
-  dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
-}
-
-/// never reached: the login is refused before BLE
-class NoBle implements FlutterReactiveBle {
   @override
   dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
 }
@@ -335,7 +329,6 @@ void main() {
     // PR 2: 新增節點 is on the home page; the older console and the BLE test page are in 設定 -> 開發者選項
     for (final (button, lease, Type type, viaSettings) in [
       ('新增節點', '新增節點', ClaimPage, false),
-      ('舊版控制台', '舊版控制台', NodesPage, true),
       ('附近的節點（藍牙測試）', '附近的節點', ScanPage, true),
     ]) {
       testWidgets('r3 E-M1 / r4 G-M1: $button opens its page under a raw lease handed to the page; back releases it',
@@ -356,13 +349,14 @@ void main() {
           await t.tap(find.byTooltip('設定'));
           await t.pumpAndSettle();
         }
+        await t.ensureVisible(find.text(button).last); // #329 PR 6: the settings page is longer now
+        await t.pumpAndSettle();
         await t.tap(find.text(button).last);
         await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
         await t.pumpAndSettle();
         expect(find.byType(type), findsOneWidget);
         expect(a.reg.current?.name, lease);
         final use = switch (t.widget(find.byType(type))) {
-          final NodesPage p => p.use,
           final ClaimPage p => p.use,
           final ScanPage p => p.use,
           _ => null,
@@ -484,13 +478,40 @@ void main() {
         AppLink.forgetForTest();
       });
     }
-    testWidgets('every key fits: the three entries are there and on', (t) async {
+    testWidgets('every key fits: the entries are there and on; no 我的節點 (#329 PR 6 D1)', (t) async {
       await start(t, answer());
       expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
-      expect(find.text('我的節點'), findsOneWidget);
+      expect(find.text('我的節點'), findsNothing);
       expect(find.text('認領節點'), findsOneWidget);
-      expect(live(t).length, 3);
+      expect(live(t).length, 2, reason: '#329 PR 6 D1: 認領節點 and (dev) 附近的節點');
     });
+
+    // #329 PR 6 D1 / T6-2: the older start page is only what is left when the check passed and NodeLink did not start:
+    // the reason, 「請完全關閉 app 再開…」, the exception only in the technical detail; no 「我的節點」 (the old console is
+    // gone), no 「再試一次」 (F15: a second start on the same AppLink), 附近的節點 only in a dev build. Negative controls:
+    // the 我的節點 button put back, or 附近的節點 without its devTrust gate -> FAIL.
+    for (final dev in [true, false]) {
+      testWidgets('T6-2: NodeLink does not start (${dev ? 'dev' : 'field'}) -> reason + restart line, no 我的節點 / retry',
+          (t) async {
+        rust.dev = dev;
+        addTearDown(() => rust.dev = true);
+        mock(t, answer());
+        AppLink.forgetForTest();
+        await t.pumpWidget(BatmanApp(makeLink: (dir) => throw StateError('no radio')));
+        await t.pumpAndSettle();
+        expect(find.byType(HomePage), findsNothing);
+        expect(find.textContaining('節點自動讀取沒有啟動'), findsOneWidget);
+        expect(find.text(restartLine), findsOneWidget);
+        expect(find.textContaining('no radio'), findsNothing, reason: 'the exception is technical detail (folded)');
+        expect(find.text('我的節點'), findsNothing);
+        expect(find.text('再試一次'), findsNothing);
+        expect(find.text('認領節點'), findsOneWidget);
+        expect(find.text('附近的節點（開發用：藍牙測試）'), dev ? findsOneWidget : findsNothing);
+        await t.tap(find.text('技術資訊（給維修人員看）'));
+        await t.pumpAndSettle();
+        expect(find.textContaining('NodeLink start: Bad state: no radio'), findsOneWidget);
+      });
+    }
 
     // design §8 test row: an emulator (all SOFTWARE) -> the app is off
     testWidgets('record AES not hardware: said so, and no button leads anywhere', (t) async {
@@ -610,7 +631,7 @@ void main() {
         expect(calls, contains('keyLevels'));
         expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
         expect(find.text('再試一次'), findsNothing);
-        expect(live(t).length, 3);
+        expect(live(t).length, 2, reason: '#329 PR 6 D1: 認領節點 and (dev) 附近的節點');
       });
     }
 
@@ -636,35 +657,23 @@ void main() {
         await t.tap(find.text('再試一次'));
         await t.pumpAndSettle();
         expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
-        expect(live(t).length, 3);
+        expect(live(t).length, 2, reason: '#329 PR 6 D1: 認領節點 and (dev) 附近的節點');
       });
     }
 
-    testWidgets('claim not allowed: 「認領節點」 is off with its reason; 「我的節點」 stays', (t) async {
+    testWidgets('claim not allowed: 「認領節點」 is off with its reason; the restart line stays', (t) async {
       await start(t, answer(claim: false, recover: false));
       expect(find.textContaining('復原／隊員金鑰不是硬體保護，不能認領節點'), findsOneWidget);
       expect(t.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '認領節點')).onPressed, isNull);
-      expect(t.widget<FilledButton>(find.widgetWithText(FilledButton, '我的節點')).onPressed, isNotNull);
+      expect(find.text(restartLine), findsOneWidget);
     });
 
     testWidgets('dev build with a SOFTWARE owner_enc (S20): usable, with the notice', (t) async {
       await start(t, answer(soft: true));
       expect(find.textContaining('啟動檢查：正常'), findsOneWidget);
       expect(find.textContaining('只有軟體保護，只適合開發使用'), findsOneWidget);
-      expect(live(t).length, 3);
+      expect(live(t).length, 2, reason: '#329 PR 6 D1: 認領節點 and (dev) 附近的節點');
     });
-  });
-
-  // the records stay readable when the owner key does not fit (§4.1 單一金鑰遺失), so the page opens: the login itself refuses
-  testWidgets('我的節點: login not allowed -> refused before the record or BLE is touched', (t) async {
-    mock(t, answer(claim: false, login: false, recover: false, makeNetwork: false));
-    await t.pumpWidget(MaterialApp(home: NodesPage(ble: NoBle())));
-    await t.pumpAndSettle();
-    await t.tap(find.text('節點 …4f2a'));
-    await t.pumpAndSettle();
-    expect(find.textContaining('擁有者金鑰不是硬體保護，不能認領或登入節點'), findsOneWidget);
-    expect(calls, isNot(contains('blePermissions')));
-    expect(calls, isNot(contains('open')));
   });
 }
 

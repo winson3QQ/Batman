@@ -241,7 +241,9 @@ class World {
           ecdh: (peer) async {
             final z = Uint8List.fromList(List.filled(32, 7));
             ecdh.add(z);
-            return z;
+            // #329 PR 6 (nodes_zero_test ported): read-only, as the S20 delivers a platform reply (ReadBuffer views,
+            // flutter foundation/serialization.dart:228-231); a page that zeroes this list instead of its own copy throws
+            return z.asUnmodifiableView();
           },
           readRecord: (rel) async {
             await readGate?.future; // holds every record read while not completed

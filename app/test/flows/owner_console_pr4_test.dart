@@ -12,11 +12,11 @@ import 'package:batman_app/src/rust/api/swupdate.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../nodes_update_send_test.dart' show FakeRust;
+import '../support/fake_node.dart' show FakeRust;
 import 'owner_console_test.dart' show Rig, Session;
 
 // frames: the request's write is n, the node's answer n + 1 (EchoRadio)
-const fGet = 70, fSet = 72, fSetNonce = 74, fLeave = 76, fPage = 78, fSw = 80;
+const fGet = 70, fSet = 72, fSetNonce = 74, fLeave = 76, fPage = 78, fSw = 80, fSsh = 82;
 
 const view = SettingsView(read: true, name: 'BCM2711-6c89', country: 'US', channel: 42, bwMhz: 2, apSsid: 'node-ap');
 
@@ -72,6 +72,7 @@ class P4Session extends Session {
   bool cutNext = false; // Rust's after_left: the next status view is cut once
   String leaveMode = 'left'; // left / refused (a non-zero reply, read as NotLeft)
   bool pageSilent = false; // the status page read is never answered
+  SettingsView now = view; // #329 PR 6 T6-9: what settings/get answers (a node set to TW)
 
   @override
   OwnerStep requestSettings() {
@@ -89,6 +90,14 @@ class P4Session extends Session {
   OwnerStep requestSetCountry({required String country}) {
     asked.add('settings/set country $country');
     return st(OwnerKind.write, frame: fSet, sent: true);
+  }
+
+  @override
+  // #329 PR 6 D2: ssh_keys/set (the lines as sent)
+  @override
+  OwnerStep requestSshKeys({required List<String> lines}) {
+    asked.add('ssh_keys/set ${lines.length}: ${lines.join("|")}');
+    return st(OwnerKind.write, frame: fSsh, sent: true);
   }
 
   @override
@@ -113,7 +122,7 @@ class P4Session extends Session {
 
   @override
   OwnerStep? onFrame({required List<int> frame}) => switch (frame[0]) {
-        const (fGet + 1) => st(OwnerKind.answer, detail: '目前設定：名稱 BCM2711-6c89', settings: view),
+        const (fGet + 1) => st(OwnerKind.answer, detail: '目前設定：名稱 BCM2711-6c89', settings: now),
         const (fSet + 1) => switch (setAnswer) {
             'ok' => st(OwnerKind.answer, detail: '設定已更新：名稱 BCM2711-6c89', settings: view),
             'ended' => st(OwnerKind.ended, detail: '連線出錯\u001ex\u001f'),
@@ -127,6 +136,7 @@ class P4Session extends Session {
             : st(OwnerKind.answer, detail: '[REQ_FAIL] 沒有離開網路（節點仍在隊伍網路裡）— 請再按一次\u001e代碼 11\u001f'),
         const (fPage + 1) => pageSilent ? null : st(OwnerKind.answer, detail: '[STATUS] 狀態已更新'),
         const (fSw + 1) => st(OwnerKind.answer, sw: true),
+        const (fSsh + 1) => st(OwnerKind.answer, detail: '[SSH_DONE] SSH 金鑰已設定'),
         _ => super.onFrame(frame: frame),
       };
 }
@@ -199,9 +209,26 @@ void main() {
     test('set: an error answer has no settings (never 「已更新」)', () async {
       final r = rig();
       ses(r).setAnswer = 'error';
-      final a = await r.run(() => r.c.setCountry('TW'));
+      final a = await r.run(() => r.c.setCountry('US'));
       expect((a.kind, a.settings), (ReplyKind.answer, null));
       expect(a.text, startsWith('[REQ_FAIL]'));
+      await r.c.close();
+    });
+
+    // #329 PR 6 D11 / T6-9: only a country of allowedCountries ({'US'}) goes out; any other is refused before
+    // anything is written (fail-closed). Negative control: the allowedCountries check removed -> FAIL.
+    test('T6-9: setCountry outside {US} -> notSent, nothing asked of the node; US goes out', () async {
+      expect(allowedCountries, {'US'});
+      for (final cc in ['TW', 'JP', '', 'us']) {
+        final r = rig();
+        final a = await r.run(() => r.c.setCountry(cc));
+        expect((a.kind, a.text), (ReplyKind.notSent, countryRefusedLine), reason: cc);
+        expect(ses(r).asked, isEmpty, reason: '$cc: nothing sent');
+        await r.c.close();
+      }
+      final r = rig();
+      await r.run(() => r.c.setCountry('US'));
+      expect(ses(r).asked, ['settings/set country US']);
       await r.c.close();
     });
 
@@ -233,7 +260,7 @@ void main() {
       final r = rig();
       r.radio.silent = true;
       var done = false;
-      final f = r.c.setCountry('TW').then((x) {
+      final f = r.c.setCountry('US').then((x) {
         done = true;
         return x;
       });

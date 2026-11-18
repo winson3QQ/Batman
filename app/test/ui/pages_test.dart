@@ -14,7 +14,7 @@ import 'package:batman_app/ui/intro_pages.dart';
 import 'package:batman_app/ui/node_page.dart';
 import 'package:batman_app/ui/settings_page.dart';
 import 'package:batman_app/ui/theme.dart';
-import 'package:batman_app/ui/widgets.dart' show Btn, StatusHero;
+import 'package:batman_app/ui/widgets.dart' show BatRow, Btn, StatusHero;
 import 'package:batman_app/ui/ui_state.dart';
 import 'package:flutter/material.dart' hide Page;
 import 'package:flutter/services.dart';
@@ -267,13 +267,55 @@ void main() {
     AppLink.forgetForTest();
   });
 
-  testWidgets('r2 D-m4: 開發者選項 only in a dev build', (t) async {
+  // r2 D-m4 + #329 PR 6 T6-1: 開發者選項 only in a dev build, and never 「舊版控制台」 (the old console is deleted; no
+  // class NodesPage left in lib/). Negative control: the 舊版控制台 row put back -> FAIL.
+  testWidgets('r2 D-m4 / T6-1: 開發者選項 only in a dev build; no 舊版控制台 in any build', (t) async {
     for (final dev in [false, true]) {
-      await t.pumpWidget(host(SettingsPage(app: app(), ui: UiState(MemStore()), devTrust: dev)));
+      await t.pumpWidget(host(SettingsPage(app: app(), ui: UiState(MemStore()), devTrust: dev, keys: keys())));
       await t.pump();
       expect(find.text('開發者選項'), dev ? findsOneWidget : findsNothing);
-      expect(find.text('舊版控制台'), dev ? findsOneWidget : findsNothing);
+      expect(find.text('舊版控制台'), findsNothing);
+      for (final e in ['SSH 金鑰', '查看節點設定', '文字紀錄', '忘記加入中的節點']) {
+        expect(find.text(e), dev ? findsOneWidget : findsNothing, reason: e);
+      }
+      expect(find.text('診斷'), findsOneWidget, reason: 'D6: every build');
     }
+    await t.pumpWidget(const SizedBox());
+    AppLink.forgetForTest();
+  });
+
+  test('T6-1: no class NodesPage (nor its widgets) anywhere in lib/', () {
+    final files = Directory('lib').listSync(recursive: true).whereType<File>().where((f) => f.path.endsWith('.dart')).toList();
+    expect(files.length, greaterThan(20), reason: 'the scan found the sources (nothing to check is not a pass)');
+    final hits = [
+      for (final f in files)
+        for (final w in ['class NodesPage', 'class StatusPageView', 'class ControlsAndLog', 'class ReadClock', 'class NodeStatusList'])
+          if (f.readAsStringSync().contains(w)) '${f.path}: $w'
+    ];
+    expect(hits, isEmpty);
+    expect(File('lib/nodes.dart').existsSync(), isFalse);
+  });
+
+  // #329 PR 6 D4a (§5.1 :703): the developer options that use the owner key are grey with the keys' own reason when
+  // the startup check says the phone cannot log in; the others stay. Negative control: `enabled` dropped -> FAIL.
+  testWidgets('D4a: owner-key dev entries grey with the reason when the keys cannot log in', (t) async {
+    final no = KeyAbilities.from({
+      'RECORD_AES': 1, 'OWNER_SIGN': 0, 'ADMIN_SIGN': 1, 'OWNER_ENC': 1, 'appUsable': true, 'claim': false,
+      'login': false, 'recover': false, 'makeNetwork': false, 'softOwnerEnc': false,
+    });
+    await t.pumpWidget(host(SettingsPage(app: app(), ui: UiState(MemStore()), devTrust: true, keys: no)));
+    await t.pump();
+    for (final k in ['dev-ssh', 'dev-settings', 'dev-orphans']) {
+      expect(t.widget<BatRow>(find.byKey(Key(k))).enabled, isFalse, reason: k);
+      expect(t.widget<BatRow>(find.byKey(Key(k))).sub, no.refusal(KeyUse.login), reason: k);
+    }
+    expect(t.widget<BatRow>(find.byKey(const Key('dev-log'))).enabled, isTrue, reason: 'the text log reads memory only');
+    await t.tap(find.byKey(const Key('dev-ssh')));
+    await t.pump();
+    expect(find.text('SSH 金鑰'), findsOneWidget, reason: 'only the row: the page did not open');
+    await t.pumpWidget(host(SettingsPage(app: app(), ui: UiState(MemStore()), devTrust: true, keys: keys())));
+    await t.pump();
+    expect(t.widget<BatRow>(find.byKey(const Key('dev-ssh'))).enabled, isTrue, reason: 'control: keys that fit');
     await t.pumpWidget(const SizedBox());
     AppLink.forgetForTest();
   });

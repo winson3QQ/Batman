@@ -6,6 +6,7 @@ import 'package:batman_app/secure_screen.dart';
 import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/core.dart';
 import 'package:batman_app/src/nodelink/node_link.dart' show LoginForEnd;
+import 'package:batman_app/src/rust/api/owner.dart' show SettingsView;
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:batman_app/ui/settings_pages.dart';
 import 'package:batman_app/ui/ui_state.dart';
@@ -15,7 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../flows/op_session_test.dart' show Fx;
 import '../flows/owner_console_pr4_test.dart' show P4Session;
-import '../nodes_update_send_test.dart' as nus show FakeRust;
+import '../support/fake_node.dart' as nus show FakeRust;
 import 'pages_test.dart' show app, host, id, sv;
 import 'ui_state_test.dart' show MemStore;
 
@@ -187,8 +188,13 @@ void main() {
   });
 
   group('5.8 country', () {
-    Future<(Fx, Object)> openCountry(WidgetTester t, {int nodeState = 1, bool fresh = true, bool push = false}) async {
+    /// [cc]: the country settings/get answers (#329 PR 6: a node still set to TW, the only way a US-only menu has
+    /// something to change)
+    Future<(Fx, Object)> openCountry(WidgetTester t,
+        {int nodeState = 1, bool fresh = true, bool push = false, String cc = 'TW'}) async {
       final f = Fx(rust);
+      (f.rigs[0].session as P4Session).now =
+          SettingsView(read: true, name: 'BCM2711-6c89', country: cc, channel: 42, bwMhz: 2, apSsid: 'node-ap');
       final a = app();
       final s = a.link.core.states[id]!;
       {
@@ -211,33 +217,60 @@ void main() {
 
     bool rowEnabled(WidgetTester t, String cc) => t.widget<BatRow>(find.byKey(Key('country-$cc'))).enabled;
 
-    testWidgets('T-W7: a fresh read, not in a network -> TW confirmed -> settings/set TW -> 已更新', (t) async {
+    // #329 PR 6 D11 / T6-9: the menu is US only (「美國 US（台灣使用這個頻段）」); a node set to TW shows it as not in the
+    // list and can be changed to US. Negative control: TW put back in the menu -> FAIL.
+    testWidgets('T6-9: the menu has only US; a node set to TW shows 「TW（不在可選清單）」', (t) async {
+      await openCountry(t);
+      expect(find.byKey(const Key('country-TW')), findsNothing);
+      expect(find.textContaining('台灣 TW'), findsNothing);
+      expect(find.byKey(const Key('country-US')), findsOneWidget);
+      expect(find.text('美國 US（台灣使用這個頻段）'), findsOneWidget);
+      expect(t.widget<BatRow>(find.byKey(const Key('country-now'))).right, 'TW（不在可選清單）');
+      expect(countries.keys.toSet(), {'US'});
+    });
+
+    // plan §11 MINOR: the node's value is a node string: control / format characters dropped, at most 8 characters.
+    // Negative control: countryShown returning its input -> FAIL.
+    testWidgets('T6-9: the current value from the node is cleaned (control characters, 8 characters)', (t) async {
+      await openCountry(t, cc: 'T${String.fromCharCode(0x202e)}W\n\u0007ABCDEFGHIJ');
+      expect(t.widget<BatRow>(find.byKey(const Key('country-now'))).right, 'TWABCDEF（不在可選清單）');
+    });
+
+    testWidgets('T-W7 / T6-9: a fresh read, not in a network, node TW -> US confirmed -> settings/set US -> 已更新', (t) async {
       final (f, _) = await openCountry(t);
-      expect(find.text('美國 US'), findsWidgets);
-      expect(rowEnabled(t, 'TW'), isTrue);
-      await t.tap(find.byKey(const Key('country-TW')));
+      expect(rowEnabled(t, 'US'), isTrue);
+      await t.tap(find.byKey(const Key('country-US')));
       await t.pumpAndSettle();
-      expect(find.textContaining('從 美國 US 改成 台灣 TW'), findsOneWidget);
+      expect(find.textContaining('從 TW（不在可選清單） 改成 美國 US（台灣使用這個頻段）'), findsOneWidget);
       await t.tap(find.widgetWithText(FilledButton, '改'));
       await settle(t, f);
-      expect((f.rigs[1].session as P4Session).asked, ['settings/set country TW']);
+      expect((f.rigs[1].session as P4Session).asked, ['settings/set country US']);
       expect(find.text('已更新。'), findsOneWidget);
     });
 
     testWidgets('T-W7: 取消 sends nothing', (t) async {
       final (f, _) = await openCountry(t);
-      await t.tap(find.byKey(const Key('country-TW')));
+      await t.tap(find.byKey(const Key('country-US')));
       await t.pumpAndSettle();
       await t.tap(find.widgetWithText(TextButton, '取消'));
       await settle(t, f);
       expect(f.logins, 1, reason: 'only the read logged in');
     });
 
+    testWidgets('a node already US: tapping US sends nothing', (t) async {
+      final (f, _) = await openCountry(t, cc: 'US');
+      expect(t.widget<BatRow>(find.byKey(const Key('country-now'))).right, '美國 US（台灣使用這個頻段）');
+      await t.tap(find.byKey(const Key('country-US')));
+      await t.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(f.logins, 1);
+    });
+
     testWidgets('T-W6: in a network -> the menu cannot be used, and says why', (t) async {
       final (f, _) = await openCountry(t, nodeState: 2);
-      expect(rowEnabled(t, 'TW'), isFalse);
+      expect(rowEnabled(t, 'US'), isFalse);
       expect(find.text('要先離開網路才能改國家。'), findsOneWidget);
-      await t.tap(find.byKey(const Key('country-TW')));
+      await t.tap(find.byKey(const Key('country-US')));
       await t.pumpAndSettle();
       expect(find.byType(AlertDialog), findsNothing);
       expect(f.logins, 1);
@@ -246,19 +279,19 @@ void main() {
     testWidgets('code review A m2: the menu follows the NodeLink reads while the page is open', (t) async {
       final (_, ao) = await openCountry(t, nodeState: 2);
       final a = ao as AppLink;
-      expect(rowEnabled(t, 'TW'), isFalse);
+      expect(rowEnabled(t, 'US'), isFalse);
       a.link.core.states[id]!.extra = sv('yellow', nodeState: 1); // the next read: not in a network any more
       a.link.radio(); // nothing changes in NodeLink but it tells its listeners
       await t.pump();
       await t.pump(); // the stream delivers after this frame
-      expect(rowEnabled(t, 'TW'), isTrue);
+      expect(rowEnabled(t, 'US'), isTrue);
       await a.link.dispose();
     });
 
     testWidgets('code review A m2 / B m8: the outcome not known -> 重新讀取', (t) async {
       final (f, _) = await openCountry(t);
       f.rigs[1].radio.silent = true;
-      await t.tap(find.byKey(const Key('country-TW')));
+      await t.tap(find.byKey(const Key('country-US')));
       await t.pumpAndSettle();
       await t.tap(find.widgetWithText(FilledButton, '改'));
       await settle(t, f);
@@ -271,7 +304,7 @@ void main() {
     testWidgets('code review A m5: while sending, back does not close the page', (t) async {
       final (f, _) = await openCountry(t, push: true);
       f.rigs[1].radio.silent = true;
-      await t.tap(find.byKey(const Key('country-TW')));
+      await t.tap(find.byKey(const Key('country-US')));
       await t.pumpAndSettle();
       await t.tap(find.widgetWithText(FilledButton, '改'));
       await settle(t, f);
@@ -284,7 +317,7 @@ void main() {
 
     testWidgets('T-W6: no fresh read of the node -> the menu cannot be used', (t) async {
       await openCountry(t, fresh: false);
-      expect(rowEnabled(t, 'TW'), isFalse);
+      expect(rowEnabled(t, 'US'), isFalse);
       expect(find.textContaining('先讓手機讀到這台的狀態'), findsOneWidget);
     });
 
@@ -299,7 +332,7 @@ void main() {
         ..last = Concl.read;
       await t.pumpWidget(host(CountryPage(app: a, ui: UiState(MemStore()), id: id, deps: f.d)));
       await settle(t, f);
-      expect(rowEnabled(t, 'TW'), isFalse);
+      expect(rowEnabled(t, 'US'), isFalse);
       expect(find.textContaining('讀不到目前的國家'), findsOneWidget);
       expect(find.widgetWithText(OutlinedButton, '重新讀取'), findsOneWidget);
     });

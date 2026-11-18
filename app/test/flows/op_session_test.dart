@@ -11,7 +11,7 @@ import 'package:batman_app/src/nodelink/node_link.dart' show LoginForEnd, LoginF
 import 'package:batman_app/src/rust/frb_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import '../nodes_update_send_test.dart' show FakeRust;
+import '../support/fake_node.dart' show FakeRust;
 import 'owner_console_pr4_test.dart' show P4Session;
 import 'owner_console_test.dart' show Rig;
 

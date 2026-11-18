@@ -624,6 +624,10 @@ class NodeLinkCore {
 
   static String _s(int ms) => (ms / 1000).toStringAsFixed(1);
 
+  /// #329 PR 6 D4: a line from outside the scheduler (a lease taken back, a record write refused or failed) into the
+  /// same ring, with its time.
+  void note(int now, String l) => _log('${_s(now)} $l');
+
   /// §4.3.9: a flow's login under its lease. Same attempt rules as a round, for one record, up to 60 s.
   LoginFor loginFor(int now, String id, {bool clearNotY = false}) {
     if (clearNotY) {

@@ -163,7 +163,9 @@ class AppLink {
         remove: (rel) => storeRemove(dir: records, rel: rel),
         keepCopy: (rel) => storeKeepCopy(dir: records, rel: rel),
       ),
+      log: link.note, // #329 PR 6 D4: a refused or failed write goes to the text log (design :342)
     );
+    reg.log = link.note; // #329 PR 6 D4: a lease taken back (60 / 420 / 900 s) goes to the text log too
     // §4.3.2 (T20): the app lifecycle, app-wide (it outlives any page)
     WidgetsBinding.instance.addObserver(_Life(link));
     // §4.3.3-1: Bluetooth off / no permission are the overlay 2.3 / 2.2, at once (review pr1 A-M3 / B-M5)
