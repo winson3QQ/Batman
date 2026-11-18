@@ -16,12 +16,12 @@ import 'prober_test.dart' show FakeRust, FakeSession, Radio, step;
 
 /// A radio whose link reports 「gone」 when the connect is cancelled (so GateLink.close returns at once).
 class LinkRadio extends Radio {
-  final _gone = StreamController<(String, bool)>.broadcast(sync: true);
+  final _gone = StreamController<(String, bool, int?)>.broadcast(sync: true);
   @override
-  Stream<(String, bool)> get linkStates => _gone.stream;
+  Stream<(String, bool, int?)> get linkStates => _gone.stream;
   @override
   Stream<bool> connect(String address, Duration timeout) {
-    final c = StreamController<bool>(onCancel: () => _gone.add((address, false)));
+    final c = StreamController<bool>(onCancel: () => _gone.add((address, false, null)));
     c.add(true);
     return c.stream;
   }

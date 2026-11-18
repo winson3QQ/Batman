@@ -624,7 +624,9 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
           nodeRecords: nodes,
           ownerEncPub: keys['ownerEnc']!,
         );
-        if (prep.state == UpdateState.alreadyImported) return '這份更新包你之前匯入過了，可能不是最新的（${prep.detail}）';
+        // device session 2026-11-17: each Rust line loses its log marker before they are joined (「[UPDATE] 已收到新密碼」
+        // showed on the second line: screenText strips only the start of the whole text)
+        if (prep.state == UpdateState.alreadyImported) return '這份更新包你之前匯入過了，可能不是最新的（${screenText(prep.detail)}）';
         if (prep.state == UpdateState.advance) z = ownCopy(await p.ecdh(prep.ephPub)); // only on Advance (S-m8)
         final (gen2, mnet2) = await p.readRecord('mnet/$id');
         final st = memberUpdateImport(
@@ -637,7 +639,7 @@ class _UpdateImportPageState extends State<UpdateImportPage> {
           z: z ?? Uint8List(0),
         );
         await writeStep(st, p, l, w);
-        return '${prep.detail}\n${st.detail}'; // Rust's 「更新到第 N 版」 shown as is (T-M1)
+        return '${screenText(prep.detail)}\n${screenText(st.detail)}'; // Rust's 「更新到第 N 版」 shown as is (T-M1)
       } finally {
         zero(z);
       }

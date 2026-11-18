@@ -90,7 +90,11 @@ fn parse(hex: &str) -> Result<Parsed, Refusal> {
     if hex.bytes().filter(|b| !b.is_ascii_whitespace()).count() > 2 * (MAX_BUNDLE + 16) {
         return Err(Refusal::Format("too large"));
     }
-    let raw = qr_object(hex, QR_UPDATE).map_err(|_| Refusal::Format("not an update"))?;
+    // another kind of code (an invite, a request, an approval pasted here) is told apart from a broken one (review misc J M-1)
+    let raw = qr_object(hex, QR_UPDATE).map_err(|e| match e {
+        crate::invite::Error::Format("another kind of qr-object") => Refusal::Format("another kind of qr-object"),
+        _ => Refusal::Format("not an update"),
+    })?;
     if raw.len() > MAX_BUNDLE {
         return Err(Refusal::Format("too large"));
     }

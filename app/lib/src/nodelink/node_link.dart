@@ -376,7 +376,8 @@ class NodeLink implements LeaseListener {
     try {
       final k = link = gate.connect(lease.token, a.addr, timeout: msg2);
       final up = await Future.any<bool>([
-        k.state.firstWhere((s) => s, orElse: () => false),
+        // design 329-ble-settle.md §2.1: the first link event, not the first `true`: a failure ends the attempt now
+        k.state.first.then((s) => s, onError: (Object _) => false),
         due.future.then((_) => false),
         cancel.future.then((_) => false),
       ]);
@@ -553,7 +554,8 @@ class NodeLink implements LeaseListener {
     try {
       final link = mine = _link = gate.connect(reg.nodeLinkToken, a.addr, timeout: msg2);
       final up = await Future.any<bool>([
-        link.state.firstWhere((s) => s, orElse: () => false),
+        // design 329-ble-settle.md §2.1: the first link event, not the first `true`: a failure ends the attempt now
+        link.state.first.then((s) => s, onError: (Object _) => false),
         due.future.then((_) => false),
         cancel.future.then((_) => false),
       ]);

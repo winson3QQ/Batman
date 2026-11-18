@@ -27,9 +27,9 @@ class Clock {
 
 class FakeRadio implements BleBackend {
   int scanStarts = 0, scanStops = 0, connects = 0, disconnects = 0;
-  final _states = StreamController<(String, bool)>.broadcast(sync: true);
+  final _states = StreamController<(String, bool, int?)>.broadcast(sync: true);
   @override
-  Stream<(String, bool)> get linkStates => _states.stream;
+  Stream<(String, bool, int?)> get linkStates => _states.stream;
   final List<StreamController<bool>> links = [];
   bool reportDisconnect = true;
   final List<String> gatt = [];
@@ -69,7 +69,7 @@ class FakeRadio implements BleBackend {
     late StreamController<bool> c;
     c = StreamController<bool>(onCancel: () {
       disconnects++;
-      if (reportDisconnect) _states.add((address, false)); // seen on the global stream only
+      if (reportDisconnect) _states.add((address, false, null)); // seen on the global stream only
     });
     links.add(c);
     scheduleMicrotask(() => c.add(true));

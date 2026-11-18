@@ -99,7 +99,7 @@ class Session extends FakeSession {
 /// A link whose node answers each frame [n] with [n + 1] (unless [silent]); its state reports a drop.
 class EchoRadio implements BleBackend {
   final tx = StreamController<List<int>>.broadcast(sync: true);
-  final _st = StreamController<(String, bool)>.broadcast(sync: true);
+  final _st = StreamController<(String, bool, int?)>.broadcast(sync: true);
   final written = <int>[];
   bool silent = false;
   Object? failWrite;
@@ -109,7 +109,7 @@ class EchoRadio implements BleBackend {
   Stream<String> scan() => const Stream.empty();
   @override
   Stream<bool> connect(String address, Duration timeout) {
-    final c = conn = StreamController<bool>(onCancel: () => _st.add((address, false)));
+    final c = conn = StreamController<bool>(onCancel: () => _st.add((address, false, null)));
     c.add(true);
     return c.stream;
   }
@@ -117,7 +117,7 @@ class EchoRadio implements BleBackend {
   void drop() => conn?.add(false);
 
   @override
-  Stream<(String, bool)> get linkStates => _st.stream;
+  Stream<(String, bool, int?)> get linkStates => _st.stream;
   @override
   Future<int> requestMtu(String address, int mtu) async => 247;
   @override

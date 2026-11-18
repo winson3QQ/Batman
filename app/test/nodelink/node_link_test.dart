@@ -35,7 +35,7 @@ class Clock {
 
 class Radio implements BleBackend {
   final scanCtl = StreamController<String>.broadcast();
-  final _states = StreamController<(String, bool)>.broadcast(sync: true);
+  final _states = StreamController<(String, bool, int?)>.broadcast(sync: true);
   int scans = 0, connects = 0, open = 0;
   final Set<String> down = {}; // addresses that never connect
 
@@ -51,7 +51,7 @@ class Radio implements BleBackend {
     late StreamController<bool> c;
     c = StreamController<bool>(onCancel: () {
       if (open > 0) open--;
-      _states.add((address, false));
+      _states.add((address, false, null));
     });
     if (!down.contains(address)) {
       scheduleMicrotask(() {
@@ -63,7 +63,7 @@ class Radio implements BleBackend {
   }
 
   @override
-  Stream<(String, bool)> get linkStates => _states.stream;
+  Stream<(String, bool, int?)> get linkStates => _states.stream;
   @override
   Future<int> requestMtu(String address, int mtu) async => 247;
   @override

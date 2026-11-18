@@ -31,11 +31,14 @@ class ReactiveBackend implements BleBackend {
       .map((u) => u.connectionState == DeviceConnectionState.connected);
 
   @override
-  Stream<(String, bool)> get linkStates => ble.connectedDeviceStream
+  Stream<(String, bool, int?)> get linkStates => ble.connectedDeviceStream
       .where((u) =>
           u.connectionState == DeviceConnectionState.connected ||
           u.connectionState == DeviceConnectionState.disconnected)
-      .map((u) => (u.deviceId, u.connectionState == DeviceConnectionState.connected));
+      .map((u) {
+        final up = u.connectionState == DeviceConnectionState.connected;
+        return (u.deviceId, up, up ? null : failureCode(u.failure?.message));
+      });
 
   @override
   Future<int> requestMtu(String address, int mtu) => ble.requestMtu(deviceId: address, mtu: mtu);
@@ -49,4 +52,13 @@ class ReactiveBackend implements BleBackend {
   @override
   Future<void> write(String address, Char c, List<int> value) =>
       ble.writeCharacteristicWithoutResponse(_q(address, c), value: value);
+}
+
+/// #329 re-test (design 329-ble-settle.md §2.2): the status number in the plugin's connect-failure message
+/// (RxAndroidBle: "... with status 133 (GATT_ERROR)"), -1 when the message has none. Only the number is kept: the
+/// message names the full address and is never logged.
+int? failureCode(String? message) {
+  if (message == null) return null;
+  final m = RegExp(r'with status (\d{1,3})\b').firstMatch(message);
+  return m == null ? -1 : int.parse(m.group(1)!);
 }

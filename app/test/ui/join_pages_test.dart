@@ -59,6 +59,7 @@ OwnerStep step(OwnerKind kind, {String detail = '', String rel = '', String hex 
 class TeamRust extends FakeRust {
   ImportState importState = ImportState.ready;
   UpdateState updateState = UpdateState.advance;
+  String prepDetail = '更新到第 3 版';
   final seen = <String>[];
   final preparePend = <bool>[]; // R12 W-m1: whether each prepare had the request
   List<int>? z; // the z handed to Rust (the page's own copy: zeroed after, B-m5)
@@ -119,7 +120,7 @@ class TeamRust extends FakeRust {
       required List<Uint8List> nodeRecords,
       required List<int> ownerEncPub}) {
     seen.add('uprep nodes=${nodeRecords.length}');
-    return UpdatePrep(state: updateState, ephPub: Uint8List(1), mnetGen: mnetGen, detail: '更新到第 3 版');
+    return UpdatePrep(state: updateState, ephPub: Uint8List(1), mnetGen: mnetGen, detail: prepDetail);
   }
 
   @override
@@ -305,7 +306,8 @@ void main() {
       ..seen.clear()
       ..z = null
       ..importState = ImportState.ready
-      ..updateState = UpdateState.advance;
+      ..updateState = UpdateState.advance
+      ..prepDetail = '更新到第 3 版';
   });
 
   Finder sendOf(String id) => find.descendant(of: find.byKey(Key('update-node-$id')), matching: find.text('送出'));
@@ -452,6 +454,27 @@ void main() {
   });
 
   group('8.5 new key', () {
+    testWidgets('device session 2026-11-17: no log marker on either Rust line (「[UPDATE] 已收到新密碼」 was shown)',
+        (t) async {
+      rust.prepDetail = '[UPDATE] 更新到第 3 版';
+      final w = World(['0000aa01'], {'0000aa01': 'nn'});
+      await open(t, w, (a) => UpdateImportPage(app: a, ui: UiState(MemStore())));
+      await paste(t, 'UPDATE');
+      expect(find.textContaining('更新到第 3 版\n已存好新密碼'), findsOneWidget);
+      expect(find.textContaining('['), findsNothing, reason: 'no [UPDATE] / [IMPORT] on screen');
+    });
+
+    testWidgets('device session 2026-11-17: already imported -> its Rust line without the marker', (t) async {
+      rust
+        ..updateState = UpdateState.alreadyImported
+        ..prepDetail = '[UPDATE] 已經匯入過';
+      final w = World(['0000aa01'], {'0000aa01': 'nn'});
+      await open(t, w, (a) => UpdateImportPage(app: a, ui: UiState(MemStore())));
+      await paste(t, 'UPDATE');
+      expect(find.textContaining('可能不是最新的（已經匯入過）'), findsOneWidget);
+      expect(find.textContaining('['), findsNothing);
+    });
+
     testWidgets('paste only; Advance: ECDH, Rust lines as is; this network + unread listed; asked, sent, no tick',
         (t) async {
       final w = World(['0000aa01', '0000bb02', '0000cc03'], {'0000aa01': 'nn', '0000bb02': 'other'});

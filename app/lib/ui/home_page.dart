@@ -9,6 +9,7 @@ import '../claim.dart';
 import '../key_abilities.dart';
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/core.dart' as nl;
+import '../src/nodelink/lease.dart' show Lease, LeaseListener, Token;
 import '../src/nodelink/raw_use.dart';
 import '../src/rust/api/owner.dart' show StatusView, listPending;
 import '../src/flows/net_index.dart' show JoinTodo;
@@ -97,7 +98,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver implements LeaseListener {
   StreamSubscription<void>? _sub;
   Timer? _tick;
   int _pending = 0;
@@ -115,8 +116,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     a.nets.addListener(_netsChanged); // #329 PR 3 §2.6: row 6 and the join todos follow the network records
     a.sw.addListener(_netsChanged); // #329 PR 4 §2.8: 「軟體更新還沒做完」
     _tick = Timer.periodic(const Duration(seconds: 15), (_) => mounted ? setState(() {}) : null);
+    a.reg.listeners.add(this); // T-H3: the todos are computed again once a lease is released (design §5.1)
     _todos();
   }
+
+  // re-test 2026-11-17 (T-H3): a claim still running behind a closed page left 「上次新增節點沒有做完」 until the next
+  // page change; the todos follow the release of every lease now
+  @override
+  void revoked(Token t) {}
+
+  @override
+  void released(Lease l, {required bool revoked}) => _todos();
 
   void _netsChanged() {
     if (mounted) setState(() {});
@@ -124,6 +134,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    a.reg.listeners.remove(this);
     a.nets.removeListener(_netsChanged);
     a.sw.removeListener(_netsChanged);
     WidgetsBinding.instance.removeObserver(this);
@@ -161,7 +172,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       try {
         final p = await listPending(dir: a.records);
         n = p.where((id) => !a.link.core.states.containsKey(id)).length;
-      } catch (_) {}
+      } catch (_) {
+        return; // review misc J m-2: the list unreadable -> keep the todos shown (never hide one on an error)
+      }
     }
     if (mounted) setState(() => _pending = n);
   }
