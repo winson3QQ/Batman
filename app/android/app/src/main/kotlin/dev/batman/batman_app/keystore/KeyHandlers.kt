@@ -9,6 +9,9 @@ import java.security.PublicKey
 // a private-key operation itself (Keys.sign / ecdh / seal / open are private, handed only to the KeyHandlers it builds).
 // `open` (record decryption, #329 PR 7 T1) is gated on the record AES key's level ONLY: an unreadable other key must not
 // make a record unopenable (the Dart callers would take it for "no record" and write over ui/state-v1 and mpend).
+// Not handled (accepted, #329 residual, plan §12 B-m1): a transient Keystore error on the record AES key itself (its
+// level read or the decryption) answers the same `keystore` code as a record that really does not open, so those Dart
+// callers can still take it for "no record".
 // `publicKeys` uses no private key and is not gated here; the first-install self-test (Keys.firstRun) is not a use for
 // the app.
 

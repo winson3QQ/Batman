@@ -194,11 +194,9 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
   /// `_busy` for the whole run; asks for the BLE permissions before any connection.
   Future<void> _fromPending() async {
     if (_busy || _pending.isEmpty) return;
-    setState(() {
-      _busy = true;
-      _failFromPending = true;
-      _recovering = true;
-    });
+    // code review A-m3: the status area's flags (recovery, its node, its next step) change only once the user picked
+    // and confirmed; a cancel leaves the last run's failure as it was
+    setState(() => _busy = true);
     try {
       final labels = pendingLabels(_pending);
       final t = BatTheme.of(context);
@@ -224,12 +222,18 @@ class _ClaimPageState extends State<ClaimPage> with RawBusy<ClaimPage> {
                   ]));
       if (id == null || !mounted) return;
       final label = labels[id]!;
-      _who = label;
       // #329 PR 7 (p1p2-check 3.7_confirm, design §3.2): it cuts the node off for the whole team -> danger, its words say so
       if (!await _ask('要恢復節點 $label 嗎？', '恢復會更換這台節點的 root 密碼，並中斷它目前所有的連線（包含隊友手機的）。', Btn.recoverCut,
           '沒有恢復，手機裡的紀錄沒有改動',
           danger: true)) {
         return;
+      }
+      if (mounted) {
+        setState(() {
+          _who = label;
+          _failFromPending = true;
+          _recovering = true;
+        });
       }
       if (!(await _platform.invokeMethod<bool>('blePermissions') ?? false)) {
         _say('[CLAIM_FAIL] 沒有藍牙權限（請在手機設定裡允許）');

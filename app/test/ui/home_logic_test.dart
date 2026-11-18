@@ -39,8 +39,8 @@ NodeInfo node(String id, {StatusView? v, Why? why, bool fresh = true, Concl? las
       readWall: v != null ? DateTime(2026, 11, 15, 22, 48) : null);
 }
 
-HomeHero home(List<NodeInfo> ns, {Why? blocked, bool first = false, int todos = 0}) =>
-    decideHome(HomeInputs(nodes: ns, blocked: blocked, firstRounds: first, todos: todos));
+HomeHero home(List<NodeInfo> ns, {Why? blocked, bool first = false, Set<String>? firstIds, int todos = 0}) => decideHome(
+    HomeInputs(nodes: ns, blocked: blocked, firstRoundIds: firstIds ?? (first ? {for (final n in ns) n.id} : {}), todos: todos));
 
 void main() {
   final ok = node('aaaa0001', v: sv());
@@ -67,6 +67,15 @@ void main() {
     expect(home([node('s3', v: sv(), fresh: false)]).text, '還沒讀到節點 S3 的狀態');
   });
 
+  test('T8 (code review A-m1): row 10 asks the node it names whether its first rounds are over', () {
+    // s1: read before, its first rounds over; n2: just claimed, in its first rounds (row 5 does not hold: s1 concluded)
+    final old = node('s1', v: sv(), fresh: false), fresh = node('n2');
+    final h = home([old, fresh], firstIds: {'n2'});
+    expect(h.row, 10);
+    expect(h.text, '還沒讀到 2 台節點的狀態', reason: 'the named node s1 is past its first rounds: not 「正在找」');
+    expect(home([fresh, old], firstIds: {'n2'}).text, '正在找節點 N2…', reason: 'the named node n2 is in its first rounds');
+  });
+
   test('row 3: no node yet -> add a node', () {
     final h = home([]);
     expect((h.row, h.action), (3, HomeAction.addNode));
@@ -86,7 +95,7 @@ void main() {
   test('row 6: not in a network (one and many); the button follows the phone''s network records (review B-M1)', () {
     expect(home([node('eeee0005', v: sv(nodeState: 1, color: 'red'))]).text, '節點 0005 還沒加入隊伍網路');
     final ns = [node('e1', v: sv(nodeState: 1)), node('e2', v: sv(nodeState: 1)), node('f1', v: sv(color: 'red'))];
-    HomeHero h6(NetRecords r) => decideHome(HomeInputs(nodes: ns, blocked: null, firstRounds: false, todos: 0, records: r));
+    HomeHero h6(NetRecords r) => decideHome(HomeInputs(nodes: ns, blocked: null, todos: 0, records: r));
     expect((h6(NetRecords.net).row, h6(NetRecords.net).text), (6, '有 2 台節點還沒加入隊伍網路'));
     expect((h6(NetRecords.net).action, h6(NetRecords.mnet).action), (HomeAction.joinNetwork, HomeAction.joinNetwork));
     expect(h6(NetRecords.mpend).action, HomeAction.seeRequest);
@@ -96,7 +105,7 @@ void main() {
 
   test('r2 D-m9: records that could not be read -> the neutral 加入網路, never 建立網路', () {
     final h = decideHome(HomeInputs(
-        nodes: [node('u1', v: sv(nodeState: 1))], blocked: null, firstRounds: false, todos: 0, records: NetRecords.unknown));
+        nodes: [node('u1', v: sv(nodeState: 1))], blocked: null, todos: 0, records: NetRecords.unknown));
     expect((h.action, h.second), (HomeAction.joinNetwork, HomeAction.none));
   });
 

@@ -713,6 +713,15 @@ void main() {
       await t.tap(find.descendant(of: find.byKey(const Key('hero-tech')), matching: find.byType(InkWell)));
       await t.pumpAndSettle();
       expect(find.textContaining('record store unreadable: node: Not a directory'), findsWidgets);
+      // code review A-m7: and in the page's technical info (the copy is `$_report\n$_tech`)
+      await t.tap(find.descendant(of: find.byKey(const Key('startup-tech')), matching: find.text('技術資訊（給維修人員看）')));
+      await t.pumpAndSettle();
+      expect(
+          find.descendant(
+              of: find.byKey(const Key('startup-tech')),
+              matching: find.textContaining('紀錄讀取：record store unreadable: node: Not a directory')),
+          findsOneWidget,
+          reason: 'the store\'s reason under 技術資訊 too');
       // the retry checks again: the store reads now (no record) -> the first run, as on a first install (this mock's
       // firstRun fails and Kotlin deletes what it made: no key)
       rust.hasRecordsError = null;

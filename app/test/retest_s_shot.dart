@@ -17,12 +17,25 @@ final shotKey = GlobalKey();
 /// The fonts the PNGs are drawn with (empty: flutter_test's box font, the PNGs are unreadable).
 final loadedFonts = <String>[];
 
+/// The board's CJK font, the first file found. #329 PR 7 §4: the Windows file, and the same file seen from WSL (the
+/// contrast checks and their exceptions are judged on it); code review A-MAJOR-1: then Noto Sans CJK where Linux
+/// packages put it (Debian / Ubuntu fonts-noto-cjk, Fedora google-noto-sans-cjk, Arch noto-fonts-cjk), so a Linux runner
+/// with the package judges contrast too (support/a11y.dart: no font at all is a FAIL unless A11Y_ALLOW_NO_FONT=1).
+const cjkFontPaths = [
+  'C:/Windows/Fonts/NotoSansTC-VF.ttf',
+  '/mnt/c/Windows/Fonts/NotoSansTC-VF.ttf',
+  '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+  '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+  '/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc',
+  '/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc',
+  '/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc',
+];
+
 /// Loads a CJK font as the theme's family (Roboto) and as monospace, and the Material icons. A font file that is not
-/// on this machine is skipped (then the text shows as boxes; the checks do not depend on it).
+/// on this machine is skipped (then the text shows as boxes and the board contrast rules FAIL, support/a11y.dart).
 Future<void> loadFonts() async {
   final root = Platform.environment['FLUTTER_ROOT'] ?? 'C:/src/flutter';
-  // #329 PR 7 §4: the same Windows font file seen from WSL (the contrast checks and their exceptions are judged on it)
-  const cjk = ['C:/Windows/Fonts/NotoSansTC-VF.ttf', '/mnt/c/Windows/Fonts/NotoSansTC-VF.ttf', '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'];
+  const cjk = cjkFontPaths;
   Future<void> family(String name, List<String> paths) async {
     for (final p in paths) {
       final f = File(p);
