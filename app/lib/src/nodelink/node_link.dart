@@ -550,14 +550,24 @@ class NodeLink implements LeaseListener {
     }, onError: (Object _) => gone(), onDone: gone);
     // nothing is expected on a parked link: a frame or a subscription error closes it (never parsed)
     h.inbox.handle((_) => gone(), (_) => gone());
-    if (!identical(_kept, h)) return closing ?? h.destroy().then((_) => _pump());
+    if (!identical(_kept, h)) return closing ?? h.destroy().then(_pumpAfterClose);
     try {
       gate.pass(h.link, null);
     } on Refused {
       _forget();
-      return h.destroy().then((_) => _pump());
+      return h.destroy().then(_pumpAfterClose);
     }
     return null;
+  }
+
+  /// A kept link is gone: plan again. A holder's `close()` waits for these futures (§4.3) and they mean "the link
+  /// is gone" only: what [_pump] throws is not their result; it goes to the zone, as it does from a timer.
+  void _pumpAfterClose(void _) {
+    try {
+      _pump();
+    } catch (e, st) {
+      Zone.current.handleUncaughtError(e, st);
+    }
   }
 
   /// Drop the reference: the kept link is nobody's here from now on. A read on it is cancelled.
@@ -578,7 +588,7 @@ class NodeLink implements LeaseListener {
     final h = _kept;
     if (h == null || _ks == KeptState.lent) return Future.value();
     _forget();
-    return h.destroy().then((_) => _pump());
+    return h.destroy().then(_pumpAfterClose);
   }
 
   /// §4.2: the handoff a flow gets: a new object over [h]'s link and session with NodeLink's hook; state lent.
@@ -603,7 +613,7 @@ class NodeLink implements LeaseListener {
       }
       _forget();
     }
-    return h.again().destroy().then((_) => _pump());
+    return h.again().destroy().then(_pumpAfterClose);
   }
 
   /// §4.4: one status read on the parked link, for the active round.
@@ -637,10 +647,16 @@ class NodeLink implements LeaseListener {
         _pump();
         return;
       }
-      final t = now();
-      if (core.keptRead(t, k.id, k.link.address, o)) _noteRead(k.id, o, t);
-      _park(k);
-      _pump();
+      try {
+        final t = now();
+        if (core.keptRead(t, k.id, k.link.address, o)) _noteRead(k.id, o, t);
+        _park(k);
+        _pump();
+      } catch (_) {
+        // as a reader that fails: the link is not left in state reading (the error itself goes on to the zone)
+        if (identical(_kept, k)) _closeKept();
+        rethrow;
+      }
     }, onError: (Object _) {
       // a reader that fails (KeptReader.read never should): the link is not left in state reading
       stop();

@@ -260,9 +260,21 @@ class KRig {
         return keys;
       },
       readRecords: () async => [...this.recs],
-      now: () => clock.t,
+      now: () {
+        if (boomNow) {
+          boomNow = false;
+          throw StateError('now() throws');
+        }
+        return clock.t;
+      },
       after: clock.after,
-      wall: () => DateTime.fromMillisecondsSinceEpoch(1000000 + clock.t),
+      wall: () {
+        if (boomWall) {
+          boomWall = false;
+          throw StateError('wall() throws');
+        }
+        return DateTime.fromMillisecondsSinceEpoch(1000000 + clock.t);
+      },
       trace: trace.add,
     );
     writer = RecordWriter(
@@ -283,6 +295,7 @@ class KRig {
   bool keys = true;
   Future<void> Function()? duringKeys; // runs inside keysOk(), before its answer
   bool netKnown = false;
+  bool boomNow = false, boomWall = false; // NodeLink's next now() / wall() throws (once)
   Completer<Uint8List?>? openHold;
   String advAddr = 'a1';
   bool quiet = false; // the node does not advertise
@@ -401,6 +414,14 @@ class KRig {
 
 const gone = (0, null, true);
 const parked = (1, KeptState.parked, false);
+
+/// Runs [f] in its own error zone and returns the errors nobody handled there (what NodeLink lets go to the zone).
+/// [f] must not throw (no expect inside): an error of its own future would not cross the zone and the await hangs.
+Future<List<Object>> guarded(Future<void> Function() f) async {
+  final errs = <Object>[];
+  await runZonedGuarded(f, (e, s) => errs.add(e));
+  return errs;
+}
 
 void main() {
   late KRust rust;
@@ -561,6 +582,29 @@ void main() {
       await rig.until(t0 + 25000);
       expect((rig.radio.connects, rig.gate.links, rig.nl.keptState), (2, 1, KeptState.parked), reason: rig.tr);
       expect(rig.readAt, greaterThan(t0));
+    });
+
+    test('(b4) recording the read throws (review T-2) -> closed as (b3), not left reading; the next round reads',
+        () async {
+      final rig = await t1();
+      var t0 = -1;
+      rig.radio.hold[fStatus] = [500]; // the 60 s read is seen in state reading
+      final errs = await guarded(() async {
+        for (var i = 0; i < 700 && rig.nl.keptState != KeptState.reading; i++) {
+          await rig.run(100, adv: false);
+        }
+        if (rig.nl.keptState != KeptState.reading) return;
+        t0 = rig.clock.t;
+        rig.boomWall = true; // _noteRead's wall(), in the block that takes the answer
+        await rig.run(1000, adv: false);
+      });
+      expect(t0, greaterThan(0), reason: 'the 60 s read never started\n${rig.tr}');
+      expect((rig.boomWall, errs.length, errs.every((e) => e is StateError)), (false, 1, true), reason: '$errs');
+      expect(rig.st, gone, reason: rig.tr);
+      // the core had taken the body before the throw: this round is over, the next one reads by a new connect
+      await rig.until(t0 + 70000);
+      expect((rig.radio.connects, rig.gate.links, rig.nl.keptState), (2, 1, KeptState.parked), reason: rig.tr);
+      expect(rig.readAt, greaterThan(t0 + 50000));
     });
 
     test('(d) errorCode -> still parked, no scan and no connect; 2\' when the core makes it so', () async {
@@ -753,6 +797,24 @@ void main() {
     expect((closed, rig.gate.links, rig.nl.keptState), (false, 1, null), reason: rig.tr);
     await rig.run(1000, adv: false);
     expect((closed, rig.st), (true, gone), reason: rig.tr);
+    await l.release();
+  });
+
+  test('T7 (d) as (c), and the planning after that close throws (review T-1) -> close() still ends without an error',
+      () async {
+    final rig = await t1();
+    final (l, h) = await rig.lend();
+    rig.radio.tx.add([99]);
+    Object? end;
+    final errs = await guarded(() async {
+      final c = h.close(reusable: true).then<Object?>((_) => 'closed', onError: (Object e) => e);
+      rig.boomNow = true; // the _pump after the link is gone
+      end = await c;
+    });
+    expect(end, 'closed', reason: rig.tr);
+    expect((rig.boomNow, errs.length, errs.every((e) => e is StateError)), (false, 1, true), reason: '$errs');
+    await rig.run(300, adv: false);
+    expect(rig.st, gone, reason: rig.tr);
     await l.release();
   });
 
@@ -1113,6 +1175,21 @@ void main() {
         seen.add(a == gone ? 'gone' : 'parked');
       }
       expect(seen, {'gone', 'parked'}, reason: 'the turns did not cover both sides of the park');
+    });
+
+    test('(e) background() around the end of the hint / team step, then the foreground -> the next round reads again',
+        () async {
+      for (final n in [0, 24]) {
+        late KRig r;
+        final b = await hintStep(n, (rig) {
+          r = rig;
+          rig.nl.background();
+        });
+        expect(b, gone, reason: 'background() $n turns after the hint step ended');
+        r.nl.foreground();
+        await r.run(5000);
+        expect(r.radio.connects, 2, reason: 'no read after the foreground ($n turns)\n${r.tr}');
+      }
     });
   });
 

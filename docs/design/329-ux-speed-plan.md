@@ -279,7 +279,7 @@ State of the controls. ✅ L (v3 prototype): T1, T2, T4 (a) (b) (c), T5's first 
 
 Rust (`owner.rs` unit test): on one session status → settings → status → info → status: each answer is its own and each status is `fresh`. ❌ Not built by L.
 
-Existing tests: `app/test/flows/net_run_test.dart:143` (`_FakeHandoff.close`) takes the new parameter. That is the whole list (✅ L: the suite passed on the prototype with only this change; no existing test drives the real `SessionProber` through NodeLink on `Page.node`). No other assertion may change.
+Existing tests: `app/test/flows/net_run_test.dart:143` (`_FakeHandoff.close`) takes the new parameter. `app/test/flows/op_session_test.dart`'s `Fx` takes a `make:` parameter (support code for T21, no assertion changed; reviews S-1, U-4). That is the whole list (✅ L, for the first: the suite passed on the prototype with only this change; no existing test drives the real `SessionProber` through NodeLink on `Page.node`). No other assertion may change.
 
 Full suite: `flutter test`, `flutter analyze lib test` (⚠️ L: on the whole project `flutter analyze` reports 115 errors in `rust_builder/cargokit`, the same on the unchanged tree), `test-all.sh` (WSL), `cargo test` for the bridge. ❌ `test-all.sh` and `cargo test` were not run by L.
 
@@ -428,3 +428,17 @@ Found in code review (reviews R and S of commit f572395; fixed in the commit aft
 - S-8: T4 (c) also asserts that the link is closed, the round reads by a new connect inside its window and that read is kept. Control: the `fresh` rule removed. (A change that parks the link again after a page that is not fresh makes the round read in a loop that never yields; the test file then does not complete. Not counted as a control.)
 - S-9: accepted, no change: `probe` reaches its answer through the shared method (one more async turn); the fast path calls `pass` before it lends, in the same synchronous step; the test-only getters, the `KeptState` enum and one trace line; `keptRead` is also false for an id with no state.
 - T10 "`loginFor` another id": its own control is run: the close of another node's kept link removed → the operation ends at the login.
+
+Found in code review, round 2 (reviews T and U of commit ccd66c3, both 0 MAJOR; fixed in the commit after it; no mechanism added):
+- T-1: what `_pump` throws after a kept link's close is no longer the result of that close: the futures a holder's `close()` waits for (4.3) mean "the link is gone" only, and the error goes to the zone, as it does when a timer calls `_pump`. Test T7 (d) (the rig's clock throws once in that `_pump`); control: the guard removed → `close()` ends with the error.
+- T-2: an exception in the block that takes a kept read's answer (`core.keptRead`, recording the read, the park, `_pump`) closes the link as a reader that fails does (R-3), so the state is never left `reading`; the error itself still goes to the zone. Test T4 (b4) (the wall clock throws once while the read is recorded); control: that close removed → 1 link, state `reading`.
+- T-3: accepted, no change. When the gate is already closing the lent link, the holder's `close()` does not wait for it; the same as before this plan, and the next `acquire` waits in `_dropAll` until no link is left.
+- T-4: accepted, no change. R-2 and R-5 again: both cost one slow read and nothing else.
+- T-5: accepted, no change. A holder's old `GateLink` would pass the gate under the next lending's token; `OwnerConsole` sends nothing after its `_close` (`_closed`, `_session = null`), so no path reaches it.
+- T-6: accepted, no change (4.2). The fast path does not check that the link is alive before it lends: on a link that is down and not yet reported, the console waits its own 15 s. ❌ Not measured: to be looked at in the device session of §6.
+- T-7 and U-3: accepted, no change. The Rust test's statuses 2 and 3 cannot be not `fresh` in that sequence; what the test discriminates is that each answer is its own (controls: `request_info` tagged `info-page`, the `info-page` answer not stored). `E_RATE` after a read is `status_page_rate_limit_keeps_the_earlier_read`'s.
+- T-8: accepted, no change. A record removed while another lease is held is checked at that lease's release; until then the link is parked only while its node's page is open, and removing a node leaves the page.
+- U-1: the PR body states the result of `cargo test` and `test-all.sh`, or ❌.
+- U-2: the assertion lost with S-3 is back as a test of its own: T19 (e) "`background()` around the end of the hint / team step, then the foreground": the next round reads again (2 connects). Control: `foreground()` emptied.
+- U-4: §6's list of changed existing tests now names `op_session_test.dart`'s `Fx`.
+- U-5: accepted, no change (S-9's list, complete).
