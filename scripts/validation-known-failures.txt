@@ -50,3 +50,8 @@ prov-fw-boot-254	^FAIL [^ ]+: prov-fw-boot-254: pre-S5 image [^ ]+: batman-slot 
 # a version on scripts/dv/pre-team-status-versions.txt without the feature marker and without keys 8 / 9; every other
 # SD6 FAIL (no key 9, a stale or missing peer, a bad key 9, a large answer, a lost marker) is NEW. Expires 2026-12-15.
 prov-status-diag-254	^FAIL prov-status-diag-254: SD6: image without whole-team status \(1\.5\.14-wsl\.[0-9]+\+[0-9a-f]+\.fw[0-9a-f]+(\.bench)?\)$	254	expires=2027-01-15
+# #329 N1 (329-n1-plan §5.2): prov-boot-provd-254's link-without-session arm needs provd's 30 s rule, which no fleet
+# image has until the product PR lands (the harness arm lands first, #290). The arm prints the listed line only for a
+# version on scripts/dv/pre-n1-versions.txt; every other FAIL of the arm (an rc without the line, a cut before 29 s or
+# after 37 s, two lines, no advert afterwards) is NEW. Expires 2026-12-03 (14 days).
+prov-boot-provd-254	^FAIL prov-boot-provd-254: no 'link without session' line in 70 s \(pre-N1 image\)$	329	expires=2026-12-03
