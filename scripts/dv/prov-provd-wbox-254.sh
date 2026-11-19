@@ -109,14 +109,14 @@ else
 		n=$(qr 'n=0; for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && kill -9 $x && n=$((n + 1)); done; echo $n')
 		[ "${n:-0}" -ge 1 ] && k=$((k + 1))
 		[ $i = 1 ] && qr 'logread | grep -q "is healthy and HELD"' && inv "L39: HELD appeared before the first kill landed"
-		[ $i = 3 ] || [ $i = 7 ] && { r=$(c02 read "$LAST4" | tr '\n' ' '); say "02 read during the kills (recorded only): $r"; }
+		[ $i = 3 ] || [ $i = 7 ] && { lg_mark; r=$(c02 read "$LAST4" | tr '\n' ' '); say "02 read during the kills (recorded only): $r"; lg_guard "L39 read $i"; }
 		sleep 10
 	done
 	[ $k = 10 ] && ok "L39: 10 of 10 kills found a provd to kill" || no "L39: only $k of 10 kills found a provd (respawn window) — fewer kills than the arm claims"
 	pr_wait_held 480 && ok "L39: the trial is HELD after the provd kills (no HELD before the first one)" || no "L39: not HELD by uptime 480 s"
 	o=$(pl provd-check); grep -q 'PROVD ok' <<< "$o" && ok "L39: provd back on its own ($(tail -1 <<< "$o"))" || no "L39: provd after the kills (no restart): $o"
 fi
-o=$(c02 read "$LAST4"); sv=$(sed -n 's/^STATUS //p' <<< "$o")
+lg_mark; o=$(c02 read "$LAST4"); sv=$(sed -n 's/^STATUS //p' <<< "$o"); lg_guard "trial STATUS read"
 case "$sv" in a5*04f5*"$(k5 "$LAST4")"*) ok "in the trial 02 reads STATUS with key 4 = true (updating) and key 5 = $LAST4 ($sv; prov-firstboot provd side, L21)" ;;
 	'') inv "in the trial 02 could not read STATUS at all (02's bluetoothctl: $(echo $o | cut -c1-120)) — not a verdict" ;;
 	*) no "STATUS in the trial [$sv] (want key 4 = true, key 5 = $LAST4)" ;; esac
@@ -226,7 +226,7 @@ gatt_wb(){
 	# setsid + -w, decode it afterwards (04 wsl.21, 2026-11-01: the first gatt / rpa runs captured nothing)
 	q "umask 077; setsid $PCD/btmon -w $PCD/gatt.snoop </dev/null >/dev/null 2>&1 & echo \$! > $PCD/gatt.btmon.pid"
 	[ "$(qr "kill -0 \$(cat $PCD/gatt.btmon.pid) 2>/dev/null && echo y")" = y ] || { no "gatt: btmon did not start on 04"; penv clear; return; }
-	o=$(c02 read "$LAST4"); say "gatt: 02 read: $(tr '\n' ' ' <<< "$o")"
+	lg_mark; o=$(c02 read "$LAST4"); say "gatt: 02 read: $(tr '\n' ' ' <<< "$o")"; lg_guard "gatt read"
 	q "kill -INT \$(cat $PCD/gatt.btmon.pid) 2>/dev/null; sleep 1; rm -f $PCD/gatt.btmon.pid"
 	bt=$(qr "$PCD/btmon -r $PCD/gatt.snoop 2>&1"); q "rm -f $PCD/gatt.snoop"
 	btok=1; [ "$(grep -c . <<< "$bt")" -gt 5 ] || { btok=0; inv "gatt: the btmon capture is empty ($(grep -c . <<< "$bt") lines): no btmon verdict"; }

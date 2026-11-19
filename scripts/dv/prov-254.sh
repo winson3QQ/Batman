@@ -70,6 +70,30 @@ ST='echo "mac=$(cat /sys/class/net/eth0/address 2>/dev/null) slot=$(batman-slot 
 # field <state line> <key>: the value of key=value (values never contain spaces; bracketed values keep the brackets)
 field(){ printf ' %s\n' "$1" | sed -n "s/.* $2=\([^ ]*\).*/\1/p" | head -1; }
 
+# ---- #329 N1: provd cuts a link that has no session after 30 s (docs/design/329-n1-plan.md §5.3) ---------------------
+# Every arm that has 02 connect to 04 without a session (the central's read / hold) brackets itself:
+#   lg_mark            a log mark on 04 before the arm
+#   lg_guard <arm>     after it: a "link without session" line since the mark = provd cut the arm's link by its 30 s rule,
+#                      so whatever the arm then saw was not what it meant to test -> INVALID (rc 1), never a silent
+#                      pass or fail; an unreadable log is INVALID too
+#   lg_age_say <arm>   prints the link's age at this moment: 04's clock now minus its last "adv withdrawn reason=connect"
+#                      line since the mark (the numbers the arms' waits were sized by)
+# shellcheck source=scripts/dv/link-grace-329.sh
+. "$(dirname "${BASH_SOURCE[0]}")/link-grace-329.sh"
+lg_mark(){ LGM="lg-$RUN-$(date +%s%N)"; q "logger -t batman-dv-p2 mark $LGM"; }
+lg_log(){ qr "logread | sed -n '/batman-dv-p2: mark $LGM\$/,\$p' | grep 'batman-provd\[[0-9]*\]: provd: '; echo LG-END \$(date +%H:%M:%S)"; }
+lg_guard(){
+	local o n; o=$(lg_log)
+	grep -q '^LG-END ' <<< "$o" || { inv "$1: 04's log could not be read after the arm — whether provd cut the link by its 30 s rule is unknown"; return 1; }
+	n=$(grep -cE "$LG_LINE" <<< "$o")
+	[ "$n" = 0 ] && return 0
+	inv "$1: 04 logged $n 'link without session' line(s) during the arm — provd cut the arm's link by its 30 s rule, the arm did not test what it means to"; return 1
+}
+lg_age_say(){
+	local o w e; o=$(lg_log); w=$(lg_last_w <<< "$o"); e=$(sed -n 's/^LG-END //p' <<< "$o")
+	if [ -n "$w" ] && [ -n "$e" ]; then say "$1: link age $(lg_age "$w" "$e") s (04's clock: connected $w, now $e)"; else say "$1: link age unknown (connect [$w] now [$e])"; fi
+}
+
 # ---- #254 S5 slot flock (254-p3-impl §3.7.3; the node half is scripts/node/slotlock-lib-254.sh) ----------------------
 # shellcheck source=scripts/lib/slotlock-254.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/slotlock-254.sh" || { echo "FAIL $PR_UNIT: no slot-lock helper"; exit 2; }

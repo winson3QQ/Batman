@@ -225,6 +225,7 @@
 - **撤銷**:`ctl` 每 4 s `health.get`(現算、兩個 mgmt 查詢並行最壞 ≈ 2 s、不取 mutex、不在長動詞的連線上)→ 任一欄轉壞 → `UnregisterAdvertisement`(**時間預算:輪詢 4 + compute 2 + D-Bus 往返 ≤ 1 ≈ 7 s;single-flight 只合併「尚未開始」的 compute(已開始的那次可能拿到翻轉前的結果,+2 s);`ctl` 一輪的 `health.get` 先送、週期以送出時刻計 → 常態最壞 9 s,L67 斷言 9.5 s**;**成立的前提是 §1.3 的多連線 helper,負對照 L71**);快取不新鮮 > 60 s → 撤(`reason=helper`);有連線建立(`Acquire*` 到來或 `Device1.Connected`)→ 撤銷;所有連線結束 → 重新註冊。
 - **RPA**:kernel 只在 900 s 過期後換(F-P17);provd 無連線時每 `900 + rand(30..120)` s 撤銷 + 重註冊,讓過期的 RPA 真的被換掉;**連線前後、斷線重註冊在 900 s 窗內是同一 RPA**(§1.3)。
 - log 契約(H3 讀):`provd: adv registered reason=<start|disconnect|rpa_timeout|health|helper|bluetoothd>`、`provd: adv withdrawn reason=<health|helper|connect|stop|bluetoothd>`;無 `nonce=`。
+- **沒有 session 的連線(#329 N1)**:BlueZ 回報 `Connected`、但沒有 `links` 項目(沒寫過 RX / 沒 Acquire*)的裝置,滿 30 s(`linkGrace`)後不再算進「有人連著」;`converge` 走既有的 `register()` → `staleLinks()` 把它斷掉、再註冊廣播(最久約 50 s = 30 s + 5 s tick + `staleLinks` 15 s)。有 `links` 項目的裝置不論多久都算。`bleLink.Close` 會把該裝置的 30 s 重新起算。log:`provd: link without session for 30 s`(不含位址;每次變成過期印一次)。`register()` 在 `staleLinks()` 之後重算一次,有新連線就不註冊;這時若原因是 `rpa_timeout`,之後那次註冊的 reason 會是 `disconnect`。另一個 session 還在時不斷(等它結束)。
 - 退避 log:`provd: backoff <n>s reason=<…>`;連線事件 log 同 reason 每 60 s 最多 10 行(路人洪水不洗 log);ADV 自檢失敗退出前 `sleep 60`(procd `respawn … 0` 無限,免得每 5 s 一行)。
 
 ### 4.5 init / ujail
