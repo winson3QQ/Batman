@@ -42,6 +42,13 @@
     "adv_member": "c7b3c4982ca28f9a01f529bef2f1b61c9520772497734bd76a07a6053babaeef",
     "note": "HKDF-SHA256, salt empty, L = 32; info = label || fields (device_id ASCII, last)"
   },
+  "adv_id": {
+    "cid": 65535,
+    "nonce": "279f48",
+    "tag": "208ff9",
+    "ad": "09ffffff279f48208ff9",
+    "note": "tag = HMAC-SHA256(adv_owner, 'batman-adv-id-v1' || nonce)[0..3]; ad = len 0x09, type 0xFF, cid LE, nonce, tag"
+  },
   "noise_nx": {
     "protocol": "Noise_NX_25519_ChaChaPoly_SHA256",
     "prologue": "6261746d616e2d70726f762f3100626c6500303132336135663063336531623734646565",

@@ -44,6 +44,7 @@ type TestEnv struct {
 	NoBruteLimit    bool
 	GattEncryptCtrl bool
 	AdvLenTest      int
+	AdvIDOff        bool // #329: never ask the helper for the advert identifier
 }
 
 // Config wires a Server.
@@ -201,6 +202,33 @@ func (s *Server) roCall(verb string, args cbor.Map) (Reply, error) {
 		s.ro.Close()
 	}
 	return r, err
+}
+
+// AdvID asks the helper for the advert identifier (#329): 6 B = nonce ‖ tag, new at every call. It uses ro and never
+// waits for it (a session's read in flight -> ErrBusy); a timeout closes ro as roCall does. It never uses ctl, so
+// the health poll is not behind it. Any error means "advertise without the field".
+func (s *Server) AdvID(wait time.Duration) ([]byte, error) {
+	if !s.roMu.TryLock() {
+		return nil, ErrBusy
+	}
+	defer s.roMu.Unlock()
+	r, err := s.ro.Call("adv.id", nil, wait)
+	if err == ErrTimeout {
+		s.logf("helper ro: adv.id unanswered for %s — reconnecting", wait)
+		s.ro.Close()
+	}
+	if err != nil {
+		return nil, err
+	}
+	if r.Code != 0 {
+		return nil, fmt.Errorf("adv.id: helper code %d", r.Code)
+	}
+	v, _ := r.Body.Get(1)
+	id, ok := v.([]byte)
+	if !ok || len(r.Body) != 1 || len(id) != 6 {
+		return nil, fmt.Errorf("adv.id: unexpected answer")
+	}
+	return id, nil
 }
 
 // opsCall: one request on ops. ErrBusy = another one is in flight. A new ops connection (helper restart) drops every

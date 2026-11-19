@@ -136,6 +136,7 @@ Noise 完成後雙方取得交握雜湊 `h`(32 B)。session 的角色:
 ### 4.1 BLE GATT
 
 - 服務:Batman service UUID(128-bit,§12 Q1)。
+- 廣播(#329,`docs/design/329-rotating-id-plan.md`):128-bit Service UUID 列表(18 B)+ Flags(3 B)= 21 B;**已認領的節點**另帶一個 Manufacturer Data AD(10 B,合計 31 B):company id `0xFFFF`(開發期;量產前換正式編號)、`n`(3 B 隨機)、`t`(3 B,§6 `adv_id`)。每次註冊廣播換一組 `n ‖ t`。擁有者的 app 以自己存的 `adv_owner` 重算 `t` 認出自己的節點;認出來**不證明任何事**,只決定先連哪一台,身分仍由交握決定(§3)。未認領、或節點當下給不出識別碼 → 不帶這個 AD。
 - 特徵值:`RX`(手機 → 節點,Write Without Response)、`TX`(節點 → 手機,Notify)、`CTRL`(Read,不加密;CDDL `ctrl` = `{1: proto_major, 2: proto_minor, 3: max_frame, 4: max_msg}`)、**`STATUS`(Read,不加密,v0.7)**= `status/public`:CDDL `status-public`(格式版本、能力、`state`、`updating`;`device_id` 末 4 字元**只在** `state` ∈ {未認領 0、legacy 3} 時帶)。任何附近的人都讀得到:它暴露「這台是否已認領 / 正在更新」與能力;已認領 / 成員不帶任何識別。
 - 框架:
 
@@ -301,6 +302,7 @@ args_hash = SHA-256( deterministic CBOR(請求 body,去掉 key 31) )
 psk_owner  = HKDF( owner_tag_key, "batman-psk-owner-v1" ‖ device_id )
 psk_member = HKDF( net_root,      "batman-psk-member-v1" ‖ net_id(16 B) ‖ u32BE(net_version) )
 adv_owner  = HKDF( adv_owner_key, "batman-adv-owner-v1" ‖ device_id )
+adv_id     = n ‖ t ;  t = HMAC-SHA256( adv_owner, "batman-adv-id-v1" ‖ n )[0..3] ;  n = 3 B 隨機      ; #329,§4.1
 adv_member = HKDF( net_root,      "batman-adv-member-v1" ‖ net_id ‖ u32BE(net_version) )
 psk_replay = HKDF( z,             "batman-psk-replay-v1" ‖ device_id )      ; v0.7
              z = ECDH(node_ecdh_priv, owner_enc_pub) 的 x 座標(32 B)= app 端 ECDH(owner_enc_priv, node_cert.ecdh_pub)

@@ -45,6 +45,10 @@ func testEnv(logf func(string, ...any)) provd.TestEnv {
 		te.AdvLenTest = n
 		set = append(set, fmt.Sprintf("ADV_LEN_TEST=%d", n))
 	}
+	if os.Getenv("ADV_ID_OFF") == "1" {
+		te.AdvIDOff = true
+		set = append(set, "ADV_ID_OFF=1")
+	}
 	if len(set) > 0 {
 		logf("provd: test env %s", strings.Join(set, " "))
 	}

@@ -127,6 +127,13 @@ func TestHKDF(t *testing.T) {
 	if !bytes.Equal(AdvOwner(hx(t, v, "keys", "adv_owner_key"), dev), hx(t, v, "hkdf", "adv_owner")) {
 		t.Fatalf("adv_owner")
 	}
+	// #329: the advert identifier's tag and company id
+	if !bytes.Equal(AdvIDTag(hx(t, v, "hkdf", "adv_owner"), hx(t, v, "adv_id", "nonce")), hx(t, v, "adv_id", "tag")) {
+		t.Fatalf("adv_id tag")
+	}
+	if cid, _ := v["adv_id"]["cid"].(float64); cid != float64(AdvCID) {
+		t.Fatalf("adv_id cid %v, AdvCID %#x", v["adv_id"]["cid"], AdvCID)
+	}
 	// net_version of the hkdf vectors: try the documented first version
 	ok := false
 	for ver := uint32(0); ver < 8; ver++ {
