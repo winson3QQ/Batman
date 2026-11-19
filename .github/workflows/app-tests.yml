@@ -2,7 +2,8 @@ name: app-tests
 # The app's regular test suite (#254): until this workflow nothing in CI ran an app test.
 #   - app/rust/batman-proto/test-all.sh: cargo tests of batman-proto and the bridge in the field and the dev-trust
 #     build, X3 (field feature tree + field .so strings, app/tools/check-field-build.sh), flutter analyze, flutter test
-#   - app/tools/kotlin-unit-tests.sh: the Kotlin JVM unit tests of every variant, judged from the JUnit XML
+#   - app/tools/kotlin-unit-tests.sh: the Kotlin JVM unit tests of every variant, judged from the JUnit XML, plus the
+#     vendored reactive_ble_mobile's own unit tests while app/pubspec.yaml overrides it with a path: (#329)
 #   - app/tools/check-allow-backup.sh: T31, android:allowBackup="false" in every variant's merged manifest
 #   - tests/tools/sigverify (go test) and tests/noise_live.rs against tests/tools/peer/noise_responder.py, each judged
 #     by app/tools/judge-test-output.sh
@@ -130,12 +131,36 @@ jobs:
           expect "a failure" "$t/c" '^FAIL kotlin fieldDebug: KeyPolicyTest: failures=1$' || exit 1
           mkdir "$t/d/testFieldDebugUnitTest"
           expect "no result" "$t/d" '^FAIL kotlin fieldDebug: no test ran ' || exit 1
+      # #329: the vendored reactive_ble_mobile's own tests run in the Kotlin step only while app/pubspec.yaml overrides
+      # it with a path: (otherwise that step prints "not applicable" and there is no plugin XML). An empty result
+      # always FAILs the plugin judge; with real XML, a missing must-run class and a failure FAIL it too.
+      - name: Kotlin plugin negative controls — an empty result, and (when vendored) a missing class and a failure, FAIL the plugin judge
+        if: ${{ !cancelled() }}
+        run: |
+          src=app/build/reactive_ble_mobile/test-results/testDebugUnitTest
+          t=$(mktemp -d); mkdir -p "$t/a" "$t/b" "$t/c" "$t/d/testDebugUnitTest"
+          expect(){ # <name> <dir> <ERE the FAIL line must match>
+            local out rc
+            out=$(bash app/tools/kotlin-unit-tests.sh --judge-plugin "$2") && rc=0 || rc=$?
+            echo "$1: rc=$rc $out"
+            [ "$rc" != 0 ] || return 1
+            grep -qE "$3" <<< "$out" || return 1
+          }
+          expect "no result" "$t/d" '^FAIL plugin reactive_ble_mobile: no test ran ' || exit 1
+          if ! ls "$src"/TEST-*.xml > /dev/null 2>&1; then echo "no plugin JUnit XML (not vendored): the real-XML controls do not apply"; exit 0; fi
+          cp -r "$src" "$t/a/"; bash app/tools/kotlin-unit-tests.sh --judge-plugin "$t/a"
+          cp -r "$src" "$t/b/"; rm "$t"/b/testDebugUnitTest/TEST-*'$QueueCleanupTest.xml'
+          expect "class missing" "$t/b" '^FAIL plugin reactive_ble_mobile: did not run: DeviceConnectorTest\$QueueCleanupTest$' || exit 1
+          cp -r "$src" "$t/c/"; sed -i -E '0,/failures="0"/s//failures="1"/' "$t"/c/testDebugUnitTest/TEST-*OrphanConnectorTest.xml
+          expect "a failure" "$t/c" '^FAIL plugin reactive_ble_mobile: OrphanConnectorTest: failures=1$' || exit 1
       - name: JUnit XML
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02   # v4
         with:
           name: kotlin-junit-xml
-          path: app/build/app/test-results/**/TEST-*.xml
+          path: |
+            app/build/app/test-results/**/TEST-*.xml
+            app/build/reactive_ble_mobile/test-results/**/TEST-*.xml
           if-no-files-found: error
 
       - name: T31 — android:allowBackup="false" in every variant's merged manifest
