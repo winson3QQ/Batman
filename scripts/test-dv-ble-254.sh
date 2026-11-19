@@ -257,12 +257,12 @@ aj_case() {
 aj_good > "$W/aj"; aj_case good member '^PASS adv id: 3 HCI advertising-data command' '^FAIL'
 [ "$(aj_judge "$AJV" claimed < "$W/aj" | grep -c '^PASS adv id: ')" = 4 ] && tok "adv-id good: four PASS lines (registrations, blocks, identifiers, HCI)" || tbad "adv-id good: not four PASS lines"
 aj_good 0a0b0c010203 0a0b0c010203 > "$W/aj"; aj_case payload-reused member '^FAIL adv id: the registrations at 22:44:15 and 23:00:20 carry the same identifier' '^PASS adv id: 3 registration\(s\), 3 different'
-# an image without the field: the one fixed line, whole, and the known-failures entry matches it as the unit prints it
+# an image without the field: the one fixed line, whole. Since the field shipped (wsl.32, #362) no known-failures
+# entry covers it: a node without the field is a NEW FAIL now
 { aj_good - - - | grep -v 'provd: adv field '; } > "$W/aj"; o=$(aj_judge "$AJV" member < "$W/aj")
 [ "$o" = "FAIL no adv field line on 04 ($AJV): an image without the field" ] && tok "adv-id old image: the one fixed line, nothing else" || tbad "adv-id old image: got [$(tr '\n' '|' <<< "$o")]"
 kf=$(awk -F'\t' '$1 == "prov-rpa-254" && /an image without the field/ { print $2 }' "$REPO/scripts/validation-known-failures.txt")
-[ -n "$kf" ] && grep -qE "$kf" <<< "FAIL prov-rpa-254: ${o#FAIL }" && tok "adv-id old image: the known-failures entry matches the line of wsl.31" || tbad "adv-id old image: known-failures entry [$kf] does not match"
-[ -n "$kf" ] && ! grep -qE "$kf" <<< "FAIL prov-rpa-254: no adv field line on 04 (1.5.14-wsl.32+0123abc.fwd4f5dc8.bench): an image without the field" && tok "adv-id old image: the entry covers wsl.31 only (a later image without the field is a NEW FAIL)" || tbad "adv-id old image: the entry matches a later image"
+[ -z "$kf" ] && tok "adv-id old image: no known-failures entry for prov-rpa-254 (the field shipped in wsl.32)" || tbad "adv-id old image: the known-failures entry for prov-rpa-254 is back: [$kf]"
 aj_good "" "" "" noflags > "$W/aj"; aj_case hci-without-flags member '^FAIL adv id: the HCI advertising data at 23:00:21 has no Flags AD' '^PASS adv id: 3 HCI'
 aj_good "" "" "" nouuid > "$W/aj"; aj_case hci-without-uuid member '^FAIL adv id: the HCI advertising data at 23:00:21 has no 128-bit UUID list' '^PASS adv id: 3 HCI'
 { lgl 22:44:15 "$AJF"; lgl 22:44:15 "${AJR}start"; } > "$W/aj"; aj_case no-block member '^FAIL adv id: nothing captured$' '^PASS'
