@@ -331,9 +331,10 @@ open or close, so sessions are seen from the app side only.
 - D7. `am force-stop` with both held: both nodes log `adv registered` (U4).
 - D8. A build with `keptMax = 1` (local, not committed): on home each round closes one link and connects
   the other node, never 2 links at once (app trace; 3.3 on the device).
-- D9. With both held, on the home page open 「加入網路」 far enough to log in to a node (the page's own
-  first step; nothing is submitted), 10 times: login time and failures, against the same 10 with the main
-  APK in D0's session (§2 cost).
+- D9. The off-page login (§2 cost). Every operation that logs in from the home, team or settings pages also
+  changes a node (join / make network, team actions: `ui/net_pages.dart:271`, `ui/settings_pages.dart:26`,
+  `ui/team_deps.dart:24`), so on the device it needs the user's approval for the one operation named then.
+  Until it is run: ❌ on the device, L6b only, and the PR says so.
 - ❌ Not on the bench now: 3 or more nodes (L11 only); a second phone looking for a
   held node; Bluetooth off / on (a phone setting: with the user on site).
 
