@@ -211,13 +211,14 @@ RC=1.5.14-wsl.30+1f74d28.fw689266b.bench; OLD=1.5.14-wsl.26+5edb755.fw162a4d5.be
 { lgl 22:44:10 "adv registered reason=start"; } > "$W/lg"; lg_case no-connection "$RC" invalid '^INVALID 04 logged no connection' '^(PASS|FAIL)'
 : > "$W/lg"; lg_case empty-log "$RC" invalid '^INVALID 04 logged no connection' '^(PASS|FAIL)'
 { lgl 22:44:48 "$LGS"; lgl 22:44:50 "$LGD"; } > "$W/lg"; lg_case line-without-connect "$RC" invalid '^INVALID a .link without session. line at 22:44:48 with no connection' '^(PASS|FAIL)'
-# the pre-N1 line is the known-failures entry's text, whole; an image off the list gets a different FAIL
+# the pre-N1 line, whole; an image off the list gets a different FAIL. Since N1 shipped (wsl.31, #358) no
+# known-failures entry covers it: a pre-N1 node is a NEW FAIL now
 o=$({ lgl 22:44:15 "$LGW"; lgl 22:45:30 "$LGD"; } | lg_judge "$OLD" "$W/pre-n1")
 [ "$o" = "$(printf "FAIL no 'link without session' line in 70 s (pre-N1 image)\nLG state=none")" ] && tok "link-grace pre-N1: the one fixed line, nothing else" || tbad "link-grace pre-N1: got [$(tr '\n' '|' <<< "$o")]"
 kf=$(awk -F'\t' '$1 == "prov-boot-provd-254" && /pre-N1/ { print $2 }' "$REPO/scripts/validation-known-failures.txt")
-[ -n "$kf" ] && grep -qE "$kf" <<< "FAIL prov-boot-provd-254: $(head -1 <<< "$o" | sed 's/^FAIL //')" && tok "link-grace pre-N1: the known-failures entry matches the line as the unit prints it" || tbad "link-grace pre-N1: known-failures ERE [$kf] does not match the unit's line"
+[ -z "$kf" ] && tok "link-grace: no pre-N1 known-failures entry for prov-boot-provd-254 (N1 shipped)" || tbad "link-grace: the pre-N1 known-failures entry for prov-boot-provd-254 is back: [$kf]"
 o=$({ lgl 22:44:15 "$LGW"; lgl 22:45:30 "$LGD"; } | lg_judge "$RC" "$W/pre-n1")
-grep -q "^FAIL 04 ($RC) kept a link that has no session for 70 s" <<< "$o" && ! grep -q 'pre-N1' <<< "$o" && ! grep -qE "$kf" <<< "FAIL prov-boot-provd-254: $(head -1 <<< "$o" | sed 's/^FAIL //')" && tok "link-grace rc without the rule: a plain FAIL the known-failures entry does not match" || tbad "link-grace rc without the rule: got [$(tr '\n' '|' <<< "$o")]"
+grep -q "^FAIL 04 ($RC) kept a link that has no session for 70 s" <<< "$o" && ! grep -q 'pre-N1' <<< "$o" && tok "link-grace rc without the rule: a plain FAIL, not the pre-N1 line" || tbad "link-grace rc without the rule: got [$(tr '\n' '|' <<< "$o")]"
 o=$({ lgl 22:44:15 "$LGW"; lgl 22:45:30 "$LGD"; } | lg_judge "$RC" "$W/nonexistent")
 grep -q '^FAIL 04 (' <<< "$o" && tok "link-grace: no versions file -> not pre-N1 (plain FAIL)" || tbad "link-grace without a versions file: [$o]"
 { lgl 23:59:45 "$LGW"; lgl 00:00:17 "$LGS"; lgl 00:00:19 "$LGD"; } > "$W/lg"; lg_case midnight "$RC" cut '^PASS 04 logged the link as stale 32 s' '^FAIL'
