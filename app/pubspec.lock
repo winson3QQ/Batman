@@ -226,7 +226,7 @@ packages:
     source: path
     version: "5.6.0"
   reactive_ble_platform_interface:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: reactive_ble_platform_interface
       sha256: b5c81a30be81b351c8e86b9520a1a9f267c5fcf0b51a2eee9139da404a18ed79
@@ -312,4 +312,4 @@ packages:
     version: "1.1.2"
 sdks:
   dart: ">=3.13.7 <4.0.0"
-  flutter: ">=3.18.0-18.0.pre.54"
+  flutter: ">=3.44.0"

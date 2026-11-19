@@ -208,7 +208,7 @@ class DeviceConnectorTest {
         @Test
         @DisplayName("Delayed dispose after a quick disconnect does not remove a newer connect to the same address")
         fun delayedDisposeKeepsNewerEntry() {
-            val first = connector(deviceId, Observable.just(connection))
+            val first = connector(deviceId, Observable.just(connection).concatWith(Observable.never()))
             first.connection.test()
             assertThat(realQueue.getCurrentQueue()).isEmpty()
 

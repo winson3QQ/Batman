@@ -107,7 +107,7 @@ open class ReactiveBleClient(private val context: Context) : BleClient {
         timeout: Duration,
     ) {
         allConnections.add(
-            getConnection(deviceId, timeout)
+            getOrCreateConnection(deviceId, timeout)
                 .subscribe({ result ->
                     when (result) {
                         is EstablishedConnection -> {
@@ -278,9 +278,13 @@ open class ReactiveBleClient(private val context: Context) : BleClient {
         timeout: Duration,
     ) = DeviceConnector(device, timeout, connectionUpdateBehaviorSubject::onNext, connectionQueue)
 
-    private fun getConnection(
+    // PATCHED (Batman, #329): only connectToDevice may create a connector. Upstream let every GATT
+    // operation create one with timeout 0 (autoConnect, never times out); an operation that reached
+    // the plugin after disconnectFromDevice then left an orphan connector at the head of the
+    // ConnectionQueue that nobody disposes, wedging every later connect.
+    private fun getOrCreateConnection(
         deviceId: String,
-        timeout: Duration = Duration(0, TimeUnit.MILLISECONDS),
+        timeout: Duration,
     ): Observable<EstablishConnectionResult> {
         val device = rxBleClient.getBleDevice(deviceId)
         val connector =
@@ -288,6 +292,12 @@ open class ReactiveBleClient(private val context: Context) : BleClient {
 
         return connector.connection
     }
+
+    // PATCHED (Batman, #329): an operation on an address without an active connector fails at once
+    // through each caller's existing EstablishConnectionFailure branch and creates nothing.
+    private fun getConnection(deviceId: String): Observable<EstablishConnectionResult> =
+        activeConnections[deviceId]?.connection
+            ?: Observable.just(EstablishConnectionFailure(deviceId, "Device is not connected"))
 
     private fun executeWriteOperation(
         deviceId: String,

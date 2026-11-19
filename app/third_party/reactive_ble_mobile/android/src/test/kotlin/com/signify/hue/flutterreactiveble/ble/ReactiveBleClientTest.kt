@@ -43,7 +43,9 @@ private class BleClientForTesting(
     ) {
     override fun initializeClient() {
         rxBleClient = bleClient
-        activeConnections = mutableMapOf()
+        // PATCHED (Batman, #329): GATT operations no longer create a connector, so the tests below
+        // run against an already connected device ("test", and "" used by the mtu/rssi/priority tests).
+        activeConnections = mutableMapOf("test" to deviceConnector, "" to deviceConnector)
     }
 
     override fun createDeviceConnector(
