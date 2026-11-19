@@ -1,9 +1,10 @@
-# #329 — one kept link per node (v2)
+# #329 — one kept link per node (v3)
 
-Status: v2, for review (v1 f558a4c: review A REJECT, review B APPROVE-WITH-CHANGES; §10). Baseline:
+Status: v3, for review (v1 f558a4c: A REJECT, B APPROVE-WITH-CHANGES; v2 27c6ea2: C and D
+APPROVE-WITH-CHANGES; §10). Baseline:
 `docs/design/329-ux-speed-plan.md` v5.1 ("the UX plan", frozen, shipped in main 6e326fc). Everything in the UX
 plan stays as it is except the changes listed in §3. Paths are under `app/lib/src/nodelink/` unless they start
-with another directory.
+with another directory. Node source is under `feed/batman-prov/src/` (`provd/…`, `cmd/batman-provd/…`).
 
 ## 1. Facts (checked for this plan)
 
@@ -67,7 +68,8 @@ fails on the phone side.
 Not known (⚠️):
 
 - U1. How many GATT links the S20 holds at once, and how many of them other apps and devices (watch,
-  earphones, a Meshtastic radio) already use. Not checked. Hence `keptMax = 2` (§3.3).
+  earphones, a Meshtastic radio) already use. Not checked. Hence the app never has more than 2 links of its
+  own (§3.3), which is what the bench can show.
 - U2. Whether a connect to node B fails more often while a link to node A is held. Counted in §7 D5.
 - U3. Battery cost of held links on phone and node. Not measured (the user: battery later).
 - U4. That Android closes an app's GATT links when its process is killed. Checked in §7 D7.
@@ -80,7 +82,8 @@ Not known (⚠️):
 Handles:
 
 - Home / team page: every round after a node's first read is a read on its kept link (≈ 0.6 s per node, no
-  scan, no connect) instead of a new connect per node per round — for up to `keptMax` nodes.
+  scan, no connect) instead of a new connect per node per round — for up to `keptMax` nodes. With more
+  nodes than that, one node per round is read by a new connect (3.3) instead of all of them.
 - Opening a node's page, and a sub-page of it, after the home page has read the node: the link is already
   there (today the node page connects again).
 - Fewer connects in total. Whether that means fewer failed reads is counted (D1), not assumed.
@@ -106,15 +109,20 @@ Does not handle (and why):
   the same moment is not in this plan (U2; every one-attempt-at-a-time rule of the baseline would change).
 - Keeping links in the background. v1 had it; dropped: with no foreground service Android may freeze the
   app's timers, and every pocketed phone would then keep its nodes dark for up to 300 s (N3).
-- An operation started from the home, team or settings pages still logs in by a new connect, as today
-  (§3.2-6): only a node's own page lends the kept link, so no operation gets an already-open session that
-  does not get one today.
+- An operation started from the home, team or settings pages still logs in by a new connect (§3.2-6): only
+  a node's own page lends the kept link, so no operation gets an already-open session that does not get one
+  today. New cost: when that node's link is parked, it is closed first and the connect follows the close at
+  once (today the node is usually idle and advertising; right after a home round's read it is the same
+  close-then-connect as today). Whether that login is slower or fails more is counted in D9.
 - A sub-page tapped while a node's first connect is still running: the operation aborts the attempt and
   connects again, as today (UX plan §2).
 - On a node's page for more than 120 s, the other node's link is closed by A4. The next home round connects.
 - A home round that runs to its 90 s cap (a target that cannot be reached): the next read of the kept nodes
   is 150 s after the last, so A4 closes their links and that round connects again.
-- More than `keptMax` nodes: the rest are read by connect–read–close, as today.
+- A held node that was not read before a round ended at its cap keeps its last shown state (3.4).
+- After a long stay with every node held there are no scans, so the address memos older than 20 min are
+  dropped (`core.dart:391-396`); the first reconnect after that looks at unknown addresses again, as after
+  an app start.
 - A second owner's or a member's phone that needs a held node: C1.
 
 ## 3. The change
@@ -137,20 +145,28 @@ Everything else in the gate is as it is: the per-link 120 s timer, `pass`, `revo
 ### 3.2 NodeLink (`node_link.dart`)
 
 1. `_kept` becomes a map id → entry; the state (`parked` / `reading` / `lent`), the lending lease, the state
-   subscription, the read's cancel and `readEnd` (clock time the last read on it ended) are in the entry.
+   subscription, the read's cancel and `readEnd` are in the entry. `readEnd` = clock time of the last status
+   read on that session known to NodeLink: set at every park (after an attempt, after a kept read, at
+   give-back).
    Every rule below that walks the map works on a copy of its keys. After every change of the key set
    NodeLink calls `core.setKept(ids)` (3.4).
-2. `keepFor(id)` (a round's attempt ended with a body; synchronous) = no entry for `id`, the record exists,
-   `core.blocked == null`, `core.fg`, and there is room (3.3). The page term is gone. `_giveBack` (the holder
-   closed a lent link) parks it on the same terms without "no entry", and `reusable` as today.
+2. `keepFor(id)` (a round's attempt ended with a body; synchronous, called inside the probe) only answers:
+   no entry for `id`, the record exists, `core.blocked == null`, `core.fg`, fewer than `keptMax` entries.
+   It closes nothing. The page term is gone. `_giveBack` (the holder closed a lent link) parks it when
+   `reusable`, `core.blocked == null` and `core.fg` — on any page; on `Page.other` it then ends by A4.
 3. `setPage` closes nothing. `background()` closes every entry that is not lent (today's rule, per entry).
    What else ends an entry: the gate's 120 s (A4), link down, a failed or late read, `radio()` leaving
    `core.blocked` set (every entry not lent), its record removed, a raw lease (5), 3.3, `dispose` (all).
+   A parked link that went down without a state event stays in the gate's set as today; the next read on
+   it is refused by `pass` and the entry is closed (`ble_gate.dart:270-284`), as today.
 4. `_pump`, in a round:
    - if no entry is reading and `gate.active == 0`: the first parked entry with `core.keptNeeds(id)` whose
-     `readEnd` is at least 1.1 s ago is read (N6 / A8); one whose `readEnd` is newer gets a wake-up timer;
-   - an attempt starts only when `gate.active == 0` and no parked entry `keptNeeds` (so kept reads come
-     first; a closing link is waited for, as today);
+     `readEnd` is at least 1.1 s ago is read (N6 / A8). For one whose `readEnd` is newer, NodeLink sets its
+     read wake-up: one timer of its own (not `_timer`, which every pump resets, `node_link.dart:834-836`),
+     due at the earliest such `readEnd` + 1.1 s, calling `_pump`; cancelled in `background()` and `dispose`;
+   - an attempt starts only when `gate.active == 0`, the scan is running (as today) and no parked entry
+     `keptNeeds` (so kept reads come first; a closing link is waited for, as today); before it connects,
+     3.3 applies;
    - the scan is started when a round target has no entry (`core.roundTargets`, 3.4) and then runs until
      the round ends, as today; a round whose targets all have entries starts none;
    - a read in progress when the round is cancelled or replaced ends normally: `core.keptRead` takes it
@@ -164,19 +180,23 @@ Everything else in the gate is as it is: the per-link 120 s timer, `pass`, `revo
 6. `loginFor(id)`: the parked entry of `id` is lent when `id`'s node page is open (`_onPage(id)`, as today);
    on any other page it is closed and the login takes the existing path (as today: there was no kept link
    there). "A parked link of another id is closed" is deleted: the existing path runs with other entries
-   parked. Its two conditions `gate.links == 0` (`:465`) and `gate.links > 0` (`:479`) become
+   parked; before it connects, 3.3 applies. Its two conditions `gate.links == 0` (`:465`) and `gate.links > 0` (`:479`) become
    `gate.active == 0` / `> 0`. The early returns: lease not mine → the parked entry of `id` is closed;
    `core.blocked` → every entry not lent (as `radio()`).
 7. `released`, link down, `_keptRecordCheck`, the read limit: as today, on the entry concerned. Test getters
    `kept(id)` / `keptState(id)`.
 
-### 3.3 Room
+### 3.3 Room: never more than `keptMax` links
 
-`keptMax = 2` (the number the bench can check; U1). There is room for X when fewer than `keptMax` entries
-other than X exist. When there is none: on X's node page the first parked entry in map order is closed and
-X is kept (its close is counted in `active`, so the next attempt waits for it); on any other page, or if no
-other entry is parked, X is not kept (read, close). A link lent from the start (a login by the existing
-path) is an entry and counts.
+`keptMax = 2` (the number the bench can check; U1). Before NodeLink connects — a round's attempt or a login
+by the existing path — if `keptMax` entries exist, the first parked entry in map order is closed, and the
+connect waits for it to be gone (it is counted in `active`). So the app's own links (parked + reading + lent
++ connecting + closing) are never more than `keptMax`, and a new link always has room to be kept. An attempt
+starts only after every parked entry of the round was read (3.2-4), so no unread entry is closed for it. If
+no entry is parked (cannot happen: one lease, so at most one is lent), the connect goes ahead.
+
+With 3 or more nodes on the home page this closes one entry and connects one node per round (today: every
+node, every round).
 
 ### 3.4 Core (`core.dart`)
 
@@ -186,6 +206,10 @@ path) is an entry and counts.
   scan and connect.
 - `roundTargets`: the active round's targets (read-only), for the scan rule.
 
+- `_conclude` (`core.dart:729-741`): a target in the kept set with no body, no reason and no error code when
+  the round ends (a round that hit its cap before the read) is `Concl.unchanged`, not `notFound` — the link
+  is there; the next round reads it.
+
 Nothing else changes in the core: a kept target with an error code ends the round at its 30 s window, as
 today on a node page.
 
@@ -194,7 +218,7 @@ today on a node page.
 | Resource | Owner (only writer) | Readers |
 |---|---|---|
 | Set of open links, each link's token, the 120 s timer | BleGate | NodeLink (`links`, `active`, `up`) |
-| Kept entries and their state, `readEnd` | NodeLink | tests |
+| Kept entries and their state, `readEnd`, the read wake-up timer | NodeLink | tests |
 | `core` kept-id set | NodeLink (through `setKept`) | NodeLinkCore |
 | The lease | LeaseRegistry | NodeLink, gate (listeners, order unchanged) |
 | A lent link's session | the operation holding the lease | — |
@@ -228,15 +252,16 @@ gate timer), reading (NodeLink's), lent (the lease's), closing (nobody's; counte
 | Start with n records, home | n connects per round, each closed | first round: n connects, ≤ keptMax kept; later rounds: kept reads | L1 |
 | Home → node page → sub-page | page connects again; sub-page takes the page's link | page reads on the kept link; sub-page takes it | L2 |
 | Node page ≥ 120 s, back to home | other node: connect | other node: connect (its link ended by A4) | L3 |
-| `Page.other` (settings) | kept link closed at once | links end by A4 after ≤ 120 s | L4 |
+| `Page.other` (settings) | kept link closed at once | links end by A4 after ≤ 120 s; so does a link given back by an operation there (today: closed at once) | L4 |
 | Background, any length | closed at once; reconnect on return | same, every entry | L5 |
 | Operation from a node page (session lease on X), Y kept | Y cannot be kept at all | X's entry lent; Y stays parked; ends by A4 if the lease lasts > 120 s | L6 |
-| Operation from home / team / settings | new connect | X's entry closed, new connect; other entries stay | L6b |
+| Operation from home / team / settings | new connect | X's entry closed, new connect right after (§2); other entries stay, 3.3 | L6b, D9 |
 | Raw lease (older claim / scan page) | kept link closed, waited for | every parked entry closed, waited for | L7 |
 | Bluetooth off / permission lost / keys | kept link closed | every not-lent entry closed | L8 |
 | Link down (out of range, node reboot, node idle limit, `killOthers` after a claim / replay by someone else, owner removed) | entry forgotten | that entry forgotten, others untouched | L9 |
 | Record removed | its kept link closed | same, per entry | L10 |
-| More than `keptMax` nodes | — | 3.3 | L11 |
+| More than `keptMax` nodes | — | 3.3: one close + one connect per round | L11 |
+| Round hits its cap before a held node was read | — | state unchanged (3.4) | L19 |
 | OTA of a held node (lease > 120 s, node reboots) | — | other entry ended by A4; the node's link down → L9 | L6, L9 |
 | Node ends the session but its disconnect fails (N1 rule, 30 s) | parked link looks alive; first use finds out | same, per entry (§5) | L15 |
 | App killed / crash | Android closes the link (U4) | same, for each | D7 |
@@ -250,9 +275,13 @@ gate timer), reading (NodeLink's), lent (the lease's), closing (nobody's; counte
 
 ## 7. Tests
 
-In `app/test/nodelink/`. Rig work needed first: `kept_link_test.dart`'s `KRadio` holds one connection
-(`conn`, `addr`); it becomes a map by address with `drop(addr)` / `linkDown(addr)`, so several links exist at
-once. Existing tests that assert "closed on leaving the page" change to the new rule; the list goes in the
+In `app/test/nodelink/`. Rig work needed first (`kept_link_test.dart`): `KRadio` is one node — one `conn` /
+`addr`, one `tx` stream given to every subscriber (`:125`, `:176-189`), one `hold`, one `open` count; `KRig.run`
+advertises one address, and only while no link is open (`:355-360`). All of these become per address: an
+answer goes only to the link it was written on, a node is advertised while no link to *it* is open (plus a
+switch to advertise a linked node, for L16), `drop(addr)` / `linkDown(addr)`. `nl.kept` / `nl.keptState`
+(about 40 assertions) become `kept(id)` / `keptState(id)`. Tests about closing links run with `goneMs > 0`
+and the fake clock moving while the real-time wait of `_dropAll` runs. Existing tests that assert "closed on leaving the page" change to the new rule; the list goes in the
 PR body. Each row's control is the named change reverted, run once, shown failing.
 
 | # | Test | Control |
@@ -268,38 +297,44 @@ PR body. Each row's control is the named change reverted, run once, shown failin
 | L8 | `radio(bluetooth:false)` with 2 parked: both closed | only the first entry closed |
 | L9 | link down on X: X forgotten, Y read on its link in the same round, X by scan + connect | every entry forgotten on a link down |
 | L10 | record of X removed: X closed, Y kept | check only the first entry |
-| L11 | 3 records, keptMax 2: the 3rd is read by connect–close each round; on the 3rd's page the first parked entry is closed and the 3rd kept | room check removed (3 kept); eviction removed (3rd not kept on its page) |
+| L11 | 3 records, keptMax 2: `radio.maxOpen == 2` over 3 rounds; each round after the first = 2 kept reads + 1 close + 1 connect; with X and Y parked a login for Z from home closes one and never has 3 open | 3.3 removed → `maxOpen == 3` |
 | L12 | gate: connect to an address that has a link → refused; while another link is connecting, lent or closing → refused; with 2 parked → allowed | each term removed |
-| L13 | round with X kept and Y not: X read first, then Y's attempt; never a read and an attempt at once | "no parked entry keptNeeds" removed |
+| L13 | round begun 0.3 s after X's park, Y not kept: Y's attempt starts only after X's (deferred) read ended | "no parked entry keptNeeds" removed → the attempt starts during the wait |
 | L14 | all targets kept: no scan started in the round; X's entry dies mid-round → the scan starts | scan rule → always scan |
 | L15 | kept read of X fails (5 s): X closed; the attempt for X starts only after its link is gone and is not refused; Y untouched | `active` without closing links → attempt refused, counted as failed |
-| L16 | kept read of X ends with an error code while Y is still looked for: no attempt for X, the round ends at its window | `setKept` not applied in `_candidates` → an attempt for X |
-| L17 | round ends, page change starts a new round 0.3 s after X's read: the next read on X starts at 1.1 s, not before | wait removed → read at 0.3 s |
-| L18 | home → node page while X's entry is reading: the read ends, the entry is parked, the node page shows the body | — (no line to revert; asserts 3.2-4 last point) |
+| L16 | kept read of X ends with an error code while Y is still looked for and the rig advertises X's address: no attempt for X, the round ends at its window | `setKept` not applied in `_candidates` → an attempt for X |
+| L17 | page change starts a new round 0.3 s after X was parked — once after an attempt, once after a kept read, once after give-back: the next read on X starts at 1.1 s, not before; a pump arriving during the wait does not lose the wake-up | wait removed → read at 0.3 s; wake-up put on `_timer` → no read after the extra pump |
+| L18 | home → node page while X's entry is reading: the read ends, the entry is parked, the node page shows the body | close of a reading entry in `setPage` → a connect |
+| L19 | round ends at its cap with held X not read: X's shown state unchanged, no miss counted | `_conclude` line removed → `notFound` |
 
 Full suite: `flutter test`, `dart analyze`, `cargo test`, `test-all.sh` (no Rust change expected).
 
-Device pass (S20, 04 + 02, phone on 04's Wi-Fi; timings from the app's trace ring and logcat; node side from
-the provd log lines for link up / down and advert register / withdraw):
+Device pass (S20, 04 + 02, phone on 04's Wi-Fi). Evidence: the app's trace ring and logcat (connects, link
+state, reads, times); on the nodes the only lines there are — `provd: adv withdrawn reason=…` /
+`adv registered reason=…` (`bluez.go:675`, `:690`), i.e. "a link came" / "no link left". provd logs no session
+open or close, so sessions are seen from the app side only.
 
 - D0. Before installing: with the main APK now on the phone, home page for 30 min: count connects and
   failed connects, time per round. (The same-session "before".)
 - D1. Dev APK, home page for 30 min: both links held; count link drops per node, connects, failed connects,
-  time per round; node logs show no advert for that time (C1) and one session each.
+  time per round; node logs show no `adv registered` in that time (C1).
 - D2. Home rounds after the first: each node read in < 1.5 s (D0 ≈ 4 s each).
 - D3. Home → node page → Wi-Fi sub-page: < 1.5 s (earlier record 4–7.6 s; repeated with the main APK in D0's
   session). Once tapping the node within 1 s of a round's read (L17 on the device).
-- D4. Screen off 30 s → on: node logs show both links dropped at screen-off and the adverts back; reads
-  return by reconnect. Settings page 130 s: links dropped at ≈ 120 s (L4 on the device).
+- D4. Screen off 30 s → on: both nodes log `adv registered` at screen-off; reads
+  return by reconnect. Settings page 130 s: `adv registered` on both at ≈ 120 s (L4 on the device).
 - D5. Connect to 02 while 04 is held, 20 times (node page 02 → home → wait for 02's link to end …): count
   failures. D0 gives the rate without a held link. More than 4 of 20: 20 more; 8 or more of 40 = worse, and
   the PR says so. A small sample: ⚠️ either way.
-- D6. Open the older scan page (raw lease) with both held: node logs show both links dropped within 6 s.
+- D6. Open the older scan page (raw lease) with both held: both nodes log `adv registered` within 6 s.
   Nothing is tapped on that page.
-- D7. `am force-stop` with both held: node logs show both links dropped and the adverts back (U4).
-- D8. A build with `keptMax = 1` (local, not committed): 02 read by connect–close on home; on 02's page 04's
-  link is dropped and 02 kept (3.3 on the device).
-- ❌ Not on the bench now: more than 2 links (U1 — needs more peripherals); a second phone looking for a
+- D7. `am force-stop` with both held: both nodes log `adv registered` (U4).
+- D8. A build with `keptMax = 1` (local, not committed): on home each round closes one link and connects
+  the other node, never 2 links at once (app trace; 3.3 on the device).
+- D9. With both held, on the home page open 「加入網路」 far enough to log in to a node (the page's own
+  first step; nothing is submitted), 10 times: login time and failures, against the same 10 with the main
+  APK in D0's session (§2 cost).
+- ❌ Not on the bench now: 3 or more nodes (L11 only); a second phone looking for a
   held node; Bluetooth off / on (a phone setting: with the user on site).
 
 ## 8. Security
@@ -329,8 +364,8 @@ the provd log lines for link up / down and advert register / withdraw):
 ## 9. Steps
 
 1. This design: two reviewers, whole document, until no BLOCKER / MAJOR.
-2. Implement: rig (`KRadio`), gate, core, NodeLink, with L1–L18 and their controls.
-3. Full suite; D0 with the main APK; dev APK by `adb -s … install -r`; D1–D8.
+2. Implement: rig (`KRadio`), gate, core, NodeLink, with L1–L19 and their controls.
+3. Full suite; D0 with the main APK; dev APK by `adb -s … install -r`; D1–D9.
 4. PR with before / after numbers and C1 stated; CI; the user merges.
 
 ## 10. Changes from v1 (reviews A and B; ✔ = verified against source by the author)
@@ -349,3 +384,16 @@ the provd log lines for link up / down and advert register / withdraw):
 - Plugin invariants in §5; unknowns U4–U6; lifecycle rows added (B-5, B-6, B-10); §8 exposure lines (A, B-9).
 - Not taken: U1 measured with 5 peripherals now (B-2) — no such peripherals on the bench; `keptMax = 2`
   needs no such measurement. 90 s-cap rounds (A-7): stated in §2, no mechanism.
+
+Changes from v2 (reviews C and D, all checked against source by the author):
+
+- 3.3 is now "never more than `keptMax` links": the first parked entry is closed before a connect when the
+  map is full (D-2, C-7). It replaces v2's room rule and its node-page case; `keepFor` closes nothing (D-5c,
+  C-6).
+- `_conclude` for a held target not read in an ended round (D-4).
+- `readEnd` set at every park; the read wake-up is its own timer with an owner (D-5a/b, C-2, C-5).
+- Rig changes listed in full (D-1); controls of L7/L15 (`goneMs > 0`), L13, L16, L18 fixed; L19 added
+  (D-6, C-3, C-4).
+- Device evidence rewritten to the log lines that exist; node paths corrected (D-3). D9 added and the
+  close-then-connect cost of an off-page operation stated (C-1).
+- Give-back on `Page.other`, memo drop after long holds: stated (C-8, C-9).
