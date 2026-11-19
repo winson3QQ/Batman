@@ -95,7 +95,8 @@ KILLPROVD='for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /us
 lease(){ pr_lock; trap 'pr_on_exit' EXIT; PR_DEADLINE=$(( $(mono) + $1 )); local o; o=$(pr_acquire "$1") || { echo "$o"; no "lease"; pr_result; exit 1; }; PR_BEGUN=1; advid_push; }
 # the images the ADVID_PUSH binaries may be bound over (the helper / provd of the node branch are built against the
 # record and socket layout of these)
-ADVID_IMAGES='1.5.14-wsl.31+5c718d8.fwd4f5dc8.bench'
+ADVID_IMAGES='1.5.14-wsl.31+5c718d8.fwd4f5dc8.bench
+1.5.14-wsl.32+4c0078c.fw45def04.bench'
 advid_bail(){ no "ADVID_PUSH: $1"; pr_release; pr_result; exit 1; }
 advid_push(){
 	[ -n "${ADVID_PUSH:-}" ] || return 0
