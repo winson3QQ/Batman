@@ -1,5 +1,6 @@
 // #329 §4.3: NodeLink drives the core through BleGate. Fake radio, fake prober, manual clock.
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:batman_app/src/nodelink/ble_gate.dart';
 import 'package:batman_app/src/nodelink/core.dart';
@@ -38,11 +39,12 @@ class Radio implements BleBackend {
   final _states = StreamController<(String, bool, int?)>.broadcast(sync: true);
   int scans = 0, connects = 0, open = 0;
   final Set<String> down = {}; // addresses that never connect
+  final Map<String, Uint8List> mfr = {}; // address -> the Manufacturer Data of its adverts (none = null)
 
   @override
-  Stream<String> scan() {
+  Stream<(String, Uint8List?)> scan() {
     scans++;
-    return scanCtl.stream;
+    return scanCtl.stream.map<(String, Uint8List?)>((a) => (a, mfr[a]));
   }
 
   @override

@@ -2,6 +2,7 @@
 // the failure status the stack reports is logged by the gate — also when it arrives after the attempt has closed its
 // link (a separate platform message: J / I v3 MAJOR). Only the status number and the address's last 2 are logged.
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:batman_app/src/nodelink/ble_backend.dart' show failureCode;
 import 'package:batman_app/src/nodelink/ble_gate.dart';
@@ -33,7 +34,7 @@ class FailRadio implements BleBackend {
   final List<int> connectTimes = [];
 
   @override
-  Stream<String> scan() => scanCtl.stream;
+  Stream<(String, Uint8List?)> scan() => scanCtl.stream.map<(String, Uint8List?)>((a) => (a, null));
 
   @override
   Stream<bool> connect(String address, Duration timeout) {

@@ -131,6 +131,13 @@ class _Round {
   final Map<String, _T> t = {};
   Attempt? running;
   bool lastWasKnown = false;
+
+  /// #329 rotating identifier (329-rotating-id-plan.md §3.4-11 / -12), this round only. [like]: address -> the node
+  /// the last scan result's identifier resolved to (「像 Y」). [likeTried]: per target, the addresses an attempt was
+  /// started on as 「像 Y」 (at most 2; never removed in the round).
+  final Map<String, String> like = {};
+  final Set<String> likeLogged = {}; // one log line per address: a hint that flaps does not fill the log
+  final Map<String, Set<String>> likeTried = {};
 }
 
 class NodeLinkCore {
@@ -347,14 +354,25 @@ class NodeLinkCore {
     }
   }
 
-  /// One BLE address seen by this round's scan (the driver reports each visible address; repeats are fine). True = new
-  /// to this round (the driver re-plans only then; review pr1 A-m9 / B-m3).
-  bool onScan(int now, String a) {
+  /// One BLE address seen by this round's scan (the driver reports each visible address; repeats are fine). [hint]:
+  /// the node this result's rotating identifier resolved to, null = none (#329 rotating identifier §3.4-9); it only
+  /// orders the attempts, a login is what sets 「是 Y」. True = new to this round, or its hint changed (the driver
+  /// re-plans only then; review pr1 A-m9 / B-m3).
+  bool onScan(int now, String a, {String? hint}) {
     lastSeen[a] = now;
     final r = _round;
-    if (r == null || r.seen.contains(a)) return false;
-    r.seen.add(a);
-    return true;
+    if (r == null) return false;
+    var news = false;
+    if (!r.seen.contains(a)) {
+      r.seen.add(a);
+      news = true;
+    }
+    if (r.like[a] != hint) {
+      hint == null ? r.like.remove(a) : r.like[a] = hint;
+      if (r.likeLogged.add(a)) _log('${_s(now)}   $a like ${hint ?? '-'}');
+      news = true;
+    }
+    return news;
   }
 
   // ---- rounds --------------------------------------------------------------------------------------------------
@@ -432,23 +450,38 @@ class NodeLinkCore {
     return !r.tried.contains(key) || r.retry.contains(key);
   }
 
+  /// 「像 Y」 (#329 rotating identifier §3.4-12): [a]'s last scan result in this round resolved to [id], it has no 「是」
+  /// memo and no 「不是 Y」 memo, and [id] still has one of its two 「像 Y」 addresses of the round for it.
+  bool _likes(_Round r, String a, String id) {
+    if (r.like[a] != id || isY[a] != null || isNot(a, id)) return false;
+    final tried = r.likeTried[id];
+    return tried == null || tried.contains(a) || tried.length < 2;
+  }
+
   /// The addresses this target may still try this round, in order (§4.3.3-6). A target with a 「是 Y」 memo waits for
-  /// that address during the first 30 s window and only then looks at unknown addresses (its address may have changed).
+  /// that address during the first 30 s window and only then looks at unknown addresses (its address may have changed);
+  /// its 「像 Y」 addresses are not waited for, and come first.
   List<String> _candidates(_Round r, String id, {required bool lookOk}) {
     final t = r.t[id]!;
     if (t.body || t.why != null) return const [];
     final k = _knownAddr(r, id);
     if (k != null) return _canTry(r, k, id) ? [k] : const [];
-    if (!lookOk && isY.containsValue(id)) return const [];
     final order = [...r.seen.where((a) => !r.noRespLast.contains(a)), ...r.seen.where(r.noRespLast.contains)];
-    return [
+    final like = [
       for (final a in order)
-        if (isY[a] == null && !isNot(a, id) && !r.exhausted.contains(a) && _canTry(r, a, id)) a
+        if (_likes(r, a, id) && !r.exhausted.contains(a) && _canTry(r, a, id)) a
+    ];
+    if (!lookOk && isY.containsValue(id)) return like;
+    return [
+      ...like,
+      for (final a in order)
+        if (!like.contains(a) && isY[a] == null && !isNot(a, id) && !r.exhausted.contains(a) && _canTry(r, a, id)) a
     ];
   }
 
-  /// The next attempt to start, or null. Two queues take turns: targets on their known address (「是 Y」 scanned)
-  /// and targets still looking (unknown addresses), so neither kind can starve the other (round-12 A-M1 / B-M1).
+  /// The next attempt to start, or null. Two queues take turns: targets on their known address (「是 Y」 scanned, or
+  /// a pick that is 「像 Y」) and targets still looking (unknown addresses), so neither kind can starve the other
+  /// (round-12 A-M1 / B-M1).
   Attempt? next(int now) {
     final r = _round;
     if (r == null || r.running != null) return null;
@@ -458,7 +491,7 @@ class NodeLinkCore {
       final cands = _candidates(r, id, lookOk: now - r.start >= p.window).where((a) => _open(r, a, now)).toList();
       if (cands.isEmpty) continue;
       pick[id] = cands.first;
-      (_knownAddr(r, id) != null ? known : look).add(id);
+      (_knownAddr(r, id) != null || _likes(r, pick[id]!, id) ? known : look).add(id);
     }
     if (known.isEmpty && look.isEmpty) return null;
     known.sort((x, y) => _cmp(r, x, y));
@@ -472,6 +505,7 @@ class NodeLinkCore {
     r.count[a.addr] = (r.count[a.addr] ?? 0) + 1;
     r.retry.remove('${a.addr}|$id');
     r.tried.add('${a.addr}|$id');
+    if (_likes(r, a.addr, id)) (r.likeTried[id] ??= {}).add(a.addr);
     return a;
   }
 
@@ -533,6 +567,10 @@ class NodeLinkCore {
           // replaying an old address must not hide the node for good; code-1 B-m1)
           isY.remove(a.addr);
         } else if (isY[a.addr] == a.id) {
+          r.retry.add(key);
+        } else if ((r.likeTried[a.id]?.contains(a.addr) ?? false) && (r.count[a.addr] ?? 0) < p.perAddr) {
+          // an address tried as 「像 Y」 is tried once more, like a 「是 Y」 address, while the round has an attempt left
+          // for it (rotating identifier §3.4-15)
           r.retry.add(key);
         } else {
           r.exhausted.add(a.addr);
@@ -751,27 +789,55 @@ class LoginFor {
   final Map<String, int> freeAt = {};
   final Set<String> tried = {}, retry = {};
   final Map<String, int> silent = {};
+
+  /// #329 rotating identifier §3.4-11 / -12, this login only: as `like` / `likeTried` of a round.
+  final Map<String, String> like = {};
+  final Set<String> likeLogged = {};
+  final Set<String> likeTried = {};
   Attempt? running;
   LoginEnd? end;
   int handshakes = 0;
 
   bool get done => end != null;
 
-  void onScan(int now, String a) {
+  /// As [NodeLinkCore.onScan]: true = the address is new to this login, or its hint changed.
+  bool onScan(int now, String a, {String? hint}) {
     c.lastSeen[a] = now;
-    if (!seen.contains(a)) seen.add(a);
+    var news = false;
+    if (!seen.contains(a)) {
+      seen.add(a);
+      news = true;
+    }
+    if (like[a] != hint) {
+      hint == null ? like.remove(a) : like[a] = hint;
+      if (likeLogged.add(a)) c._log('${NodeLinkCore._s(now)}   loginFor $a like ${hint ?? '-'}');
+      news = true;
+    }
+    return news;
   }
 
   bool _ok(String a) => !tried.contains(a) || retry.contains(a);
 
-  /// Its known address first; with a 「是 Y」 memo it waits for that address during the first 30 s; then unknown
-  /// addresses in scan order (never one with any 「是」 memo or a 「不是 Y」 memo).
+  bool _likes(String a) =>
+      like[a] == id && c.isY[a] == null && !c.isNot(a, id) && (likeTried.contains(a) || likeTried.length < 2);
+
+  /// Its known address first; else its 「像 Y」 addresses (at most two, each until it stayed silent twice), at once;
+  /// with a 「是 Y」 memo it waits for one of those during the first 30 s; then unknown addresses in scan order (never
+  /// one with any 「是」 memo or a 「不是 Y」 memo).
   Attempt? next(int now) {
     if (done || running != null) return null;
     String? pick;
     final known = seen.where((a) => c.isY[a] == id).toList();
+    final liked = known.isNotEmpty
+        ? null
+        : seen
+            .where((a) => _likes(a) && (silent[a] ?? 0) < c.p.perAddr && _ok(a) && (freeAt[a] ?? 0) <= now)
+            .firstOrNull;
     if (known.isNotEmpty) {
       if (_ok(known.first) && (freeAt[known.first] ?? 0) <= now) pick = known.first;
+    } else if (liked != null) {
+      pick = liked;
+      likeTried.add(liked);
     } else if (!c.isY.containsValue(id) || now - start >= c.p.window) {
       final open = [
         for (final a in seen)

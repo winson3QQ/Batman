@@ -23,6 +23,12 @@ class Dev {
   final Map<String, int> byPhone = {};
   int readvertise = 5000; // N8: ~5 s after a disconnect (M-1 R)
 
+  /// #329 rotating identifier: the node the phones named in [hintTo] (null = every phone) resolve this device's
+  /// adverts to. Null = no hint (a node without the field, or no record of it on the phone).
+  String? hint;
+  Set<String>? hintTo;
+  String? hintFor(String phone) => hintTo == null || hintTo!.contains(phone) ? hint : null;
+
   bool advertising(int now) => on && now >= busyUntil && now >= quietUntil;
 }
 
@@ -127,7 +133,7 @@ class World {
         continue;
       }
       final since = ph.seenAt.putIfAbsent(d.addr, () => now);
-      if (now >= since + see) c.onScan(now, d.addr);
+      if (now >= since + see) c.onScan(now, d.addr, hint: d.hintFor(ph.name));
     }
   }
 
@@ -165,7 +171,7 @@ class World {
         continue;
       }
       final since = ph.loginSeen.putIfAbsent(d.addr, () => now);
-      if (now >= since + see) l.onScan(now, d.addr);
+      if (now >= since + see) l.onScan(now, d.addr, hint: d.hintFor(ph.name));
     }
     if (ph.running == null) {
       final a = l.next(now);

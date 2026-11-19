@@ -3,13 +3,15 @@
 // starts in any 30 s (A10: the 6th within ~15 s is refused by Android, M-1 E); "disconnected" = the connection state
 // stream says so, or 5 s. The radio sits behind BleBackend so the gate is testable without a phone.
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'lease.dart';
 
 /// What the gate needs from the BLE library (the app wires FlutterReactiveBle to it).
 abstract class BleBackend {
-  /// Scan for the provd service; every advertisement as (address).
-  Stream<String> scan();
+  /// Scan for the provd service; every advertisement as (address, its Manufacturer Data as the plugin gives it:
+  /// company id little-endian, then the data; null when it has none). #329 rotating identifier §3.3.
+  Stream<(String, Uint8List?)> scan();
 
   /// Connect; emits true when connected, false when disconnected (then completes or errors). Cancelling the
   /// subscription disconnects; after that this stream says nothing more.
@@ -42,7 +44,7 @@ class GateScan {
   GateScan._(this.gate, this.token);
   final BleGate gate;
   final Token token;
-  StreamSubscription<String>? _sub;
+  StreamSubscription<(String, Uint8List?)>? _sub;
   bool _open = true;
   bool get open => _open;
 
@@ -207,7 +209,9 @@ class BleGate implements LeaseListener {
   /// Start the one scan. A start beyond 4 in 30 s waits inside the gate until it is allowed (§4.2). [ended] is called
   /// once if the radio ends the scan by itself (an error such as Bluetooth off or no permission, or the stream
   /// closing); the scan is closed then (review pr1 A-M3 / B-M5).
-  Future<GateScan> scan(Token? t, void Function(String address) seen, {void Function(Object? error)? ended}) async {
+  /// [seen]: every scan result with its Manufacturer Data (null = none), passed through as the backend gives it.
+  Future<GateScan> scan(Token? t, void Function(String address, Uint8List? mfr) seen,
+      {void Function(Object? error)? ended}) async {
     _gate(t, 'scan');
     if (_scans.isNotEmpty) {
       _refuse('scan: a scan is already running');
@@ -232,7 +236,7 @@ class BleGate implements LeaseListener {
       ended?.call(e);
     }
 
-    s._sub = backend.scan().listen(seen, onError: (Object e) => end(e), onDone: () => end(null));
+    s._sub = backend.scan().listen((r) => seen(r.$1, r.$2), onError: (Object e) => end(e), onDone: () => end(null));
     return s;
   }
 

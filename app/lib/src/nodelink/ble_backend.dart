@@ -1,5 +1,7 @@
 // #329 §4.2: the real radio behind BleGate. The only place in the new code that touches flutter_reactive_ble;
 // one FlutterReactiveBle for the whole app.
+import 'dart:typed_data';
+
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
 import 'ble_gate.dart';
@@ -18,9 +20,12 @@ class ReactiveBackend implements BleBackend {
   QualifiedCharacteristic _q(String address, Char c) =>
       QualifiedCharacteristic(characteristicId: _ids[c]!, serviceId: provdService, deviceId: address);
 
+  // the plugin's Manufacturer Data (reactive_ble_mobile 5.6.0 ManufacturerDataConverter.kt): the first entry's
+  // company id, little-endian, then its data; empty when the advert has none
   @override
-  Stream<String> scan() =>
-      ble.scanForDevices(withServices: [provdService], scanMode: ScanMode.lowLatency).map((d) => d.id);
+  Stream<(String, Uint8List?)> scan() => ble
+      .scanForDevices(withServices: [provdService], scanMode: ScanMode.lowLatency)
+      .map((d) => (d.id, d.manufacturerData.isEmpty ? null : d.manufacturerData));
 
   @override
   Stream<bool> connect(String address, Duration timeout) => ble

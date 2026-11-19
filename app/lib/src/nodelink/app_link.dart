@@ -15,7 +15,7 @@ import '../flows/owner_console.dart' show ConsolePlatform;
 import '../flows/net_index.dart';
 import '../rust/api/claim.dart' show storeKeepCopy, storeRemove, storeWriteSealed;
 import '../rust/api/member.dart' show mnetSummary;
-import '../rust/api/owner.dart' show listNodes, netSummary, storeReadSealed, storeWriteCas;
+import '../rust/api/owner.dart' show AdvResolver, listNodes, netSummary, storeReadSealed, storeWriteCas;
 import 'ble_backend.dart';
 import 'ble_gate.dart';
 import 'core.dart';
@@ -33,6 +33,30 @@ Future<Uint8List?> openSealedRecord(MethodChannel platform, String records, Stri
   final sealed = await storeReadSealed(dir: records, rel: rel);
   if (sealed == null) return null;
   return platform.invokeMethod<Uint8List>('open', {'sealed': sealed.sealed, 'aad': sealed.aad});
+}
+
+/// #329 rotating identifier (329-rotating-id-plan.md §3.3): the resolver of the scan results' identifiers, from the
+/// node records [ids]. [open] is its only way to a key: a record that does not open (none on disk, a key error) is
+/// left out and that node is found the old way; nothing here reads the key abilities or reports a key error. [make]:
+/// the opened records -> the resolver (the app: Rust's AdvResolver, which keeps the keys). The opened bytes are
+/// zeroed here once [make] has them.
+@visibleForTesting
+Future<T> buildResolver<T>(List<String> ids, Future<Uint8List?> Function(String id) open,
+    T Function(List<Uint8List> plains) make) async {
+  final plains = <Uint8List>[];
+  try {
+    for (final id in ids) {
+      try {
+        final p = await open(id);
+        if (p != null) plains.add(p);
+      } catch (_) {}
+    }
+    return make(plains);
+  } finally {
+    for (final p in plains) {
+      p.fillRange(0, p.length, 0);
+    }
+  }
 }
 
 /// A23 (design §10, §4.3.3-6): the node records under [records] with their file's last write time, which orders them
@@ -158,6 +182,11 @@ class AppLink {
       loginProber: handoff,
       // design §4.1: the keys are read live before each login
       keysOk: () async => (await KeyAbilities.read(platform)).login,
+      // rotating identifier §3.3: opens with openSealedRecord only (never through the prober's keyError)
+      buildResolver: (ids) => buildResolver(ids, (id) => openSealedRecord(platform, records, 'node/$id'), (plains) {
+        final r = AdvResolver(records: plains);
+        return Resolver((mfr) => r.resolve(mfr: mfr), r.dispose);
+      }),
     );
     final writer = RecordWriter(
       reg,
