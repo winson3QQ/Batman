@@ -12,6 +12,7 @@ These vectors use the PRODUCTION labels and prologue; they are not secrets
 and must never be used as real keys.
 """
 import hashlib
+import hmac
 import json
 import sys
 
@@ -209,6 +210,16 @@ out["hkdf"] = {
     "psk_owner": hx(PSK_OWNER), "psk_member": hx(PSK_MEMBER),
     "adv_owner": hx(ADV_OWNER), "adv_member": hx(ADV_MEMBER),
     "note": "HKDF-SHA256, salt empty, L = 32; info = label || fields (device_id ASCII, last)",
+}
+
+# ------------------------------------------------------------------ advert identifier (#329; 219 §4.1, §6)
+ADV_CID = 0xFFFF                                  # development images; a Bluetooth SIG company id before v3.0 PROD
+ADV_ID_NONCE = seed("adv_id_nonce")[:3]
+ADV_ID_TAG = hmac.new(ADV_OWNER, b"batman-adv-id-v1" + ADV_ID_NONCE, hashlib.sha256).digest()[:3]
+out["adv_id"] = {
+    "cid": ADV_CID, "nonce": hx(ADV_ID_NONCE), "tag": hx(ADV_ID_TAG),
+    "ad": hx(bytes([9, 0xFF]) + ADV_CID.to_bytes(2, "little") + ADV_ID_NONCE + ADV_ID_TAG),
+    "note": "tag = HMAC-SHA256(adv_owner, 'batman-adv-id-v1' || nonce)[0..3]; ad = len 0x09, type 0xFF, cid LE, nonce, tag",
 }
 
 

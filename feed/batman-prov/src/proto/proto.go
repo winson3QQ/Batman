@@ -9,6 +9,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
@@ -160,6 +161,20 @@ func PskOwner(ownerTagKey []byte, deviceID string) []byte {
 func AdvOwner(advOwnerKey []byte, deviceID string) []byte {
 	return HKDF32(advOwnerKey, cat([]byte("batman-adv-owner-v1"), []byte(deviceID)))
 }
+
+// AdvCID is the company id of the advert's Manufacturer Data field (#329 rotating identifier): 0xFFFF on development
+// images; a Bluetooth SIG id replaces it before v3.0 PROD. The shared vector adv_id carries the same value.
+const AdvCID uint16 = 0xFFFF
+
+// AdvIDTag is the 3-byte tag of the advert identifier: HMAC-SHA256(k, "batman-adv-id-v1" ‖ n)[0..3], k = AdvOwner,
+// n = the 3-byte nonce the helper draws for every registration.
+func AdvIDTag(k, n []byte) []byte {
+	m := hmac.New(sha256.New, k)
+	m.Write([]byte("batman-adv-id-v1"))
+	m.Write(n)
+	return m.Sum(nil)[:3]
+}
+
 func PskMember(netRoot, netID []byte, version uint32) []byte {
 	return HKDF32(netRoot, cat([]byte("batman-psk-member-v1"), netID, u32be(version)))
 }

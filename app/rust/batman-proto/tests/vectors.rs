@@ -44,6 +44,7 @@ const COVERAGE: &[(&str, &str)] = &[
     ("version_chain", "pending: not in S1 (network/update)"),
     ("network_update", "tested (network_update_body_*: updflow::body rebuilds body_v2 byte for byte from its three objects; the app's cose verifies them as version 2 after cose.net_config; cose::decrypt opens v2's secrets to sae_v2 / net_root_v2; stale_body_v2's version-1 secrets are refused by the app's pre-send filter MNet::secrets_for and do not open as version 2)"),
     ("sas", "tested (tests/member.rs M1)"),
+    ("adv_id", "pending: the app resolver (#329 rotating identifier, design §10 step 6); the node side is tested in Go (proto_test.go, verify.py)"),
 ];
 
 #[test]

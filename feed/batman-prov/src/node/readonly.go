@@ -12,13 +12,14 @@ import (
 	"time"
 
 	"batman-prov/cbor"
+	"batman-prov/proto"
 	"batman-prov/provstore"
 )
 
 // readOnlyVerbs is the closed list; every other verb takes the mutex.
 var readOnlyVerbs = map[string]bool{"health.get": true, "info.boot_id": true, "info.cert": true, "info.ecdh_pub": true,
 	"info.state": true, "info.net": true, "info.owners": true, "status.get": true,
-	"settings.get": true, "update.status": true}
+	"settings.get": true, "update.status": true, "adv.id": true}
 
 const (
 	roGlobalRate, roGlobalBurst = 10, 40
@@ -164,6 +165,14 @@ func (n *Node) readOnly(verb string, a cbor.Map, conn, statusConn *bucket) (cbor
 			pubs = append(pubs, o.Pub)
 		}
 		return cbor.M(1, pubs), nil
+	case "adv.id":
+		// #329: a fresh 3-byte nonce and its tag under adv_owner, for provd to advertise; never the key. No 32-byte
+		// adv_owner_key (unclaimed, legacy record) -> EUnsupported, like a missing record.
+		if len(rec.AdvOwnerKey) != 32 {
+			return nil, fail(EUnsupported, "no advert key")
+		}
+		nn := rnd(3)
+		return cbor.M(1, append(nn, proto.AdvIDTag(proto.AdvOwner(rec.AdvOwnerKey, n.KS.DeviceID()), nn)...)), nil
 	}
 	return nil, fail(ESchema, "unreachable")
 }

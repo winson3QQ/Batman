@@ -22,7 +22,7 @@ _provd_env() {
 	[ "$(_lsn "$ENVF")" = "-rw------- 1 0" ] || return 0
 	local k v out=
 	while IFS='=' read -r k v; do
-		case "$k" in SOCK_ONLY | FAST_FAKE_DELAY_MS | NO_BRUTE_LIMIT | GATT_ENCRYPT_CTRL | ADV_LEN_TEST) ;; *) continue ;; esac
+		case "$k" in SOCK_ONLY | FAST_FAKE_DELAY_MS | NO_BRUTE_LIMIT | GATT_ENCRYPT_CTRL | ADV_LEN_TEST | ADV_ID_OFF) ;; *) continue ;; esac
 		case "$v" in '' | *[!0-9]*) continue ;; esac
 		out="$out $k=$v"
 	done <"$ENVF"

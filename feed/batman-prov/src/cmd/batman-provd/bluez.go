@@ -17,6 +17,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
 
+	"batman-prov/proto"
 	"batman-prov/provd"
 )
 
@@ -36,7 +37,9 @@ const (
 	errDenied = "org.freedesktop.DBus.Error.AccessDenied"
 	rpaBase   = 900 * time.Second
 	advUUIDAD = 18 // BlueZ's AD for one 128-bit service UUID list: len(1) type(1) uuid(16)
-	advFlags  = 3  // the Flags AD the kernel prepends (F-P10)
+	advMfrAD  = 10 // #329 Manufacturer Data AD: len(1) type(1) company id(2) nonce(3) tag(3)
+	advFlags  = 3  // the Flags AD BlueZ adds (F-P11)
+	advIDWait = 2 * time.Second
 	advMax    = 31
 )
 
@@ -45,8 +48,14 @@ type bleSide struct {
 	te   provd.TestEnv
 	logf func(string, ...any)
 
+	// #329 seams (tests replace them): advID asks the helper for nonce ‖ tag; adv, when set, stands in for the
+	// advertisement's D-Bus calls
+	advID func() ([]byte, error)
+	adv   advAPI
+
 	mu        sync.Mutex
 	conn      *dbus.Conn
+	advProps  *prop.Properties // the advertisement's properties on conn: written and read together with conn
 	bluezName string
 	appOK     bool
 	advOn     bool
@@ -62,13 +71,51 @@ type bleSide struct {
 
 func newBLE(srv *provd.Server, te provd.TestEnv, logf func(string, ...any)) *bleSide {
 	return &bleSide{srv: srv, te: te, logf: logf, links: map[dbus.ObjectPath]*bleLink{}, devConn: map[dbus.ObjectPath]*devEnt{},
+		advID: func() ([]byte, error) { return srv.AdvID(advIDWait) },
 		quit:  make(chan struct{}),
 		kickc: make(chan struct{}, 1)}
 }
 
+// advAPI is what register / withdraw do to the advertisement (#329): the ManufacturerData property and the two
+// LEAdvertisingManager1 calls. busAdv is the real one: one bus connection and that connection's property handle.
+type advAPI interface {
+	SetMfr(map[uint16]dbus.Variant)
+	Register() error
+	Unregister()
+}
+
+type busAdv struct {
+	c *dbus.Conn
+	p *prop.Properties
+}
+
+func (a busAdv) SetMfr(m map[uint16]dbus.Variant) {
+	a.p.SetMust("org.bluez.LEAdvertisement1", "ManufacturerData", m)
+}
+func (a busAdv) Register() error {
+	return a.c.Object(bluez, adapter).Call("org.bluez.LEAdvertisingManager1.RegisterAdvertisement", 0, advPath,
+		map[string]dbus.Variant{}).Err
+}
+func (a busAdv) Unregister() {
+	a.c.Object(bluez, adapter).Call("org.bluez.LEAdvertisingManager1.UnregisterAdvertisement", 0, advPath)
+}
+
+// advNow: the advertisement of the current bus connection (nil without one) and advOn, read in one section.
+func (b *bleSide) advNow() (advAPI, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.adv != nil {
+		return b.adv, b.advOn
+	}
+	if b.conn == nil {
+		return nil, b.advOn
+	}
+	return busAdv{b.conn, b.advProps}, b.advOn
+}
+
 // preflight: the ADV length self-check (§4.4) — only our own program error; the kernel patch is the real guard.
 func (b *bleSide) preflight() int {
-	n := advUUIDAD
+	n := advUUIDAD + advMfrAD
 	if b.te.AdvLenTest > 0 {
 		n = b.te.AdvLenTest
 	}
@@ -224,7 +271,7 @@ func (o *objMgr) GetManagedObjects(sender dbus.Sender) (map[dbus.ObjectPath]map[
 	return o.objs, nil
 }
 
-func (b *bleSide) export(c *dbus.Conn) error {
+func (b *bleSide) export(c *dbus.Conn) (*prop.Properties, error) {
 	chars := []struct {
 		kind, uuid string
 		flags      []string
@@ -241,7 +288,7 @@ func (b *bleSide) export(c *dbus.Conn) error {
 	om := &objMgr{b: b, objs: map[dbus.ObjectPath]map[string]map[string]dbus.Variant{}}
 	sp := map[string]*prop.Prop{"UUID": {Value: SvcUUID}, "Primary": {Value: true}}
 	if _, err := prop.Export(c, svcPath, prop.Map{"org.bluez.GattService1": sp}); err != nil {
-		return err
+		return nil, err
 	}
 	om.objs[svcPath] = map[string]map[string]dbus.Variant{"org.bluez.GattService1": {
 		"UUID": dbus.MakeVariant(SvcUUID), "Primary": dbus.MakeVariant(true)}}
@@ -255,24 +302,24 @@ func (b *bleSide) export(c *dbus.Conn) error {
 			vm[k] = dbus.MakeVariant(v)
 		}
 		if err := c.Export(&gattObj{b: b, kind: ch.kind}, p, "org.bluez.GattCharacteristic1"); err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := prop.Export(c, p, prop.Map{"org.bluez.GattCharacteristic1": props}); err != nil {
-			return err
+			return nil, err
 		}
 		om.objs[p] = map[string]map[string]dbus.Variant{"org.bluez.GattCharacteristic1": vm}
 	}
 	if err := c.Export(om, appPath, "org.freedesktop.DBus.ObjectManager"); err != nil {
-		return err
+		return nil, err
 	}
-	// the advertisement: UUID list only (21 B with the kernel's Flags), not discoverable, nothing else (§4.4)
+	// the advertisement: the UUID list, not discoverable, and ManufacturerData (a{qv}): empty = no field (21 B with
+	// BlueZ's Flags) or the #329 identifier (31 B). register() is its only writer; no change signal (§4.4)
 	ap := map[string]*prop.Prop{"Type": {Value: "peripheral"}, "ServiceUUIDs": {Value: []string{SvcUUID}},
-		"Discoverable": {Value: false}}
+		"Discoverable": {Value: false}, "ManufacturerData": {Value: map[uint16]dbus.Variant{}, Emit: prop.EmitFalse}}
 	if err := c.Export(&advObj{b: b}, advPath, "org.bluez.LEAdvertisement1"); err != nil {
-		return err
+		return nil, err
 	}
-	_, err := prop.Export(c, advPath, prop.Map{"org.bluez.LEAdvertisement1": ap})
-	return err
+	return prop.Export(c, advPath, prop.Map{"org.bluez.LEAdvertisement1": ap})
 }
 
 // ---- links ---------------------------------------------------------------------------------------------------
@@ -463,7 +510,8 @@ func (b *bleSide) connect() error {
 		c.Close()
 		return err
 	}
-	if err := b.export(c); err != nil {
+	ap, err := b.export(c)
+	if err != nil {
 		c.Close()
 		return err
 	}
@@ -474,7 +522,7 @@ func (b *bleSide) connect() error {
 	c.AddMatchSignal(dbus.WithMatchInterface("org.freedesktop.DBus.Properties"), dbus.WithMatchMember("PropertiesChanged"),
 		dbus.WithMatchSender(bluez), dbus.WithMatchArg(0, "org.bluez.Device1"))
 	b.mu.Lock()
-	b.conn, b.appOK, b.advOn = c, false, false
+	b.conn, b.advProps, b.appOK, b.advOn = c, ap, false, false
 	b.mu.Unlock()
 	b.refreshOwner()
 	return nil
@@ -584,10 +632,8 @@ func (b *bleSide) registerApp() error {
 }
 
 func (b *bleSide) register(why string) {
-	b.mu.Lock()
-	c, on := b.conn, b.advOn
-	b.mu.Unlock()
-	if on || c == nil {
+	a, on := b.advNow()
+	if on || a == nil {
 		return
 	}
 	b.staleLinks()
@@ -598,29 +644,49 @@ func (b *bleSide) register(why string) {
 	if n > 0 {
 		return
 	}
-	if err := c.Object(bluez, adapter).Call("org.bluez.LEAdvertisingManager1.RegisterAdvertisement", 0, advPath,
-		map[string]dbus.Variant{}).Err; err != nil {
+	// #329: every registration carries a new identifier from the helper, or none (never an old one). Any helper
+	// error -> no field, and nothing is scheduled: the next ordinary registration asks again.
+	mfr, field := map[uint16]dbus.Variant{}, "id=1"
+	if b.te.AdvIDOff {
+		field = "id=0 why=off"
+	} else if id, err := b.advID(); err != nil {
+		field = "id=0 why=helper"
+	} else {
+		mfr[proto.AdvCID] = dbus.MakeVariant(id)
+	}
+	a.SetMfr(mfr)
+	if err := a.Register(); err != nil {
 		b.logLimit("register", fmt.Sprintf("provd: adv register failed: %v", err))
-		return
+		if len(mfr) == 0 {
+			return
+		}
+		// refused with the field, whatever the error: once more without it (the node never stays silent for it)
+		a.SetMfr(map[uint16]dbus.Variant{})
+		if err := a.Register(); err != nil {
+			b.logLimit("register", fmt.Sprintf("provd: adv register failed: %v", err))
+			return
+		}
+		field = "id=0 why=register"
 	}
 	b.mu.Lock()
 	b.advOn, b.nextRPA, b.advAt = true, time.Now().Add(rpaBase+jitter(30, 120)), time.Now()
 	b.mu.Unlock()
+	b.logf("provd: adv field %s", field)
 	b.logf("provd: adv registered reason=%s", why)
 }
 
 func (b *bleSide) withdraw(why string) {
+	a, on := b.advNow()
 	b.mu.Lock()
-	c, on := b.conn, b.advOn
 	b.advOn = false
 	if on {
 		b.advAt = time.Now()
 	}
 	b.mu.Unlock()
-	if !on || c == nil {
+	if !on || a == nil {
 		return
 	}
-	c.Object(bluez, adapter).Call("org.bluez.LEAdvertisingManager1.UnregisterAdvertisement", 0, advPath)
+	a.Unregister()
 	b.logf("provd: adv withdrawn reason=%s", why)
 }
 

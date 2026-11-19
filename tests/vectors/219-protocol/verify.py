@@ -343,6 +343,14 @@ def main(argv=None):
     check("adv_owner", hkdf(b(K["adv_owner_key"]), b"batman-adv-owner-v1" + did).hex() == v["hkdf"]["adv_owner"])
     check("adv_member", hkdf(nroot, b"batman-adv-member-v1" + nid + u1).hex() == v["hkdf"]["adv_member"])
 
+    # ------------------------------------------------------------------ advert identifier (#329)
+    ai = v["adv_id"]
+    tag = hmac.new(b(v["hkdf"]["adv_owner"]), b"batman-adv-id-v1" + b(ai["nonce"]), hashlib.sha256).digest()
+    check("adv_id nonce and tag are 3 B each", len(b(ai["nonce"])) == 3 and len(b(ai["tag"])) == 3)
+    check("adv_id tag", tag[:3].hex() == ai["tag"])
+    check("adv_id ad", (bytes([9, 0xFF]) + ai["cid"].to_bytes(2, "little") + b(ai["nonce"]) + b(ai["tag"])).hex() == ai["ad"]
+          and len(b(ai["ad"])) == 10)
+
 
     noise_check("NX", v["noise_nx"], None)
     noise_check("NXpsk0", v["noise_nxpsk0_owner"], b(v["hkdf"]["psk_owner"]))
