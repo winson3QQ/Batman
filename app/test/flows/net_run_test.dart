@@ -145,7 +145,7 @@ class _FakeHandoff implements LoginHandoff {
   final String fid;
   static final closedIds = <String>[];
   @override
-  Future<void> close() async => closedIds.add(fid);
+  Future<void> close({bool reusable = false}) async => closedIds.add(fid);
   @override
   dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
 }

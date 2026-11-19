@@ -64,6 +64,33 @@ void read(AppLink a, StatusView v, {bool fresh = true}) => a.link.core.states[id
   ..extra = v
   ..last = Concl.read;
 
+/// #329 UX plan §4.9 / T21: the session of a node that answers the status request after a leave with E_RATE (on a
+/// kept session the page was read less than the node's limit ago): Rust then returns the page from before the leave,
+/// marked not fresh.
+class RateSession extends P4Session {
+  RateSession(super.rust);
+  @override
+  StatusView statusView({required bool hasNet, required bool hasMnet}) {
+    pageReads++;
+    final v = view(netId: 'ab12');
+    return StatusView(
+        color: v.color,
+        row: v.row,
+        sentence: v.sentence,
+        lagNote: v.lagNote,
+        warning: v.warning,
+        nodeState: v.nodeState,
+        netId: v.netId,
+        version: v.version,
+        tech: v.tech,
+        fresh: false,
+        rateNote: '節點忙碌，顯示的是先前的狀態',
+        unfinished: v.unfinished,
+        unfinishedUnderVerdict: v.unfinishedUnderVerdict,
+        canLeave: v.canLeave);
+  }
+}
+
 class _Flow implements SwFlow {
   @override
   dynamic noSuchMethod(Invocation i) => throw UnimplementedError('${i.memberName}');
@@ -176,8 +203,8 @@ void main() {
   });
 
   group('離開網路', () {
-    Future<(Fx, AppLink)> openLeave(WidgetTester t, {String netId = 'ab12', bool push = false}) async {
-      final f = Fx(rust);
+    Future<(Fx, AppLink)> openLeave(WidgetTester t, {String netId = 'ab12', bool push = false, bool rate = false}) async {
+      final f = rate ? Fx(rust, make: RateSession.new) : Fx(rust);
       final a = app();
       read(a, view(netId: netId));
       final page = LeavePage(app: a, ui: UiState(MemStore()), id: id, deps: f.d);
@@ -215,6 +242,20 @@ void main() {
       expect(t.widget<Text>(find.byKey(const Key('leave-after'))).data, '這台還沒加入隊伍網路', reason: 'the cut read');
       expect(f.reg.current, isNull, reason: 'T-L3: released at the result, the page still open');
       expect(find.byType(LeavePage), findsOneWidget);
+    });
+
+    testWidgets('UX plan T21: left, the read after it answered E_RATE (the page before the leave, not fresh) -> stale',
+        (t) async {
+      final (f, _) = await openLeave(t, rate: true);
+      await t.tap(find.widgetWithText(FilledButton, Btn.leaveNetwork));
+      await settle(t, f);
+      final s = f.rigs.first.session as RateSession;
+      expect(s.asked, ['network/leave', 'status page']);
+      expect(s.pageReads, 1, reason: 'the page was read on this session');
+      expect(find.text('已離開隊伍網路'), findsOneWidget);
+      expect(find.byKey(const Key('leave-stale')), findsOneWidget);
+      expect(find.byKey(const Key('leave-after')), findsNothing, reason: 'the fields from before the leave are shown');
+      expect(find.text('已連上隊伍網路'), findsNothing);
     });
 
     testWidgets('T-L1: not left -> its line, no read after it', (t) async {
