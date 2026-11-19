@@ -159,7 +159,7 @@ set-provd-env)
 	env=""
 	if [ "$1" = clear ]; then [ $# = 1 ] || die "clear takes no keys"
 	else for kv in "$@"; do
-		case "${kv%%=*}" in SOCK_ONLY|FAST_FAKE_DELAY_MS|NO_BRUTE_LIMIT|GATT_ENCRYPT_CTRL|ADV_LEN_TEST) ;; *) die "unknown provd switch [$kv]" ;; esac
+		case "${kv%%=*}" in SOCK_ONLY|FAST_FAKE_DELAY_MS|NO_BRUTE_LIMIT|GATT_ENCRYPT_CTRL|ADV_LEN_TEST|ADV_ID_OFF) ;; *) die "unknown provd switch [$kv]" ;; esac
 		case "${kv#*=}" in ""|*[!0-9]*) die "value of [$kv] is not digits" ;; esac
 		env="$env $kv"; done; fi
 	if [ -e "$KD" ] || [ -L "$KD" ]; then dir_ok "$KD" drwx------ || die "$KD exists and is not a root 0700 directory"

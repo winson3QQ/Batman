@@ -227,5 +227,66 @@ grep -q '^FAIL 04 (' <<< "$o" && tok "link-grace: no versions file -> not pre-N1
 { lgl 22:44:15 "$LGW"; lgl 22:44:47 "$LGS"; } > "$W/lg"; lg_case no-advert-after "$RC" cut "^FAIL no 'adv registered reason=disconnect' after" '^PASS 04 advertises'
 { lgl 22:44:15 "$LGW"; lgl 22:44:47 "$LGS"; lgl 22:45:10 "$LGD"; } > "$W/lg"; lg_case advert-late "$RC" cut '^FAIL 04 advertised again 23 s' '^PASS 04 advertises'
 [ "$({ lgl 22:43:00 "$LGW"; lgl 22:44:15 "$LGW"; lgl 22:44:20 "$LGD"; } | lg_last_w)" = 22:44:15 ] && [ "$(lg_age 22:44:15 22:44:36)" = 21 ] && [ "$(lg_age 23:59:50 00:00:05)" = 15 ] && tok "link-grace: lg_last_w / lg_age (midnight too)" || tbad "link-grace: lg_last_w / lg_age"
+
+# ---------------------------------------------------------------- rotating identifier (#329, scripts/dv/advid-judge-329.sh)
+# aj_judge on canned text: provd's lines as logread prints them, then the kept btmon blocks (design §8, D1)
+# shellcheck source=scripts/dv/advid-judge-329.sh
+. "$REPO/scripts/dv/advid-judge-329.sh"
+AJV=1.5.14-wsl.31+5c718d8.fwd4f5dc8.bench
+# ajm <HH:MM:SS.us> <6 B hex | -> : a MGMT Add Extended Advertising Data block; ajh <time> <hex | -> [noflags|nouuid]: the
+# HCI command that follows it. Block text as btmon printed it on 04 (2026-11-19, BlueZ of wsl.31, pushed provd 870faf7):
+# LE Set Advertising Data (0x08|0x0008), "Length: 31", the UUID list, the Manufacturer AD, Flags
+ajad() { [ "$1" = - ] || printf '        Company: internal use (65535)\n          Data: %s\n' "$1"; }
+ajm() { printf '@ MGMT Command (0x0055) plen %s  {0x0001} [hci0] %s\n        Instance: 1\n        Advertising data length: %s\n        128-bit Service UUIDs (complete): 1 entry\n          Vendor specific\n' "$([ "$2" = - ] && echo 32 || echo 42)" "$1" "$([ "$2" = - ] && echo 21 || echo 31)"
+	ajad "$2"; printf '        Flags: 0x04\n          BR/EDR Not Supported\n        Scan response length: 0\n'; }
+ajh() { printf '< HCI Command: LE.. (0x08|0x0008) plen 32  #7 [hci0] %s\n        Length: %s\n' "$1" "$([ "$2" = - ] && echo 21 || echo 31)"
+	[ "${3:-}" = nouuid ] || printf '        128-bit Service UUIDs (complete): 1 entry\n          Vendor specific\n'
+	ajad "$2"
+	[ "${3:-}" = noflags ] || printf '        Flags: 0x04\n          BR/EDR Not Supported\n'; }
+AJF='adv field id=1'; AJR='adv registered reason='
+# aj_good [id1] [id2] [id3] [noflags|nouuid for the second HCI command]: three registrations, as a run of the rpa unit has
+aj_good() { local a=${1:-0a0b0c010203} b=${2:-1a1b1c111213} c=${3:-2a2b2c212223}
+	lgl 22:44:15 "$AJF"; lgl 22:44:15 "${AJR}start"; lgl 23:00:20 "$AJF"; lgl 23:00:20 "${AJR}rpa_timeout"; lgl 23:05:31 "$AJF"; lgl 23:05:31 "${AJR}disconnect"
+	ajm 22:44:15.412345 "$a"; ajh 22:44:15.413000 "$a"; ajm 23:00:20.998877 "$b"; ajh 23:00:21.001200 "$b" "${4:-}"; ajm 23:05:31.100000 "$c"; ajh 23:05:31.101000 "$c"; }
+# aj_case <name> <state> <want ERE> <unwanted ERE or -> ; the text in $W/aj
+aj_case() {
+	local o; o=$(aj_judge "$AJV" "$2" < "$W/aj")
+	if grep -qE "$3" <<< "$o" && { [ "$4" = - ] || ! grep -qE "$4" <<< "$o"; }; then tok "adv-id $1"
+	else tbad "adv-id $1: want /$3/ without /$4/, got [$(tr '\n' '|' <<< "$o")]"; fi
+}
+aj_good > "$W/aj"; aj_case good member '^PASS adv id: 3 HCI advertising-data command' '^FAIL'
+[ "$(aj_judge "$AJV" claimed < "$W/aj" | grep -c '^PASS adv id: ')" = 4 ] && tok "adv-id good: four PASS lines (registrations, blocks, identifiers, HCI)" || tbad "adv-id good: not four PASS lines"
+aj_good 0a0b0c010203 0a0b0c010203 > "$W/aj"; aj_case payload-reused member '^FAIL adv id: the registrations at 22:44:15 and 23:00:20 carry the same identifier' '^PASS adv id: 3 registration\(s\), 3 different'
+# an image without the field: the one fixed line, whole, and the known-failures entry matches it as the unit prints it
+{ aj_good - - - | grep -v 'provd: adv field '; } > "$W/aj"; o=$(aj_judge "$AJV" member < "$W/aj")
+[ "$o" = "FAIL no adv field line on 04 ($AJV): an image without the field" ] && tok "adv-id old image: the one fixed line, nothing else" || tbad "adv-id old image: got [$(tr '\n' '|' <<< "$o")]"
+kf=$(awk -F'\t' '$1 == "prov-rpa-254" && /an image without the field/ { print $2 }' "$REPO/scripts/validation-known-failures.txt")
+[ -n "$kf" ] && grep -qE "$kf" <<< "FAIL prov-rpa-254: ${o#FAIL }" && tok "adv-id old image: the known-failures entry matches the line of wsl.31" || tbad "adv-id old image: known-failures entry [$kf] does not match"
+[ -n "$kf" ] && ! grep -qE "$kf" <<< "FAIL prov-rpa-254: no adv field line on 04 (1.5.14-wsl.32+0123abc.fwd4f5dc8.bench): an image without the field" && tok "adv-id old image: the entry covers wsl.31 only (a later image without the field is a NEW FAIL)" || tbad "adv-id old image: the entry matches a later image"
+aj_good "" "" "" noflags > "$W/aj"; aj_case hci-without-flags member '^FAIL adv id: the HCI advertising data at 23:00:21 has no Flags AD' '^PASS adv id: 3 HCI'
+aj_good "" "" "" nouuid > "$W/aj"; aj_case hci-without-uuid member '^FAIL adv id: the HCI advertising data at 23:00:21 has no 128-bit UUID list' '^PASS adv id: 3 HCI'
+{ lgl 22:44:15 "$AJF"; lgl 22:44:15 "${AJR}start"; } > "$W/aj"; aj_case no-block member '^FAIL adv id: nothing captured$' '^PASS'
+{ aj_good | grep -v 'batman-provd'; } > "$W/aj"; aj_case no-registration member '^FAIL adv id: nothing captured$' '^PASS'
+aj_good > "$W/aj"; aj_case unclaimed unclaimed '^FAIL adv id: node is unclaimed, nothing to check$' '^PASS'
+# a registration made without the identifier although the image has the field
+{ aj_good | sed '0,/adv field id=1/s//adv field id=0 why=helper/'; } > "$W/aj"; aj_case fell-back member '^FAIL adv id: the registration at 22:44:15 \(reason=start\) was made without the identifier \[id=0 why=helper\]' '^PASS adv id: 3 registration\(s\), each'
+# a field line belongs to the registration right after it only
+{ aj_good | awk '/adv field/ && ++n == 2 {next} {print}'; } > "$W/aj"; aj_case field-line-missing member '^FAIL adv id: the registration at 23:00:20 \(reason=rpa_timeout\) has no adv field line before it' '^PASS adv id: 3 registration\(s\), each'
+{ aj_good | awk '/MGMT Command/ && ++n == 2 {skip = 1; next} /^[@<>=]/ {skip = 0} !skip'; } > "$W/aj"; aj_case registration-without-block member '^FAIL adv id: the registration at 23:00:20 \(reason=rpa_timeout\) has no 0x0055 block of its own' '^PASS adv id: 3 registration\(s\), 3 different'
+{ aj_good | awk '/^< HCI/ && ++n == 3 {h = 1} h && /Data: / {sub(/Data: .*/, "Data: ffffffffffff")} {print}'; } > "$W/aj"; aj_case hci-other-identifier member '^FAIL adv id: the HCI advertising data at 23:05:31 does not carry the identifier of the 0x0055 block before it' '^PASS adv id: 3 HCI'
+{ aj_good | awk '/^</ {skip = 1; next} /^[@=>]/ || /batman-provd/ {skip = 0} !skip'; } > "$W/aj"; aj_case no-hci member '^FAIL adv id: no HCI LE Set \(Extended\) Advertising Data command in the capture' '^PASS adv id: 0 HCI'
+{ aj_good | sed 's/Data: 1a1b1c111213/Data: 1a1b1c1112/'; } > "$W/aj"; aj_case short-identifier member '^FAIL adv id: the 0x0055 block at 23:00:20 has a Manufacturer AD of 5 B' '^PASS adv id: 3 MGMT'
+{ aj_good | sed '0,/Company: internal use (65535)/s//Company: Ericsson AB (0)/'; } > "$W/aj"; aj_case other-company member '^FAIL adv id: the 0x0055 block at 22:44:15 has 0 Manufacturer AD\(s\) of company 0xFFFF and 1 of another company' '^PASS adv id: 3 MGMT'
+{ lgl 23:59:58 "$AJF"; lgl 23:59:58 "${AJR}start"; lgl 00:15:30 "$AJF"; lgl 00:15:30 "${AJR}rpa_timeout"; ajm 23:59:58.500000 0a0b0c010203; ajh 23:59:58.600000 0a0b0c010203; ajm 00:15:30.999000 1a1b1c111213; ajh 00:15:31.010000 1a1b1c111213; } > "$W/aj"
+aj_case midnight member '^PASS adv id: 2 registration\(s\), 2 different identifier' '^FAIL'
+# the node judge's adv_field (prov-p2-254.sh): the field line of the LAST registration only — an older id=1 does not
+# speak for a newer registration that logged none
+eval "$(grep '^adv_field() ' "$REPO/scripts/node/prov-p2-254.sh")"
+logread() { cat "$W/ajlog"; }
+{ lgl 22:44:15 "$AJF"; lgl 22:44:15 "${AJR}start"; lgl 23:00:20 "${AJR}rpa_timeout"; } > "$W/ajlog"
+[ -z "$(adv_field)" ] && tok "adv_field: an older id=1 is not the newer registration's" || tbad "adv_field stale: [$(adv_field)]"
+{ lgl 22:44:15 "$AJF"; lgl 22:44:15 "${AJR}start"; lgl 23:00:20 "adv field id=0 why=off"; lgl 23:00:20 "${AJR}rpa_timeout"; } > "$W/ajlog"
+[ "$(adv_field)" = "id=0 why=off" ] && tok "adv_field: the last registration's line" || tbad "adv_field last: [$(adv_field)]"
+unset -f logread
 echo "$P passed, $F failed"
 [ "$F" = 0 ] && [ "$P" -gt 0 ]

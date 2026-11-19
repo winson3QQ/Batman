@@ -60,6 +60,7 @@
 #                 dir and checkSockDir's O_NOFOLLOW cannot see the link (04 wsl.21, 2026-11-01: gatt.sock appeared in the
 #                 decoy). Only root can write /tmp/run, and the frame socket exists only in a prov_test build.
 #   adv-len       ADV_LEN_TEST=29: "adv: payload would be 29 B (max 28)" is the latest start line, no instance 20 s
+#                 (the switch replaces the whole registered length, the #329 identifier field included)
 #   latch-neg     (while adv-len holds provd off the air) the helper restarted -> two fresh health ticks with
 #                 adv_registered_once=0 (L2's negative: never registered -> 0)
 #   nojail <W dir>  L72: a non-executable file bind-mounted over /sbin/ujail (its source in the harness wbox dir W, so
@@ -128,6 +129,23 @@ enable_before_add() {
 			if (l[i] ~ /Advertising: Enabled \(0x01\)/) { print "enable-first"; exit }
 		}
 		print (p ? "none" : "no-power-on") }' "$BMF"
+}
+# #329 (docs/design/329-rotating-id-plan.md §8 D1): what the registered data must be follows from provd's own log.
+# adv_field: the value of the "provd: adv field" line of the LATEST registration — the last such line after the
+# registration before it ("id=1", "id=0 why=<why>"; empty = that registration logged none: an image without the field).
+# Never the last such line of the whole log: after a prov_test push an older id=1 would still be in the ring.
+adv_field() { logread | grep 'batman-provd\[[0-9]*\]: provd: adv ' | awk '/provd: adv field / {f = $0; sub(/.*provd: adv field /, "", f)} /provd: adv registered reason=/ {l = f; f = ""} END {print l}'; }
+# adv_last_block: the last MGMT Add Extended Advertising Data (0x0055) command block of the capture: its indented
+# lines up to the next record (a line starting with @ < > =)
+adv_last_block() { awk '/MGMT Command \(0x0055\)/ {b = ""; f = 1; next} f && /^[@<>=]/ {f = 0; last = b} f {b = b $0 "\n"} END {if (f) last = b; printf "%s", last}' "$BMF"; }
+# adv_len_check <block> <label>: id=1 -> 31 B with one Manufacturer AD of company 0xFFFF; id=0 / no line -> 21 B
+# without one. The ok line names the length and the id= value it judged by.
+adv_len_check() {
+	_f=$(adv_field); _l=$(echo "$1" | sed -n 's/.*Advertising data length: \([0-9]*\).*/\1/p' | head -1)
+	_m=$(echo "$1" | grep -c 'Company: .*(65535)'); _o=$(echo "$1" | grep 'Company: ' | grep -vc '(65535)')
+	case "$_f" in id=1) _w=31; _wm=1 ;; *) _w=21; _wm=0 ;; esac
+	if [ "$_l" = "$_w" ] && [ "$_m" = "$_wm" ] && [ "$_o" = 0 ]; then ok "$2: $_l B, ${_f:-no adv field line}"
+	else no "$2: ${_l:-?} B with $_m Manufacturer AD(s) of company 0xFFFF and $_o of another company; the registration logged [${_f:-no adv field line}] (want $_w B and $_wm)"; fi
 }
 # bm_first <pid> <opcode 4 hex>: line number of the first "MGMT Command (0x<op>)" sent by bluetoothd[<pid>] in the
 # capture (btmon prints the sender "bluetoothd[pid]:"), 0 when none
@@ -292,6 +310,10 @@ dep-bluetoothd|dep-bluetoothd-kill|dep-dbus)
 		e=$(enable_before_add)
 		case "$e" in add-first|none|no-power-on) ok "btmon: no 'Advertising: Enabled' before provd's own Add after the restart ($e)" ;;
 			*) no "btmon: advertising enabled before provd re-registered (an old instance, p2 §22.1)" ;; esac
+		# #329: the data of the re-registration (dep-dbus: a new bus connection, so a new call for the identifier)
+		ad=$(adv_last_block)
+		if [ -n "$ad" ]; then adv_len_check "$ad" "advertising data after the restart"
+		elif [ "$(plc 'provd: adv registered')" -gt "$r" ]; then no "btmon: provd registered again but the capture has no MGMT Add Extended Advertising Data (0x0055)"; fi
 		rm -f "$BMF"
 	fi
 	trap - EXIT; trap - HUP INT TERM
@@ -302,16 +324,21 @@ adv-data)
 	# advertising / scan-response data it registers: BlueZ's MGMT Add Extended Advertising Data (0x0055), the whole data
 	# handed to the kernel. (Not the HCI LE Set Advertising Data: the kernel skips it when the data equals what the
 	# controller already holds, hci_sync.c:1343 memcmp — a provd restart re-registers the same 21 bytes; 2026-11-01.)
+	# #329: 31 bytes with the identifier field when the registration logged "adv field id=1", 21 without it
+	# (adv_len_check); the block is printed (INFO) as the evidence.
 	trap 'bm_stop' EXIT; trap 'exit 1' HUP INT TERM
 	bm_start "${2:-}" || { echo "PROV-P2 $a fails=$fails"; exit 1; }
 	r=$(plc 'provd: adv registered'); provd_restart
 	wait_line 'provd: adv registered' "$r" 20 || no "provd did not register within 20 s of the restart"
 	sleep 2; bm_stop
 	# the last 0x0055 command block: its indented lines up to the next record (a line starting with @ < > =)
-	ad=$(awk '/MGMT Command \(0x0055\)/ {b = ""; f = 1; next} f && /^[@<>=]/ {f = 0; last = b} f {b = b $0 "\n"} END {if (f) last = b; printf "%s", last}' "$BMF")
+	ad=$(adv_last_block)
 	if [ -z "$ad" ]; then no "btmon: no MGMT Add Extended Advertising Data (0x0055) after the restart"
 	else
-		echo "$ad" | grep -q 'Advertising data length: 21' && ok "advertising data: 21 bytes" || no "advertising data length: [$(echo "$ad" | grep -o 'Advertising data length: [0-9]*')] (want 21)"
+		echo "$ad" | sed 's/^/INFO 0x0055| /'
+		# what the controller was then given (evidence; the kernel sends it only when the data changed)
+		awk '/^[@<>=]/ {k = ($0 ~ /^</ && $0 ~ /0x08.0x00(08|37)/)} k' "$BMF" | sed 's/^/INFO hci| /'
+		adv_len_check "$ad" "advertising data"
 		echo "$ad" | grep -q '128-bit Service UUIDs' && ok "advertising data carries the 128-bit service UUID list" || no "no 128-bit service UUID list in the advertising data"
 		echo "$ad" | grep -qiE 'Name' && no "advertising data carries a name: $(echo "$ad" | grep -iE 'Name' | head -1)" || ok "no Local Name in the advertising data"
 		echo "$ad" | grep -q 'Scan response length: 0' && ok "no scan response data" || no "scan response: [$(echo "$ad" | grep -o 'Scan response length: [0-9]*')] (want 0)"

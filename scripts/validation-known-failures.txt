@@ -50,3 +50,8 @@ prov-fw-boot-254	^FAIL [^ ]+: prov-fw-boot-254: pre-S5 image [^ ]+: batman-slot 
 # a version on scripts/dv/pre-team-status-versions.txt without the feature marker and without keys 8 / 9; every other
 # SD6 FAIL (no key 9, a stale or missing peer, a bad key 9, a large answer, a lost marker) is NEW. Expires 2026-12-15.
 prov-status-diag-254	^FAIL prov-status-diag-254: SD6: image without whole-team status \(1\.5\.14-wsl\.[0-9]+\+[0-9a-f]+\.fw[0-9a-f]+(\.bench)?\)$	254	expires=2027-01-15
+# #329 rotating identifier (docs/design/329-rotating-id-plan.md §8 / §10): prov-rpa-254 judges the Manufacturer Data AD a
+# claimed node advertises; the harness row lands first (#290). On wsl.31, which has no such field, the unit prints the
+# listed line and nothing else of D1. Every other D1 FAIL, and this line on any other image, is NEW. Removed when the
+# image with the field ships (design §10 step 8).
+prov-rpa-254	^FAIL prov-rpa-254: no adv field line on 04 \(1\.5\.14-wsl\.31\+[^)]*\): an image without the field$	329	expires=2027-01-15

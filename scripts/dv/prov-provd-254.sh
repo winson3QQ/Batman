@@ -36,12 +36,25 @@
 #                btmon (-t: the node clock, as logread) aligns them: every LE Set (Advertising Set) Random Address
 #                follows a registration within 5 s, each rpa_timeout one has one, the disconnect one has none. 04's
 #                public address is never seen. No rm-adv in provd mode (p2 §9).
+#                #329 rotating identifier (docs/design/329-rotating-id-plan.md §8, D1), from the same log and capture:
+#                every registration logged `adv field id=1`, every 0x0055 block is 31 B with one 6 B Manufacturer AD
+#                of company 0xFFFF, every registration has its own identifier, and each HCI advertising-data command
+#                carries Flags + the UUID list + the registered identifier (advid-judge-329.sh). An image without
+#                the field gets the one fixed FAIL line.
+#   adv-data     (by hand; in no suite) judge `adv-data` alone: what 04 registers after a provd restart, 31 B with the
+#                identifier or 21 B without, as its own `adv field` line says.
+# By hand, design §10 step 3 (never set by a suite): ADVID_PUSH=<dir> binds the prov_test batman-provhelper /
+# batman-provd / batman-provd-test.init of <dir> (checked against <dir>/SHA256SUMS) over 04's right after the lease, on
+# a listed image only; ADVID_OFF=1 then sets provd's ADV_ID_OFF=1; ADVID_HOLD=<s> (adv-data) keeps the pushed binaries
+# up for <s> seconds after the judge. pr_release unbinds and restarts both; the lease deadman does the same.
 # Prints "UNIT prov-<unit>-254 PASS|FAIL|INVALID".
 set -u
-U=${1:-}; case "$U" in boot-provd|respawn|dep-restart|sec-dbus|rpa) ;; *) echo "usage: prov-provd-254.sh boot-provd|respawn|dep-restart|sec-dbus|rpa"; exit 2 ;; esac
+U=${1:-}; case "$U" in boot-provd|respawn|dep-restart|sec-dbus|rpa|adv-data) ;; *) echo "usage: prov-provd-254.sh boot-provd|respawn|dep-restart|sec-dbus|rpa|adv-data"; exit 2 ;; esac
 PR_UNIT=prov-$U-254
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
+# shellcheck source=scripts/dv/advid-judge-329.sh
+. "$(dirname "$0")/advid-judge-329.sh"
 P2J="$REPO/scripts/node/prov-p2-254.sh"; P2C="$REPO/scripts/node/prov-p2-central-254.sh"
 DBT=${DV_DBUS_TOOLS:-$HOME/batman-dv-tools/dbus}; BTT=${DV_BT_TOOLS:-$HOME/batman-dv-tools/bluez-5.72}
 # j <arm> [arg] [ssh limit s]: the judge on 04; PASS / FAIL lines become this unit's
@@ -79,7 +92,33 @@ hold02(){ local o a i; for i in 1 2; do o=$(c02 hold "$LAST4"); say "02 hold: $o
 # the jailed provd only (its ujail parent has the same comm)
 KILLPROVD='for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && kill -9 $x; done'
 # PR_BEGUN only once the lease is ours: a failed acquire (another lease live) must not run pr_release (review A-M1)
-lease(){ pr_lock; trap 'pr_on_exit' EXIT; PR_DEADLINE=$(( $(mono) + $1 )); local o; o=$(pr_acquire "$1") || { echo "$o"; no "lease"; pr_result; exit 1; }; PR_BEGUN=1; }
+lease(){ pr_lock; trap 'pr_on_exit' EXIT; PR_DEADLINE=$(( $(mono) + $1 )); local o; o=$(pr_acquire "$1") || { echo "$o"; no "lease"; pr_result; exit 1; }; PR_BEGUN=1; advid_push; }
+# the images the ADVID_PUSH binaries may be bound over (the helper / provd of the node branch are built against the
+# record and socket layout of these)
+ADVID_IMAGES='1.5.14-wsl.31+5c718d8.fwd4f5dc8.bench'
+advid_bail(){ no "ADVID_PUSH: $1"; pr_release; pr_result; exit 1; }
+advid_push(){
+	[ -n "${ADVID_PUSH:-}" ] || return 0
+	local d=$ADVID_PUSH f s o hs="" ps="" is="" w=/tmp/run/batman-dv/wbox/$RUN
+	grep -qxF "$ver" <<< "$ADVID_IMAGES" || advid_bail "04 runs $ver, not a listed image — nothing pushed"
+	for f in batman-provhelper batman-provd batman-provd-test.init; do
+		s=$(awk -v f="$f" '{sub(/^\*/, "", $2)} $2 == f {print $1}' "$d/SHA256SUMS" 2>/dev/null)
+		[ -f "$d/$f" ] && [ -n "$s" ] && [ "$(sha256sum < "$d/$f" | cut -c1-64)" = "$s" ] || advid_bail "$d/$f is missing or is not the file of SHA256SUMS — nothing pushed"
+		case $f in batman-provhelper) hs=$s ;; batman-provd) ps=$s ;; *) is=$s ;; esac
+	done
+	o=$(pw prep) || advid_bail "W dir: $o"
+	for f in batman-provhelper batman-provd batman-provd-test.init; do scp -q $SSHO "$d/$f" "root@$NODE:$w/$f" || advid_bail "scp of $f"; done
+	q "chmod 700 $w/batman-provhelper $w/batman-provd $w/batman-provd-test.init"
+	o=$(pw push-helper batman-provhelper "$hs"); grep -q '^PUSHED ' <<< "$o" || advid_bail "push-helper: $o"
+	say "ADVID_PUSH: $o"
+	o=$(pw push-provd batman-provd "$ps" batman-provd-test.init "$is"); grep -q '^PUSHED-PROVD ' <<< "$o" || advid_bail "push-provd: $o"
+	say "ADVID_PUSH: $o"
+	if [ "${ADVID_OFF:-}" = 1 ]; then
+		o=$(pw set-provd-env ADV_ID_OFF=1); grep -q '^PROVD-ENV .*\[ADV_ID_OFF=1\]$' <<< "$o" || advid_bail "set-provd-env: $o"
+		say "ADVID_PUSH: $o"
+	fi
+	say "ADVID_PUSH: 04 runs the helper ${hs:0:16} and provd ${ps:0:16} of $d until the release"
+}
 ver=$(qr 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build'); say "04 runs $ver"
 [ -n "$ver" ] || { no "04 unreachable (no BATMAN_VERSION)"; pr_result; exit 1; }
 [ "$(qr '[ -x /etc/init.d/batman-provd ] && echo yes || echo no')" = yes ] || { no "no batman-provd on 04 ($ver): a pre-P2 image"; pr_result; exit 1; }
@@ -283,6 +322,9 @@ rpa)
 	# Address 0x08|0x0035 (opcodes, since btmon shortens the names without a terminal)
 	ras=$(qr "grep -E '0x08.0x00(05|35)' $PCD/rpa.btmon" | grep '^<' | grep -o '[0-9][0-9]:[0-9][0-9]:[0-9][0-9]\.[0-9]*' | cut -d. -f1)
 	say "registrations (node time, reason): $(echo $regs)"; say "btmon random-address sets (node time): $(echo $ras)"
+	# #329 D1: the lines the identifier judge reads, kept before the capture goes
+	d1=$(qr "logread | sed -n '/batman-dv-p2: mark $HM\$/,\$p' | grep 'batman-provd\[[0-9]*\]: provd: adv \(field\|registered\) '; awk '$AJ_KEEP' $PCD/rpa.btmon")
+	d1st=$(qr "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta")
 	q "rm -f $PCD/rpa.btmon $PCD/rpa.snoop $PCD/rpa.btmon.pid"
 	[ -n "$r2" ] || no "fewer than two rpa_timeout re-registrations within $(( $(mono) - t0 )) s (first at ${r1:-none})"
 	sec(){ awk -F: '{print $1 * 3600 + $2 * 60 + $3}' <<< "$1"; }
@@ -316,6 +358,19 @@ rpa)
 	[ -n "$UB1" ] && [ "$UB1" = "$UB2" ] && ok "02: the same RPA across 02's connect re-registration < 900 s ($UB1)" || no "02: the RPA across the < 900 s re-registration [$UB1] [$UB2] (want the same)"
 	[ -n "$UB2" ] && [ -n "$UC" ] && [ "$UB2" != "$UC" ] && ok "02: a new RPA after the second rpa_timeout ($UB2 -> $UC)" || no "02: no new RPA after the second rpa_timeout [$UB2] [$UC]"
 	printf '%s\n' "${rows[@]}" | grep -qi "$pub" && no "02 saw 04's public address $pub" || ok "02 never saw 04's public address $pub"
+	# #329 D1 (advid-judge-329.sh); the lines it read go into the log (a capture is where the offline fixtures come from)
+	while IFS= read -r l; do say "D1| $l"; done <<< "$d1"
+	while IFS= read -r l; do case "$l" in PASS\ *) ok "${l#PASS }" ;; FAIL\ *) no "${l#FAIL }" ;; esac; done <<< "$(aj_judge "$ver" "$d1st" <<< "$d1")"
+	pr_release ;;
+adv-data)
+	[ -f "$BTT/btmon" ] && (cd "$BTT" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1 || { inv "no verified btmon in $BTT"; pr_result; exit 1; }
+	case "${ADVID_HOLD:-0}" in *[!0-9]*) echo "ADVID_HOLD is not a number of seconds"; exit 2 ;; esac
+	lease $(( 900 + ${ADVID_HOLD:-0} ))
+	pr_pc_place || { pr_release; pr_result; exit 1; }
+	scp -q $SSHO "$BTT/btmon" root@$NODE:$PCD/btmon.up && q "mv $PCD/btmon.up $PCD/btmon && chmod 0700 $PCD/btmon" || { no "btmon upload"; pr_release; pr_result; exit 1; }
+	[ "$(qr "sha256sum < $PCD/btmon | cut -c1-64")" = "$(awk '{sub(/^\*/, "", $2)} $2 == "btmon" {print $1}' "$BTT/SHA256SUMS")" ] || { no "btmon sha on 04"; pr_release; pr_result; exit 1; }
+	j adv-data "$PCD/btmon" 120
+	if [ "${ADVID_HOLD:-0}" -gt 0 ]; then say "HOLD: 04 stays as it is for $ADVID_HOLD s (until $(date -d "+$ADVID_HOLD sec" +%H:%M:%S) host time)"; sleep "$ADVID_HOLD"; fi
 	pr_release ;;
 esac
 pr_result
