@@ -39,9 +39,10 @@ Future<Uint8List?> openSealedRecord(MethodChannel platform, String records, Stri
 /// node records [ids]. [open] is its only way to a key: a record that does not open (none on disk, a key error) is
 /// left out and that node is found the old way; nothing here reads the key abilities or reports a key error. [make]:
 /// the opened records -> the resolver (the app: Rust's AdvResolver, which keeps the keys). The bytes from the
-/// platform channel are a READ-ONLY view on the S20 (as claim_recovery.dart: fillRange on them throws, so every build
-/// failed there): each is copied, [make] gets the copies, and the copies are zeroed here once [make] has them; the
-/// channel's own buffer is left to the GC.
+/// platform channel are a READ-ONLY view on the S20 (as claim_recovery.dart: fillRange on them threw, so every build
+/// with a record that opened failed there): each is copied, [make] gets the copies, and the copies are zeroed here
+/// once [make] has them. Only these copies are zeroed: the channel's buffer, FRB's encoded message and Rust's CBOR
+/// values are not (as prober.dart and claim_recovery.dart); they go with the GC / drop.
 @visibleForTesting
 Future<T> buildResolver<T>(List<String> ids, Future<Uint8List?> Function(String id) open,
     T Function(List<Uint8List> plains) make) async {
