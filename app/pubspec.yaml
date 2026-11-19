@@ -50,6 +50,13 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
+# Vendored reactive_ble_mobile 5.6.0 with a one-file fix for the Android
+# ConnectionQueue stall (upstream issue #558). See
+# third_party/reactive_ble_mobile/PATCHED.md for what changed and how to drop it.
+dependency_overrides:
+  reactive_ble_mobile:
+    path: third_party/reactive_ble_mobile
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
