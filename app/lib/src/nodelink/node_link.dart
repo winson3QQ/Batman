@@ -4,6 +4,7 @@
 // prober.dart; tests use fakes). Pages and the app lifecycle tell it what is on screen; the lease registry tells it
 // when an operation holds Bluetooth.
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/widgets.dart' show AppLifecycleState;
@@ -59,6 +60,21 @@ enum KeptState { parked, reading, lent }
 /// The phone's node records and their file times (A23), read after start-up and after every lease release.
 typedef ReadRecords = Future<List<Rec>> Function();
 
+/// #329 rotating identifier (329-rotating-id-plan.md §3.3): the Manufacturer Data of one scan result -> the node of
+/// this phone it belongs to, or null. A hint for the order of attempts only.
+typedef AdvResolve = String? Function(Uint8List mfr);
+
+/// An [AdvResolve] and what wipes the keys it holds ([close]; the app: Rust's AdvResolver). NodeLink closes a resolver
+/// when a newer one replaces it, when its build ended too late, and when it is disposed (code review A M-2 / B m-1).
+class Resolver {
+  const Resolver(this.resolve, [this.close]);
+  final AdvResolve resolve;
+  final void Function()? close;
+}
+
+/// Builds a [Resolver] from the records of the nodes [ids] (the app: `buildResolver` in app_link.dart).
+typedef ResolverBuilder = Future<Resolver> Function(List<String> ids);
+
 /// #329 PR 3 §2.1: how a flow's login under its lease ended. `noLease`: the lease given is not the registry's current
 /// session lease (or was taken back meanwhile), or another login is running.
 enum LoginForEnd { ok, identity, refused, notFound, precondition, noLease }
@@ -84,6 +100,7 @@ class NodeLink implements LeaseListener {
     this.trace,
     this.loginProber,
     this.keysOk,
+    this.buildResolver,
   }) : wall = wall ?? DateTime.now {
     reg.listeners.add(this);
     final Object p = prober;
@@ -112,6 +129,54 @@ class NodeLink implements LeaseListener {
 
   /// The live key read before a flow's login (design §4.1: KeyAbilities before each login). Null = not checked.
   final Future<bool> Function()? keysOk;
+
+  /// #329 rotating identifier §3.3: builds the resolver of the scan results' identifiers; started (never awaited)
+  /// each time the record list was read. Null = no hints (every node is found the old way).
+  final ResolverBuilder? buildResolver;
+  Resolver? _resolve; // null until the first build finished: every hint is null
+  int _builds = 0, _built = 0; // the last build started / the newest one installed
+
+  void _rebuildResolver() {
+    final b = buildResolver;
+    if (b == null) return;
+    final n = ++_builds;
+    final ids = [for (final r in _recs) r.id];
+    final t0 = now();
+    () async {
+      try {
+        final r = await b(ids);
+        // two builds may overlap: the one of the newer record list stays
+        if (_disposed || n < _built) {
+          _close(r);
+          return;
+        }
+        _built = n;
+        final old = _resolve;
+        _resolve = r;
+        _close(old);
+        trace?.call('adv resolver $n: ${ids.length} record(s), ${now() - t0} ms');
+      } catch (e) {
+        trace?.call('adv resolver $n failed (${e.runtimeType}): the last one stays'); // never the error's text
+      }
+    }();
+  }
+
+  static void _close(Resolver? r) {
+    try {
+      r?.close?.call();
+    } catch (_) {}
+  }
+
+  /// The hint of one scan result: null without a resolver, without Manufacturer Data, or when it resolves to none.
+  String? _hint(Uint8List? mfr) {
+    final r = _resolve;
+    if (r == null || mfr == null) return null;
+    try {
+      return r.resolve(mfr);
+    } catch (_) {
+      return null;
+    }
+  }
 
   static String mask(String s) => s
       .replaceAllMapped(RegExp(r'[0-9a-fA-F]{8,}'), (m) => '…${m[0]!.substring(m[0]!.length - 4)}')
@@ -215,6 +280,7 @@ class NodeLink implements LeaseListener {
       core.background(now());
     }
     _recs = await readRecords();
+    _rebuildResolver();
     core.setRecords(_recs);
     _dropGoneTeams();
     core.startup(now(), page, node: node);
@@ -371,15 +437,15 @@ class NodeLink implements LeaseListener {
         await _closeKept();
       }
     }
-    final early = <String>[];
+    final early = <String, String?>{}; // address -> its last hint, in the order first seen
     final gen = _lfGen;
-    void seen(String a) {
+    void seen(String a, Uint8List? mfr) {
       if (gen != _lfGen) return;
       final l = _lf;
+      final h = _hint(mfr);
       if (l == null) {
-        early.add(a); // seen before the login's clock started
-      } else if (!l.seen.contains(a)) {
-        l.onScan(now(), a);
+        early[a] = h; // seen before the login's clock started
+      } else if (l.onScan(now(), a, hint: h)) {
         _lfPoke();
       }
     }
@@ -388,8 +454,8 @@ class NodeLink implements LeaseListener {
     await _lfStartScan(lease, seen);
     if (!mine()) return const LoginForResult(LoginForEnd.noLease);
     final l = _lf = core.loginFor(now(), id, clearNotY: clearNotY);
-    for (final a in early) {
-      l.onScan(now(), a);
+    for (final e in early.entries) {
+      l.onScan(now(), e.key, hint: e.value);
     }
     while (true) {
       if (_disposed || !mine()) return const LoginForResult(LoginForEnd.noLease);
@@ -430,7 +496,7 @@ class NodeLink implements LeaseListener {
     await w.future;
   }
 
-  Future<void> _lfStartScan(Lease lease, void Function(String) seen) async {
+  Future<void> _lfStartScan(Lease lease, void Function(String, Uint8List?) seen) async {
     final gen = _lfGen;
     _lfScanStarting = true;
     late final GateScan s;
@@ -708,6 +774,7 @@ class NodeLink implements LeaseListener {
       if (recs != null) {
         if (l.kind == LeaseKind.raw) written.addAll(_changedIds(before, recs));
         _recs = recs;
+        _rebuildResolver(); // a claim under the lease added a record, a removal took one away
       }
       if (reg.current != null) {
         // another lease was taken while the records were read: the core stays leased (review pr1 A-M5 / B-M2);
@@ -794,9 +861,9 @@ class NodeLink implements LeaseListener {
     _scanStarting = true;
     GateScan? s;
     try {
-      s = await gate.scan(reg.nodeLinkToken, (address) {
+      s = await gate.scan(reg.nodeLinkToken, (address, mfr) {
         if (_disposed) return;
-        if (core.onScan(now(), address) && _attempt == null) _pump();
+        if (core.onScan(now(), address, hint: _hint(mfr)) && _attempt == null) _pump();
       }, ended: (_) {
         // the radio ended the scan (Bluetooth off, no permission): the round goes on without one; the status
         // stream tells the core why, and a new scan is tried a little later
@@ -909,6 +976,8 @@ class NodeLink implements LeaseListener {
 
   Future<void> dispose() async {
     _disposed = true;
+    _close(_resolve);
+    _resolve = null;
     _lfPoke();
     final c = _lfCancel;
     if (c != null && !c.isCompleted) c.complete();

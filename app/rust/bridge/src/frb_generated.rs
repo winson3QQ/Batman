@@ -27,12 +27,12 @@
 
 // Section: imports
 
-use crate::api::swupdate::*;
-use crate::api::owner::*;
-use crate::api::member::*;
-use crate::api::rekey::*;
 use crate::api::replay::*;
-use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;
+use crate::api::claim::*;
+use crate::api::swupdate::*;
+use crate::api::member::*;
+use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -44,7 +44,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
                     default_rust_auto_opaque = RustAutoOpaqueMoi,
                 );
                 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-                pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1172584611;
+                pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1473740958;
             
 
 // Section: executor
@@ -53,7 +53,33 @@ flutter_rust_bridge::frb_generated_default_handler!();
 
 // Section: wire_funcs
 
-fn wire__crate__api__claim__ClaimSession_finished_with_9_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+fn wire__crate__api__owner__AdvResolver_new_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "AdvResolver_new", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_records = <Vec<Vec<u8>>>::sse_decode(&mut deserializer);deserializer.end();
+                transform_result_sse::<_, ()>((move || {
+                     let output_ok = Ok::<_, ()>(crate::api::owner::AdvResolver::new(api_records))?;   std::result::Result::Ok(output_ok)
+                })()) })
+            }fn wire__crate__api__owner__AdvResolver_resolve_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "AdvResolver_resolve", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AdvResolver>>>::sse_decode(&mut deserializer);
+let api_mfr = <Vec<u8>>::sse_decode(&mut deserializer);deserializer.end();
+                transform_result_sse::<_, ()>((move || {
+                    let mut api_that_guard = None;
+let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(&api_that, 0, false)]);
+        for i in decode_indices_ {
+            match i {
+                0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                _ => unreachable!(),
+            }
+        }
+        let api_that_guard = api_that_guard.unwrap();
+ let output_ok = Ok::<_, ()>(crate::api::owner::AdvResolver::resolve(&*api_that_guard, api_mfr))?;   std::result::Result::Ok(output_ok)
+                })()) })
+            }fn wire__crate__api__claim__ClaimSession_finished_with_9_impl(ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
                 FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "ClaimSession_finished_with_9", port: None, mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync }, move || {
             let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
             let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
@@ -1665,6 +1691,7 @@ let api_sealed = <Vec<u8>>::sse_decode(&mut deserializer);deserializer.end(); mo
 
 // Section: related_funcs
 
+flutter_rust_bridge::frb_generated_moi_arc_impl_value!(flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AdvResolver>);
 flutter_rust_bridge::frb_generated_moi_arc_impl_value!(flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ClaimSession>);
 flutter_rust_bridge::frb_generated_moi_arc_impl_value!(flutter_rust_bridge::for_generated::RustAutoOpaqueInner<NetOp>);
 flutter_rust_bridge::frb_generated_moi_arc_impl_value!(flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OwnerSession>);
@@ -1676,6 +1703,12 @@ flutter_rust_bridge::frb_generated_moi_arc_impl_value!(flutter_rust_bridge::for_
 // Section: dart2rust
 
 
+                impl SseDecode for AdvResolver {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut inner = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AdvResolver>>>::sse_decode(deserializer);
+        return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);}
+                }
+                
                 impl SseDecode for ClaimSession {
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut inner = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ClaimSession>>>::sse_decode(deserializer);
@@ -1710,6 +1743,12 @@ flutter_rust_bridge::frb_generated_moi_arc_impl_value!(flutter_rust_bridge::for_
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut inner = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SwUpdate>>>::sse_decode(deserializer);
         return flutter_rust_bridge::for_generated::rust_auto_opaque_decode_owned(inner);}
+                }
+                
+                impl SseDecode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AdvResolver>> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut inner = <usize>::sse_decode(deserializer);
+        return decode_rust_opaque_moi(inner);}
                 }
                 
                 impl SseDecode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ClaimSession>> {
@@ -2452,31 +2491,31 @@ return crate::api::rekey::UpdatePrep{state: var_state, eph_pub: var_ephPub, mnet
                 )  {
                     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
                     match func_id {
-                        55 => wire__crate__api__swupdate__SwUpdate_default_impl(port, ptr, rust_vec_len, data_len),
-68 => wire__crate__api__claim__claim_target_impl(port, ptr, rust_vec_len, data_len),
-70 => wire__crate__api__claim__der_to_raw_impl(port, ptr, rust_vec_len, data_len),
-71 => wire__crate__api__claim__frame_limit_impl(port, ptr, rust_vec_len, data_len),
-73 => wire__crate__api__simple__init_app_impl(port, ptr, rust_vec_len, data_len),
-75 => wire__crate__api__member__list_mnets_impl(port, ptr, rust_vec_len, data_len),
-76 => wire__crate__api__owner__list_nets_impl(port, ptr, rust_vec_len, data_len),
-77 => wire__crate__api__owner__list_nodes_impl(port, ptr, rust_vec_len, data_len),
-78 => wire__crate__api__owner__list_pending_impl(port, ptr, rust_vec_len, data_len),
-79 => wire__crate__api__member__list_pends_impl(port, ptr, rust_vec_len, data_len),
-91 => wire__crate__api__claim__node_path_impl(port, ptr, rust_vec_len, data_len),
-92 => wire__crate__api__claim__owner_enc_sign_input_impl(port, ptr, rust_vec_len, data_len),
-93 => wire__crate__api__claim__parse_claim_qr_impl(port, ptr, rust_vec_len, data_len),
-95 => wire__crate__api__claim__pending_matches_qr_impl(port, ptr, rust_vec_len, data_len),
-96 => wire__crate__api__claim__pending_path_impl(port, ptr, rust_vec_len, data_len),
-105 => wire__crate__api__simple__store_has_records_impl(port, ptr, rust_vec_len, data_len),
-106 => wire__crate__api__claim__store_keep_copy_impl(port, ptr, rust_vec_len, data_len),
-107 => wire__crate__api__simple__store_read_marker_impl(port, ptr, rust_vec_len, data_len),
-108 => wire__crate__api__owner__store_read_sealed_impl(port, ptr, rust_vec_len, data_len),
-109 => wire__crate__api__claim__store_remove_impl(port, ptr, rust_vec_len, data_len),
-110 => wire__crate__api__claim__store_seal_params_impl(port, ptr, rust_vec_len, data_len),
-111 => wire__crate__api__simple__store_sweep_impl(port, ptr, rust_vec_len, data_len),
-112 => wire__crate__api__owner__store_write_cas_impl(port, ptr, rust_vec_len, data_len),
-113 => wire__crate__api__simple__store_write_marker_impl(port, ptr, rust_vec_len, data_len),
-114 => wire__crate__api__claim__store_write_sealed_impl(port, ptr, rust_vec_len, data_len),
+                        57 => wire__crate__api__swupdate__SwUpdate_default_impl(port, ptr, rust_vec_len, data_len),
+70 => wire__crate__api__claim__claim_target_impl(port, ptr, rust_vec_len, data_len),
+72 => wire__crate__api__claim__der_to_raw_impl(port, ptr, rust_vec_len, data_len),
+73 => wire__crate__api__claim__frame_limit_impl(port, ptr, rust_vec_len, data_len),
+75 => wire__crate__api__simple__init_app_impl(port, ptr, rust_vec_len, data_len),
+77 => wire__crate__api__member__list_mnets_impl(port, ptr, rust_vec_len, data_len),
+78 => wire__crate__api__owner__list_nets_impl(port, ptr, rust_vec_len, data_len),
+79 => wire__crate__api__owner__list_nodes_impl(port, ptr, rust_vec_len, data_len),
+80 => wire__crate__api__owner__list_pending_impl(port, ptr, rust_vec_len, data_len),
+81 => wire__crate__api__member__list_pends_impl(port, ptr, rust_vec_len, data_len),
+93 => wire__crate__api__claim__node_path_impl(port, ptr, rust_vec_len, data_len),
+94 => wire__crate__api__claim__owner_enc_sign_input_impl(port, ptr, rust_vec_len, data_len),
+95 => wire__crate__api__claim__parse_claim_qr_impl(port, ptr, rust_vec_len, data_len),
+97 => wire__crate__api__claim__pending_matches_qr_impl(port, ptr, rust_vec_len, data_len),
+98 => wire__crate__api__claim__pending_path_impl(port, ptr, rust_vec_len, data_len),
+107 => wire__crate__api__simple__store_has_records_impl(port, ptr, rust_vec_len, data_len),
+108 => wire__crate__api__claim__store_keep_copy_impl(port, ptr, rust_vec_len, data_len),
+109 => wire__crate__api__simple__store_read_marker_impl(port, ptr, rust_vec_len, data_len),
+110 => wire__crate__api__owner__store_read_sealed_impl(port, ptr, rust_vec_len, data_len),
+111 => wire__crate__api__claim__store_remove_impl(port, ptr, rust_vec_len, data_len),
+112 => wire__crate__api__claim__store_seal_params_impl(port, ptr, rust_vec_len, data_len),
+113 => wire__crate__api__simple__store_sweep_impl(port, ptr, rust_vec_len, data_len),
+114 => wire__crate__api__owner__store_write_cas_impl(port, ptr, rust_vec_len, data_len),
+115 => wire__crate__api__simple__store_write_marker_impl(port, ptr, rust_vec_len, data_len),
+116 => wire__crate__api__claim__store_write_sealed_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
                 }
@@ -2489,98 +2528,100 @@ return crate::api::rekey::UpdatePrep{state: var_state, eph_pub: var_ephPub, mnet
                 ) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
                     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
                     match func_id {
-                        1 => wire__crate__api__claim__ClaimSession_finished_with_9_impl(ptr, rust_vec_len, data_len),
-2 => wire__crate__api__claim__ClaimSession_on_frame_impl(ptr, rust_vec_len, data_len),
-3 => wire__crate__api__claim__ClaimSession_pending_persisted_impl(ptr, rust_vec_len, data_len),
-4 => wire__crate__api__claim__ClaimSession_replay_due_impl(ptr, rust_vec_len, data_len),
-5 => wire__crate__api__claim__ClaimSession_start_impl(ptr, rust_vec_len, data_len),
-6 => wire__crate__api__member__NetOp_approve_impl(ptr, rust_vec_len, data_len),
-7 => wire__crate__api__member__NetOp_make_invite_impl(ptr, rust_vec_len, data_len),
-8 => wire__crate__api__member__NetOp_net_persisted_impl(ptr, rust_vec_len, data_len),
-9 => wire__crate__api__member__NetOp_persist_failed_impl(ptr, rust_vec_len, data_len),
-10 => wire__crate__api__member__NetOp_signed_impl(ptr, rust_vec_len, data_len),
-11 => wire__crate__api__owner__OwnerSession_check_network_impl(ptr, rust_vec_len, data_len),
-12 => wire__crate__api__owner__OwnerSession_country_confirmed_impl(ptr, rust_vec_len, data_len),
-13 => wire__crate__api__owner__OwnerSession_last4_impl(ptr, rust_vec_len, data_len),
-14 => wire__crate__api__owner__OwnerSession_net_persisted_impl(ptr, rust_vec_len, data_len),
-15 => wire__crate__api__owner__OwnerSession_node_dac_hash_impl(ptr, rust_vec_len, data_len),
-16 => wire__crate__api__owner__OwnerSession_on_frame_impl(ptr, rust_vec_len, data_len),
-17 => wire__crate__api__owner__OwnerSession_persist_failed_impl(ptr, rust_vec_len, data_len),
-18 => wire__crate__api__owner__OwnerSession_request_confirm_network_impl(ptr, rust_vec_len, data_len),
-19 => wire__crate__api__owner__OwnerSession_request_info_impl(ptr, rust_vec_len, data_len),
-20 => wire__crate__api__owner__OwnerSession_request_join_network_impl(ptr, rust_vec_len, data_len),
-21 => wire__crate__api__owner__OwnerSession_request_joinreq_impl(ptr, rust_vec_len, data_len),
-22 => wire__crate__api__owner__OwnerSession_request_leave_network_impl(ptr, rust_vec_len, data_len),
-23 => wire__crate__api__owner__OwnerSession_request_link_check_impl(ptr, rust_vec_len, data_len),
-24 => wire__crate__api__owner__OwnerSession_request_make_network_impl(ptr, rust_vec_len, data_len),
-25 => wire__crate__api__owner__OwnerSession_request_member_join_impl(ptr, rust_vec_len, data_len),
-26 => wire__crate__api__owner__OwnerSession_request_send_update_impl(ptr, rust_vec_len, data_len),
-27 => wire__crate__api__owner__OwnerSession_request_set_ap_impl(ptr, rust_vec_len, data_len),
-28 => wire__crate__api__owner__OwnerSession_request_set_country_impl(ptr, rust_vec_len, data_len),
-29 => wire__crate__api__owner__OwnerSession_request_settings_impl(ptr, rust_vec_len, data_len),
-30 => wire__crate__api__owner__OwnerSession_request_ssh_keys_impl(ptr, rust_vec_len, data_len),
-31 => wire__crate__api__owner__OwnerSession_request_status_impl(ptr, rust_vec_len, data_len),
-32 => wire__crate__api__owner__OwnerSession_request_status_page_impl(ptr, rust_vec_len, data_len),
-33 => wire__crate__api__owner__OwnerSession_request_sw_impl(ptr, rust_vec_len, data_len),
-34 => wire__crate__api__owner__OwnerSession_resume_update_impl(ptr, rust_vec_len, data_len),
-35 => wire__crate__api__owner__OwnerSession_signed_impl(ptr, rust_vec_len, data_len),
-36 => wire__crate__api__owner__OwnerSession_start_impl(ptr, rust_vec_len, data_len),
-37 => wire__crate__api__owner__OwnerSession_status_view_impl(ptr, rust_vec_len, data_len),
-38 => wire__crate__api__owner__OwnerSession_sw_answer_impl(ptr, rust_vec_len, data_len),
-39 => wire__crate__api__owner__OwnerSession_team_view_impl(ptr, rust_vec_len, data_len),
-40 => wire__crate__api__owner__OwnerSession_update_hint_impl(ptr, rust_vec_len, data_len),
-41 => wire__crate__api__rekey__RemoveOp_net_persisted_impl(ptr, rust_vec_len, data_len),
-42 => wire__crate__api__rekey__RemoveOp_persist_failed_impl(ptr, rust_vec_len, data_len),
-43 => wire__crate__api__rekey__RemoveOp_signed_impl(ptr, rust_vec_len, data_len),
-44 => wire__crate__api__rekey__RemoveOp_start_bundle_impl(ptr, rust_vec_len, data_len),
-45 => wire__crate__api__rekey__RemoveOp_start_remove_impl(ptr, rust_vec_len, data_len),
-46 => wire__crate__api__replay__ReplaySession_begin_impl(ptr, rust_vec_len, data_len),
-47 => wire__crate__api__replay__ReplaySession_decrypted_impl(ptr, rust_vec_len, data_len),
-48 => wire__crate__api__replay__ReplaySession_lost_impl(ptr, rust_vec_len, data_len),
-49 => wire__crate__api__replay__ReplaySession_on_frame_impl(ptr, rust_vec_len, data_len),
-50 => wire__crate__api__replay__ReplaySession_prepare_impl(ptr, rust_vec_len, data_len),
-51 => wire__crate__api__replay__ReplaySession_set_z_impl(ptr, rust_vec_len, data_len),
-52 => wire__crate__api__replay__ReplaySession_signed_impl(ptr, rust_vec_len, data_len),
-53 => wire__crate__api__replay__ReplaySession_written_impl(ptr, rust_vec_len, data_len),
-54 => wire__crate__api__swupdate__SwUpdate_ap_credentials_impl(ptr, rust_vec_len, data_len),
-56 => wire__crate__api__swupdate__SwUpdate_keepalive_impl(ptr, rust_vec_len, data_len),
-57 => wire__crate__api__swupdate__SwUpdate_lost_impl(ptr, rust_vec_len, data_len),
-58 => wire__crate__api__swupdate__SwUpdate_new_impl(ptr, rust_vec_len, data_len),
-59 => wire__crate__api__swupdate__SwUpdate_no_link_impl(ptr, rust_vec_len, data_len),
-60 => wire__crate__api__swupdate__SwUpdate_picked_impl(ptr, rust_vec_len, data_len),
-61 => wire__crate__api__swupdate__SwUpdate_press_impl(ptr, rust_vec_len, data_len),
-62 => wire__crate__api__swupdate__SwUpdate_resume_impl(ptr, rust_vec_len, data_len),
-63 => wire__crate__api__swupdate__SwUpdate_start_impl(ptr, rust_vec_len, data_len),
-64 => wire__crate__api__swupdate__SwUpdate_uploaded_impl(ptr, rust_vec_len, data_len),
-65 => wire__crate__api__swupdate__SwUpdate_uploading_impl(ptr, rust_vec_len, data_len),
-66 => wire__crate__api__member__approval_net_id_impl(ptr, rust_vec_len, data_len),
-67 => wire__crate__api__simple__build_info_impl(ptr, rust_vec_len, data_len),
-69 => wire__crate__api__simple__decode_status_impl(ptr, rust_vec_len, data_len),
-72 => wire__crate__api__rekey__info_net_id_impl(ptr, rust_vec_len, data_len),
-74 => wire__crate__api__owner__leave_confirm_text_impl(ptr, rust_vec_len, data_len),
-80 => wire__crate__api__member__member_import_approval_impl(ptr, rust_vec_len, data_len),
-81 => wire__crate__api__member__member_import_prepare_impl(ptr, rust_vec_len, data_len),
-82 => wire__crate__api__member__member_pend_view_impl(ptr, rust_vec_len, data_len),
-83 => wire__crate__api__rekey__member_update_import_impl(ptr, rust_vec_len, data_len),
-84 => wire__crate__api__rekey__member_update_prepare_impl(ptr, rust_vec_len, data_len),
-85 => wire__crate__api__member__mnet_summary_impl(ptr, rust_vec_len, data_len),
-86 => wire__crate__api__member__net_check_joinreq_impl(ptr, rust_vec_len, data_len),
-87 => wire__crate__api__owner__net_forget_joining_impl(ptr, rust_vec_len, data_len),
-88 => wire__crate__api__rekey__net_people_impl(ptr, rust_vec_len, data_len),
-89 => wire__crate__api__rekey__net_recipients_impl(ptr, rust_vec_len, data_len),
-90 => wire__crate__api__owner__net_summary_impl(ptr, rust_vec_len, data_len),
-94 => wire__crate__api__member__parse_invite_impl(ptr, rust_vec_len, data_len),
-97 => wire__crate__api__replay__recovery_end_text_impl(ptr, rust_vec_len, data_len),
-98 => wire__crate__api__rekey__remove_check_impl(ptr, rust_vec_len, data_len),
-99 => wire__crate__api__rekey__remove_own_nodes_impl(ptr, rust_vec_len, data_len),
-100 => wire__crate__api__rekey__remove_tick_text_impl(ptr, rust_vec_len, data_len),
-101 => wire__crate__api__simple__selftest_impl(ptr, rust_vec_len, data_len),
-102 => wire__crate__api__ssh__ssh_fingerprint_impl(ptr, rust_vec_len, data_len),
-103 => wire__crate__api__ssh__ssh_line_problem_impl(ptr, rust_vec_len, data_len),
-104 => wire__crate__api__owner__status_membership_line_impl(ptr, rust_vec_len, data_len),
-115 => wire__crate__api__swupdate__sw_specifier_text_impl(ptr, rust_vec_len, data_len),
-116 => wire__crate__api__team_flag__team_enabled_impl(ptr, rust_vec_len, data_len),
-117 => wire__crate__api__rekey__update_net_id_impl(ptr, rust_vec_len, data_len),
+                        1 => wire__crate__api__owner__AdvResolver_new_impl(ptr, rust_vec_len, data_len),
+2 => wire__crate__api__owner__AdvResolver_resolve_impl(ptr, rust_vec_len, data_len),
+3 => wire__crate__api__claim__ClaimSession_finished_with_9_impl(ptr, rust_vec_len, data_len),
+4 => wire__crate__api__claim__ClaimSession_on_frame_impl(ptr, rust_vec_len, data_len),
+5 => wire__crate__api__claim__ClaimSession_pending_persisted_impl(ptr, rust_vec_len, data_len),
+6 => wire__crate__api__claim__ClaimSession_replay_due_impl(ptr, rust_vec_len, data_len),
+7 => wire__crate__api__claim__ClaimSession_start_impl(ptr, rust_vec_len, data_len),
+8 => wire__crate__api__member__NetOp_approve_impl(ptr, rust_vec_len, data_len),
+9 => wire__crate__api__member__NetOp_make_invite_impl(ptr, rust_vec_len, data_len),
+10 => wire__crate__api__member__NetOp_net_persisted_impl(ptr, rust_vec_len, data_len),
+11 => wire__crate__api__member__NetOp_persist_failed_impl(ptr, rust_vec_len, data_len),
+12 => wire__crate__api__member__NetOp_signed_impl(ptr, rust_vec_len, data_len),
+13 => wire__crate__api__owner__OwnerSession_check_network_impl(ptr, rust_vec_len, data_len),
+14 => wire__crate__api__owner__OwnerSession_country_confirmed_impl(ptr, rust_vec_len, data_len),
+15 => wire__crate__api__owner__OwnerSession_last4_impl(ptr, rust_vec_len, data_len),
+16 => wire__crate__api__owner__OwnerSession_net_persisted_impl(ptr, rust_vec_len, data_len),
+17 => wire__crate__api__owner__OwnerSession_node_dac_hash_impl(ptr, rust_vec_len, data_len),
+18 => wire__crate__api__owner__OwnerSession_on_frame_impl(ptr, rust_vec_len, data_len),
+19 => wire__crate__api__owner__OwnerSession_persist_failed_impl(ptr, rust_vec_len, data_len),
+20 => wire__crate__api__owner__OwnerSession_request_confirm_network_impl(ptr, rust_vec_len, data_len),
+21 => wire__crate__api__owner__OwnerSession_request_info_impl(ptr, rust_vec_len, data_len),
+22 => wire__crate__api__owner__OwnerSession_request_join_network_impl(ptr, rust_vec_len, data_len),
+23 => wire__crate__api__owner__OwnerSession_request_joinreq_impl(ptr, rust_vec_len, data_len),
+24 => wire__crate__api__owner__OwnerSession_request_leave_network_impl(ptr, rust_vec_len, data_len),
+25 => wire__crate__api__owner__OwnerSession_request_link_check_impl(ptr, rust_vec_len, data_len),
+26 => wire__crate__api__owner__OwnerSession_request_make_network_impl(ptr, rust_vec_len, data_len),
+27 => wire__crate__api__owner__OwnerSession_request_member_join_impl(ptr, rust_vec_len, data_len),
+28 => wire__crate__api__owner__OwnerSession_request_send_update_impl(ptr, rust_vec_len, data_len),
+29 => wire__crate__api__owner__OwnerSession_request_set_ap_impl(ptr, rust_vec_len, data_len),
+30 => wire__crate__api__owner__OwnerSession_request_set_country_impl(ptr, rust_vec_len, data_len),
+31 => wire__crate__api__owner__OwnerSession_request_settings_impl(ptr, rust_vec_len, data_len),
+32 => wire__crate__api__owner__OwnerSession_request_ssh_keys_impl(ptr, rust_vec_len, data_len),
+33 => wire__crate__api__owner__OwnerSession_request_status_impl(ptr, rust_vec_len, data_len),
+34 => wire__crate__api__owner__OwnerSession_request_status_page_impl(ptr, rust_vec_len, data_len),
+35 => wire__crate__api__owner__OwnerSession_request_sw_impl(ptr, rust_vec_len, data_len),
+36 => wire__crate__api__owner__OwnerSession_resume_update_impl(ptr, rust_vec_len, data_len),
+37 => wire__crate__api__owner__OwnerSession_signed_impl(ptr, rust_vec_len, data_len),
+38 => wire__crate__api__owner__OwnerSession_start_impl(ptr, rust_vec_len, data_len),
+39 => wire__crate__api__owner__OwnerSession_status_view_impl(ptr, rust_vec_len, data_len),
+40 => wire__crate__api__owner__OwnerSession_sw_answer_impl(ptr, rust_vec_len, data_len),
+41 => wire__crate__api__owner__OwnerSession_team_view_impl(ptr, rust_vec_len, data_len),
+42 => wire__crate__api__owner__OwnerSession_update_hint_impl(ptr, rust_vec_len, data_len),
+43 => wire__crate__api__rekey__RemoveOp_net_persisted_impl(ptr, rust_vec_len, data_len),
+44 => wire__crate__api__rekey__RemoveOp_persist_failed_impl(ptr, rust_vec_len, data_len),
+45 => wire__crate__api__rekey__RemoveOp_signed_impl(ptr, rust_vec_len, data_len),
+46 => wire__crate__api__rekey__RemoveOp_start_bundle_impl(ptr, rust_vec_len, data_len),
+47 => wire__crate__api__rekey__RemoveOp_start_remove_impl(ptr, rust_vec_len, data_len),
+48 => wire__crate__api__replay__ReplaySession_begin_impl(ptr, rust_vec_len, data_len),
+49 => wire__crate__api__replay__ReplaySession_decrypted_impl(ptr, rust_vec_len, data_len),
+50 => wire__crate__api__replay__ReplaySession_lost_impl(ptr, rust_vec_len, data_len),
+51 => wire__crate__api__replay__ReplaySession_on_frame_impl(ptr, rust_vec_len, data_len),
+52 => wire__crate__api__replay__ReplaySession_prepare_impl(ptr, rust_vec_len, data_len),
+53 => wire__crate__api__replay__ReplaySession_set_z_impl(ptr, rust_vec_len, data_len),
+54 => wire__crate__api__replay__ReplaySession_signed_impl(ptr, rust_vec_len, data_len),
+55 => wire__crate__api__replay__ReplaySession_written_impl(ptr, rust_vec_len, data_len),
+56 => wire__crate__api__swupdate__SwUpdate_ap_credentials_impl(ptr, rust_vec_len, data_len),
+58 => wire__crate__api__swupdate__SwUpdate_keepalive_impl(ptr, rust_vec_len, data_len),
+59 => wire__crate__api__swupdate__SwUpdate_lost_impl(ptr, rust_vec_len, data_len),
+60 => wire__crate__api__swupdate__SwUpdate_new_impl(ptr, rust_vec_len, data_len),
+61 => wire__crate__api__swupdate__SwUpdate_no_link_impl(ptr, rust_vec_len, data_len),
+62 => wire__crate__api__swupdate__SwUpdate_picked_impl(ptr, rust_vec_len, data_len),
+63 => wire__crate__api__swupdate__SwUpdate_press_impl(ptr, rust_vec_len, data_len),
+64 => wire__crate__api__swupdate__SwUpdate_resume_impl(ptr, rust_vec_len, data_len),
+65 => wire__crate__api__swupdate__SwUpdate_start_impl(ptr, rust_vec_len, data_len),
+66 => wire__crate__api__swupdate__SwUpdate_uploaded_impl(ptr, rust_vec_len, data_len),
+67 => wire__crate__api__swupdate__SwUpdate_uploading_impl(ptr, rust_vec_len, data_len),
+68 => wire__crate__api__member__approval_net_id_impl(ptr, rust_vec_len, data_len),
+69 => wire__crate__api__simple__build_info_impl(ptr, rust_vec_len, data_len),
+71 => wire__crate__api__simple__decode_status_impl(ptr, rust_vec_len, data_len),
+74 => wire__crate__api__rekey__info_net_id_impl(ptr, rust_vec_len, data_len),
+76 => wire__crate__api__owner__leave_confirm_text_impl(ptr, rust_vec_len, data_len),
+82 => wire__crate__api__member__member_import_approval_impl(ptr, rust_vec_len, data_len),
+83 => wire__crate__api__member__member_import_prepare_impl(ptr, rust_vec_len, data_len),
+84 => wire__crate__api__member__member_pend_view_impl(ptr, rust_vec_len, data_len),
+85 => wire__crate__api__rekey__member_update_import_impl(ptr, rust_vec_len, data_len),
+86 => wire__crate__api__rekey__member_update_prepare_impl(ptr, rust_vec_len, data_len),
+87 => wire__crate__api__member__mnet_summary_impl(ptr, rust_vec_len, data_len),
+88 => wire__crate__api__member__net_check_joinreq_impl(ptr, rust_vec_len, data_len),
+89 => wire__crate__api__owner__net_forget_joining_impl(ptr, rust_vec_len, data_len),
+90 => wire__crate__api__rekey__net_people_impl(ptr, rust_vec_len, data_len),
+91 => wire__crate__api__rekey__net_recipients_impl(ptr, rust_vec_len, data_len),
+92 => wire__crate__api__owner__net_summary_impl(ptr, rust_vec_len, data_len),
+96 => wire__crate__api__member__parse_invite_impl(ptr, rust_vec_len, data_len),
+99 => wire__crate__api__replay__recovery_end_text_impl(ptr, rust_vec_len, data_len),
+100 => wire__crate__api__rekey__remove_check_impl(ptr, rust_vec_len, data_len),
+101 => wire__crate__api__rekey__remove_own_nodes_impl(ptr, rust_vec_len, data_len),
+102 => wire__crate__api__rekey__remove_tick_text_impl(ptr, rust_vec_len, data_len),
+103 => wire__crate__api__simple__selftest_impl(ptr, rust_vec_len, data_len),
+104 => wire__crate__api__ssh__ssh_fingerprint_impl(ptr, rust_vec_len, data_len),
+105 => wire__crate__api__ssh__ssh_line_problem_impl(ptr, rust_vec_len, data_len),
+106 => wire__crate__api__owner__status_membership_line_impl(ptr, rust_vec_len, data_len),
+117 => wire__crate__api__swupdate__sw_specifier_text_impl(ptr, rust_vec_len, data_len),
+118 => wire__crate__api__team_flag__team_enabled_impl(ptr, rust_vec_len, data_len),
+119 => wire__crate__api__rekey__update_net_id_impl(ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
                 }
@@ -2589,6 +2630,21 @@ return crate::api::rekey::UpdatePrep{state: var_state, eph_pub: var_ephPub, mnet
 // Section: rust2dart
 
 
+                // Codec=Dco (DartCObject based), see doc to use other codecs
+            impl flutter_rust_bridge::IntoDart for FrbWrapper<AdvResolver> {
+                fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+                    flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self.0).into_dart()
+                }
+            }
+            impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for FrbWrapper<AdvResolver> {}
+
+                impl flutter_rust_bridge::IntoIntoDart<FrbWrapper<AdvResolver>> for AdvResolver {
+            fn into_into_dart(self) -> FrbWrapper<AdvResolver> {
+                self.into()
+            }
+        }
+
+                
                 // Codec=Dco (DartCObject based), see doc to use other codecs
             impl flutter_rust_bridge::IntoDart for FrbWrapper<ClaimSession> {
                 fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -3403,6 +3459,11 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::rekey::UpdateState> for crate
             }
         }
 
+                impl SseEncode for AdvResolver {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AdvResolver>>>::sse_encode(flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self), serializer);}
+                }
+                
                 impl SseEncode for ClaimSession {
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ClaimSession>>>::sse_encode(flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self), serializer);}
@@ -3431,6 +3492,13 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::rekey::UpdateState> for crate
                 impl SseEncode for SwUpdate {
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<SwUpdate>>>::sse_encode(flutter_rust_bridge::for_generated::rust_auto_opaque_encode::<_, MoiArc<_>>(self), serializer);}
+                }
+                
+                impl SseEncode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AdvResolver>> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {let (ptr, size) = self.sse_encode_raw();
+                <usize>::sse_encode(ptr, serializer);
+                <i32>::sse_encode(size, serializer);}
                 }
                 
                 impl SseEncode for RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<ClaimSession>> {
@@ -4086,18 +4154,30 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 
 // Section: imports
 
-use crate::api::swupdate::*;
-use crate::api::owner::*;
-use crate::api::member::*;
-use crate::api::rekey::*;
 use crate::api::replay::*;
-use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;
+use crate::api::claim::*;
+use crate::api::swupdate::*;
+use crate::api::member::*;
+use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
 // Section: boilerplate
 
 flutter_rust_bridge::frb_generated_boilerplate_io!();
+
+                #[unsafe(no_mangle)]
+                pub extern "C" fn frbgen_batman_app_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerAdvResolver(ptr: *const std::ffi::c_void)  {
+                    MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AdvResolver>>::increment_strong_count(ptr as _);
+                }
+            
+
+                #[unsafe(no_mangle)]
+                pub extern "C" fn frbgen_batman_app_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerAdvResolver(ptr: *const std::ffi::c_void)  {
+                    MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AdvResolver>>::decrement_strong_count(ptr as _);
+                }
+            
 
                 #[unsafe(no_mangle)]
                 pub extern "C" fn frbgen_batman_app_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(ptr: *const std::ffi::c_void)  {
@@ -4186,12 +4266,12 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::swupdate::*;
-use crate::api::owner::*;
-use crate::api::member::*;
-use crate::api::rekey::*;
 use crate::api::replay::*;
-use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;
+use crate::api::claim::*;
+use crate::api::swupdate::*;
+use crate::api::member::*;
+use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;
@@ -4201,6 +4281,18 @@ use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt,
 // Section: boilerplate
 
 flutter_rust_bridge::frb_generated_boilerplate_web!();
+
+                #[wasm_bindgen]
+                pub  fn rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerAdvResolver(ptr: *const std::ffi::c_void)  {
+                    MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AdvResolver>>::increment_strong_count(ptr as _);
+                }
+            
+
+                #[wasm_bindgen]
+                pub  fn rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerAdvResolver(ptr: *const std::ffi::c_void)  {
+                    MoiArc::<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<AdvResolver>>::decrement_strong_count(ptr as _);
+                }
+            
 
                 #[wasm_bindgen]
                 pub  fn rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerClaimSession(ptr: *const std::ffi::c_void)  {

@@ -132,9 +132,9 @@ class KRadio implements BleBackend {
   int goneMs = 0; // the stack reports a closed link gone this long (fake clock) after the disconnect
 
   @override
-  Stream<String> scan() {
+  Stream<(String, Uint8List?)> scan() {
     scans++;
-    return scanCtl.stream;
+    return scanCtl.stream.map<(String, Uint8List?)>((a) => (a, null));
   }
 
   @override

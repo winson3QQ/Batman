@@ -1,5 +1,6 @@
 // #329 §4.2 / §9.1 T-G1: BleGate with a fake radio and a manual clock.
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:batman_app/src/nodelink/ble_gate.dart';
 import 'package:batman_app/src/nodelink/lease.dart';
@@ -56,10 +57,10 @@ class FakeRadio implements BleBackend {
   Future<void> write(String address, Char c, List<int> value) async => gatt.add('write $address ${c.name}');
 
   @override
-  Stream<String> scan() {
+  Stream<(String, Uint8List?)> scan() {
     scanStarts++;
-    late StreamController<String> c;
-    c = StreamController<String>(onCancel: () => scanStops++);
+    late StreamController<(String, Uint8List?)> c;
+    c = StreamController<(String, Uint8List?)>(onCancel: () => scanStops++);
     return c.stream;
   }
 
@@ -89,8 +90,8 @@ void main() {
   test('T-G1: a second scan and a second link are refused and counted; the radio sees one of each', () async {
     final (reg, gate, radio, _) = setup();
     final t = reg.token;
-    await gate.scan(t, (_) {});
-    await expectLater(gate.scan(t, (_) {}), throwsA(isA<Refused>()));
+    await gate.scan(t, (_, _) {});
+    await expectLater(gate.scan(t, (_, _) {}), throwsA(isA<Refused>()));
     gate.connect(t, 'a1');
     expect(() => gate.connect(t, 'a2'), throwsA(isA<Refused>()));
     expect((gate.scans, gate.links, radio.scanStarts, radio.connects), (1, 1, 1, 1));
@@ -101,7 +102,7 @@ void main() {
     final (reg, gate, radio, _) = setup();
     final old = reg.token;
     reg.acquire('x', LeaseKind.raw);
-    await expectLater(gate.scan(old, (_) {}), throwsA(isA<Refused>()));
+    await expectLater(gate.scan(old, (_, _) {}), throwsA(isA<Refused>()));
     expect(() => gate.connect(old, 'a1'), throwsA(isA<Refused>()));
     expect(radio.scanStarts + radio.connects, 0);
   });
@@ -109,7 +110,7 @@ void main() {
   test('revoking a lease closes its scan and its link (not by the holder)', () async {
     final (reg, gate, radio, clock) = setup();
     final l = reg.acquire('建立網路', LeaseKind.session)!;
-    await gate.scan(l.token, (_) {});
+    await gate.scan(l.token, (_, _) {});
     gate.connect(l.token, 'a1');
     await Future<void>.delayed(Duration.zero);
     final work = l.run(() => Completer<void>().future); // never ends
@@ -136,12 +137,12 @@ void main() {
   test('at most 4 scan starts in any 30 s: the 5th waits inside the gate until the window allows it', () async {
     final (reg, gate, radio, clock) = setup();
     for (var i = 0; i < 4; i++) {
-      final s = await gate.scan(reg.token, (_) {});
+      final s = await gate.scan(reg.token, (_, _) {});
       await s.stop();
       clock.advance(1000);
     }
     var started = false;
-    final f = gate.scan(reg.token, (_) {}).then((_) => started = true);
+    final f = gate.scan(reg.token, (_, _) {}).then((_) => started = true);
     await Future<void>.delayed(Duration.zero);
     expect((started, radio.scanStarts), (false, 4));
     clock.advance(25999); // t = 29.999 s: the first start (t = 0) is still in the window

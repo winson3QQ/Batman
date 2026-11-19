@@ -25,6 +25,8 @@ team-write = []
 # versions pinned exactly, each >= 2 weeks old at selection (2026-11-07), MIT OR Apache-2.0
 hkdf = "=0.13.0"
 sha2 = "=0.11.1"
+# #329 rotating identifier (kdf::adv_id_tag); 0.13.0 = the version hkdf already depends on (one copy in the build)
+hmac = "=0.13.0"
 # snow: RUSTSEC-2024-0011 (unauthenticated nonce increment) is patched in >= 0.9.5
 #       only the primitives Noise_NX(psk0)_25519_ChaChaPoly_SHA256 needs (no AES-GCM / BLAKE2)
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "ecdh", "std"] }

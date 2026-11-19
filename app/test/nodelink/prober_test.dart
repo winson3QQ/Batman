@@ -102,7 +102,7 @@ class Radio implements BleBackend {
   final writes = <int>[];
   final _states = StreamController<(String, bool, int?)>.broadcast(sync: true);
   @override
-  Stream<String> scan() => const Stream.empty();
+  Stream<(String, Uint8List?)> scan() => const Stream.empty();
   @override
   Stream<bool> connect(String address, Duration timeout) => (StreamController<bool>()..add(true)).stream; // open while connected
   @override

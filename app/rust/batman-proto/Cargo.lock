@@ -40,6 +40,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "hkdf",
+ "hmac",
  "p256",
  "serde_json",
  "sha2 0.11.1",

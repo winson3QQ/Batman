@@ -44,7 +44,7 @@ const COVERAGE: &[(&str, &str)] = &[
     ("version_chain", "pending: not in S1 (network/update)"),
     ("network_update", "tested (network_update_body_*: updflow::body rebuilds body_v2 byte for byte from its three objects; the app's cose verifies them as version 2 after cose.net_config; cose::decrypt opens v2's secrets to sae_v2 / net_root_v2; stale_body_v2's version-1 secrets are refused by the app's pre-send filter MNet::secrets_for and do not open as version 2)"),
     ("sas", "tested (tests/member.rs M1)"),
-    ("adv_id", "pending: the app resolver (#329 rotating identifier, design §10 step 6); the node side is tested in Go (proto_test.go, verify.py)"),
+    ("adv_id", "tested"),
 ];
 
 #[test]
@@ -188,6 +188,27 @@ fn hkdf_vectors() {
     // negative: the owner label on the member inputs (or the wrong device id) must NOT give the vector
     assert_ne!(kdf::hkdf32(&net_root, b"batman-psk-owner-v1").to_vec(), h(&v["hkdf"]["psk_member"]));
     assert_ne!(kdf::psk_owner(&seed("owner_tag_key"), "0123a5f0c3e1b74def").to_vec(), h(&v["hkdf"]["psk_owner"]));
+}
+
+// #329 rotating identifier (329-rotating-id-plan.md §8 V1): the tag under adv_owner of the hkdf group, the company id,
+// and the whole AD as the node puts it on the air (len, type 0xFF, cid LE, nonce, tag)
+#[test]
+fn adv_id_vector() {
+    use batman_proto::kdf;
+    let v = vectors();
+    let k = kdf::adv_owner(&seed("adv_owner_key"), DEVICE_ID);
+    let n: [u8; 3] = h(&v["adv_id"]["nonce"]).try_into().expect("a 3-byte nonce");
+    let t = kdf::adv_id_tag(&k, &n);
+    assert_eq!(t.to_vec(), h(&v["adv_id"]["tag"]));
+    assert_eq!(u64::from(kdf::ADV_CID), v["adv_id"]["cid"].as_u64().unwrap());
+    let mut ad = vec![0x09, 0xff];
+    ad.extend(kdf::ADV_CID.to_le_bytes());
+    ad.extend(n);
+    ad.extend(t);
+    assert_eq!(ad, h(&v["adv_id"]["ad"]));
+    // negative: another nonce, or another node's key, must NOT give the vector's tag
+    assert_ne!(kdf::adv_id_tag(&k, &[n[0], n[1], n[2] ^ 1]).to_vec(), h(&v["adv_id"]["tag"]));
+    assert_ne!(kdf::adv_id_tag(&kdf::adv_owner(&seed("adv_owner_key"), "0123a5f0c3e1b74def"), &n).to_vec(), h(&v["adv_id"]["tag"]));
 }
 
 #[test]

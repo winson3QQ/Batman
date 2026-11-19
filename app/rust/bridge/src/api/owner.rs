@@ -188,6 +188,72 @@ fn parse_record(plain: &[u8]) -> Result<Rec, String> {
     })
 }
 
+/// #329 rotating identifier (329-rotating-id-plan.md §3.3): which of this phone's nodes an advert's Manufacturer Data
+/// belongs to. Holds one key per node record, `adv_owner(key 6, device_id)`; the keys never leave Rust and are zeroed
+/// on drop. A match is a hint for the order of login attempts only: the login itself is what verifies a node.
+#[flutter_rust_bridge::frb(opaque)]
+pub struct AdvResolver {
+    keys: Vec<(String, [u8; 32])>,
+}
+
+impl AdvResolver {
+    fn wipe(&mut self) {
+        for (_, k) in &mut self.keys {
+            k.fill(0);
+        }
+    }
+}
+
+impl Drop for AdvResolver {
+    fn drop(&mut self) {
+        self.wipe();
+    }
+}
+
+impl AdvResolver {
+    /// From the opened node records. A record that does not parse, or has no device id or no 32-byte key 6, is left
+    /// out (that node is found the old way).
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn new(mut records: Vec<Vec<u8>>) -> AdvResolver {
+        let mut keys = Vec::new();
+        for plain in &records {
+            let Ok(v) = cbor::decode(plain) else { continue };
+            let (Some(id), Some(key)) = (v.get(1).and_then(Value::as_text), v.get(6).and_then(Value::as_bytes)) else { continue };
+            if key.len() == 32 {
+                keys.push((id.to_string(), batman_proto::kdf::adv_owner(key, id)));
+            }
+        }
+        for plain in &mut records {
+            plain.fill(0);
+        }
+        AdvResolver { keys }
+    }
+
+    /// `mfr`: the Manufacturer Data of one scan result as the BLE plugin gives it (company id, little-endian, then the
+    /// data). The device id of the one record whose key gives the tag; none when the length is not 8, the company id
+    /// is not ours, no record matches, or more than one does.
+    #[flutter_rust_bridge::frb(sync)]
+    pub fn resolve(&self, mfr: Vec<u8>) -> Option<String> {
+        let m: &[u8; 8] = mfr.as_slice().try_into().ok()?;
+        if u16::from_le_bytes([m[0], m[1]]) != batman_proto::kdf::ADV_CID {
+            return None;
+        }
+        let (n, t) = ([m[2], m[3], m[4]], [m[5], m[6], m[7]]);
+        let mut hit = None;
+        for (id, k) in &self.keys {
+            let want = batman_proto::kdf::adv_id_tag(k, &n);
+            // all three bytes are compared, whatever the first one is
+            if (want[0] ^ t[0]) | (want[1] ^ t[1]) | (want[2] ^ t[2]) == 0 {
+                if hit.is_some() {
+                    return None;
+                }
+                hit = Some(id);
+            }
+        }
+        hit.cloned()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OwnerKind {
     /// write `frames` to RX in order
@@ -1742,6 +1808,156 @@ impl OwnerSession {
                 OwnerStep { login_end, login_code, ..OwnerStep::text(OwnerKind::Ended, login_end_text(&e)) }
             }
         })
+    }
+}
+
+// #329 rotating identifier, 329-rotating-id-plan.md §8 R1 / R2
+#[cfg(test)]
+mod adv_tests {
+    use super::*;
+    use batman_proto::kdf;
+
+    const Y: &str = "e61551410cfd538e24";
+    const Z: &str = "0123a5f0c3e1b74dee";
+
+    /// a node record with the keys claim.rs writes (1-9); `key6`: None = a record without key 6
+    fn rec(id: &str, key6: Option<&[u8]>) -> Vec<u8> {
+        let mut m = vec![
+            (Value::Uint(1), Value::Text(id.into())),
+            (Value::Uint(2), Value::Bytes(vec![2; 32])),
+            (Value::Uint(3), Value::Bytes(vec![3; 40])),
+            (Value::Uint(4), Value::Bytes(vec![4; 40])),
+            (Value::Uint(5), Value::Bytes(vec![5; 32])),
+        ];
+        if let Some(k) = key6 {
+            m.push((Value::Uint(6), Value::Bytes(k.to_vec())));
+        }
+        m.extend([
+            (Value::Uint(7), Value::Text("pw".into())),
+            (Value::Uint(8), Value::Text("claimed".into())),
+            (Value::Uint(9), Value::Bytes(vec![9; 32])),
+        ]);
+        cbor::encode(&Value::Map(m))
+    }
+
+    /// what the node `id` holding `key6` advertises with nonce `n`, as the scan gives it
+    fn mfr(id: &str, key6: &[u8], n: [u8; 3]) -> Vec<u8> {
+        let mut v = kdf::ADV_CID.to_le_bytes().to_vec();
+        v.extend(n);
+        v.extend(kdf::adv_id_tag(&kdf::adv_owner(key6, id), &n));
+        v
+    }
+
+    #[test]
+    fn r1_own_payload_resolves_and_nothing_else_does() {
+        let (ky, kz) = ([0x61u8; 32], [0x62u8; 32]);
+        let r = AdvResolver::new(vec![rec(Y, Some(&ky)), rec(Z, Some(&kz))]);
+        for n in [[0, 0, 0], [0x27, 0x9f, 0x48], [0xff, 0xff, 0xff]] {
+            assert_eq!(r.resolve(mfr(Y, &ky, n)).as_deref(), Some(Y));
+            assert_eq!(r.resolve(mfr(Z, &kz, n)).as_deref(), Some(Z));
+        }
+        let own = mfr(Y, &ky, [1, 2, 3]);
+        assert_eq!(r.resolve(own.clone()).as_deref(), Some(Y));
+        // a node this phone does not own (another key), and Y's key on another device id
+        assert_eq!(r.resolve(mfr(Y, &[0x63; 32], [1, 2, 3])), None);
+        assert_eq!(r.resolve(mfr("e61551410cfd538e25", &ky, [1, 2, 3])), None);
+        // another company's data with our bytes after it; one byte of the id wrong
+        let mut other = own.clone();
+        other[0] = 0x4c;
+        other[1] = 0x00;
+        assert_eq!(r.resolve(other), None);
+        let mut cid_fe = own.clone();
+        cid_fe[0] = 0xfe;
+        assert_eq!(r.resolve(cid_fe), None);
+        // length 7 and 9 (and none at all)
+        assert_eq!(r.resolve(own[..7].to_vec()), None);
+        let mut nine = own.clone();
+        nine.push(0);
+        assert_eq!(r.resolve(nine), None);
+        assert_eq!(r.resolve(vec![]), None);
+        // each single-bit change of the nonce or the tag
+        for i in 2..8 {
+            for bit in 0..8 {
+                let mut m = own.clone();
+                m[i] ^= 1 << bit;
+                assert_eq!(r.resolve(m), None, "byte {i} bit {bit}");
+            }
+        }
+        assert_eq!(AdvResolver::new(vec![]).resolve(own), None);
+    }
+
+    #[test]
+    fn r1_a_record_without_key_6_is_skipped() {
+        let ky = [0x61u8; 32];
+        // no key 6; a 31-byte key 6; bytes that are no record; a record with no device id. Y, last, still resolves
+        let no_id = cbor::encode(&Value::Map(vec![(Value::Uint(6), Value::Bytes(vec![7; 32]))]));
+        let r = AdvResolver::new(vec![rec(Z, None), rec("aaaaaaaaaaaaaaaaaa", Some(&[1; 31])), vec![0xff, 0x00], no_id, rec(Y, Some(&ky))]);
+        assert_eq!(r.keys.len(), 1);
+        assert_eq!(r.resolve(mfr(Y, &ky, [9, 9, 9])).as_deref(), Some(Y));
+        // Z's advert gives nothing: its record holds no key
+        assert_eq!(r.resolve(mfr(Z, &[0x62; 32], [9, 9, 9])), None);
+    }
+
+    #[test]
+    fn r1_two_own_records_matching_one_payload_give_none() {
+        let (ky, kz) = ([0x61u8; 32], [0x62u8; 32]);
+        // the same node twice in the list
+        let r = AdvResolver::new(vec![rec(Y, Some(&ky)), rec(Z, Some(&kz)), rec(Y, Some(&ky))]);
+        assert_eq!(r.resolve(mfr(Y, &ky, [1, 2, 3])), None);
+        assert_eq!(r.resolve(mfr(Z, &kz, [1, 2, 3])).as_deref(), Some(Z));
+        // two different nodes whose tags are equal for one nonce (keys and nonce found by an offline search: with a
+        // 3-byte tag about one nonce in 2^24 does this for a given pair)
+        let (kc, n) = ([0x63u8; 32], [0x57, 0xbd, 0x0c]);
+        assert_eq!(kdf::adv_id_tag(&kdf::adv_owner(&ky, Y), &n), kdf::adv_id_tag(&kdf::adv_owner(&kc, Z), &n), "the fixture");
+        let r = AdvResolver::new(vec![rec(Y, Some(&ky)), rec(Z, Some(&kc))]);
+        assert_eq!(r.resolve(mfr(Y, &ky, n)), None);
+        // the same payload with only Y on the phone resolves: it was the second match that made it none
+        assert_eq!(AdvResolver::new(vec![rec(Y, Some(&ky))]).resolve(mfr(Y, &ky, n)).as_deref(), Some(Y));
+    }
+
+    /// The node record of the first claim code (bbd74c6 claim.rs:184-193: keys 1-8, no key 9), as it lies on a phone
+    /// that claimed with that version.
+    #[test]
+    fn r1_a_record_of_the_first_claim_code_resolves() {
+        let key = [0x66u8; 32];
+        let old = cbor::encode(&Value::Map(vec![
+            (Value::Uint(1), Value::Text(Y.into())),
+            (Value::Uint(2), Value::Bytes(vec![2; 32])),
+            (Value::Uint(3), Value::Bytes(vec![3; 40])),
+            (Value::Uint(4), Value::Bytes(vec![4; 40])),
+            (Value::Uint(5), Value::Bytes(vec![5; 32])),
+            (Value::Uint(6), Value::Bytes(key.to_vec())),
+            (Value::Uint(7), Value::Text("pw".into())),
+            (Value::Uint(8), Value::Text("claimed".into())),
+        ]));
+        assert_eq!(AdvResolver::new(vec![old]).resolve(mfr(Y, &key, [4, 5, 6])).as_deref(), Some(Y));
+    }
+
+    /// today's writer, not a hand-made map: the record claim.rs builds resolves under its adv_owner_key
+    #[test]
+    fn r1_the_record_a_claim_writes_resolves() {
+        use batman_proto::claimflow::Pending;
+        use batman_proto::flow::Creds;
+        let p = Pending { device_id: Y.into(), k: [7; 32], node_cert: vec![9; 10], dac_der: vec![8; 5], ecdh_pub: [4; 65], owner_pub: [4; 65], owner_enc_pub: [4; 65] };
+        let c = Creds { owner_tag_key: [5; 32], adv_owner_key: [0x6a; 32], root_password: "pw".into() };
+        let rec = super::super::claim::node_record(&p, &c, [9; 32], false);
+        assert_eq!(AdvResolver::new(vec![rec]).resolve(mfr(Y, &[0x6a; 32], [7, 8, 9])).as_deref(), Some(Y));
+    }
+
+    #[test]
+    fn r2_after_a_reclaim_the_old_record_does_not_resolve() {
+        let (old, new) = ([0x71u8; 32], [0x72u8; 32]);
+        // the node was claimed again (the key is new with every claim): its advert is under the new key
+        assert_eq!(AdvResolver::new(vec![rec(Y, Some(&old))]).resolve(mfr(Y, &new, [1, 1, 1])), None);
+        assert_eq!(AdvResolver::new(vec![rec(Y, Some(&new))]).resolve(mfr(Y, &new, [1, 1, 1])).as_deref(), Some(Y));
+    }
+
+    #[test]
+    fn the_keys_are_zeroed_when_dropped() {
+        let mut r = AdvResolver::new(vec![rec(Y, Some(&[0x61; 32]))]);
+        assert_ne!(r.keys[0].1, [0; 32]);
+        r.wipe(); // what Drop runs
+        assert_eq!(r.keys[0].1, [0; 32]);
     }
 }
 

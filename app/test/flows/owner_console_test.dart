@@ -106,7 +106,7 @@ class EchoRadio implements BleBackend {
   StreamController<bool>? conn;
 
   @override
-  Stream<String> scan() => const Stream.empty();
+  Stream<(String, Uint8List?)> scan() => const Stream.empty();
   @override
   Stream<bool> connect(String address, Duration timeout) {
     final c = conn = StreamController<bool>(onCancel: () => _st.add((address, false, null)));

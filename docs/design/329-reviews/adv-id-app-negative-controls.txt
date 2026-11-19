@@ -1,0 +1,119 @@
+## S1 round: no like step: rc=1 FAIL (as wanted)
+    00:00 +0 -1: a round S1: a 「像 Y」 address is tried at once, before the 30 s window, and before an unknown address seen first [E]
+    00:00 +0 -1: Some tests failed.
+## S1L: no like step: rc=1 FAIL (as wanted)
+    00:00 +0 -1: LoginFor S1L: a 「像 Y」 address is tried at once, before the 30 s window and before an unknown address [E]
+    00:00 +0 -1: Some tests failed.
+## S2 round: the hint sets the memo: rc=1 FAIL (as wanted)
+    00:00 +0 -1: a round S2: a replayed identifier costs one attempt; the address becomes 「不是 Y」, never 「是 Y」 [E]
+    00:00 +0 -1: Some tests failed.
+## S2L: the hint sets the memo: rc=1 FAIL (as wanted)
+    00:00 +0 -1: LoginFor S2L: a replayed identifier becomes 「不是 Y」; the real node is logged in next [E]
+    00:00 +0 -1: Some tests failed.
+## S3 round: no cap: rc=1 FAIL (as wanted)
+    00:00 +0 -1: a round S3: at most two addresses per target are tried as 「像 Y」 in a round; a third is an unknown address [E]
+    00:00 +0 -1: Some tests failed.
+## S3L: no cap: rc=1 FAIL (as wanted)
+    00:00 +0 -1: LoginFor S3L: at most two addresses are tried as 「像 Y」 [E]
+    00:00 +0 -1: Some tests failed.
+## S4: a null hint counts as like of the target: rc=1 FAIL (as wanted)
+    00:00 +0 -1: /home/yello/advid-app-test/app/test/nodelink/adv_hint_link_test.dart: S7: every scan result reaches the scheduler with its hint: B first without one (resolver not built yet), then with one -> tried at once [E]
+    00:00 +0 -2: /home/yello/advid-app-test/app/test/nodelink/adv_hint_link_test.dart: S7: Manufacturer Data that resolves to none, or none at all, changes nothing [E]
+    /advid-app-test/app/test/nodelink/core_test.dart: T-L2(e) / round-12 M1: Y1 known, Y2 off, 10 stale records, 12 foreign undecryptable addresses -> Y1 never goes stale (gap <= 300 s), the first 4 full rounds run to the 90 s cap [E]
+    00:01 +39 -4: /home/yello/advid-app-test/app/test/nodelink/core_test.dart: wait for the known address: Y1 known but busy at the round start, a foreign node near -> no handshake to it [E]
+    ello/advid-app-test/app/test/nodelink/core2_test.dart: T-L11(j): 10 phones, one node each, start together -> each reads its own within 5 min; after a rotation, a phone whose node is off for 3 min handshakes others <= m-1 times [E]
+    00:15 +276 -6: /home/yello/advid-app-test/app/test/nodelink/adv_hint_test.dart: a round S1: a 「像 Y」 address is tried at once, before the 30 s window, and before an unknown address seen first [E]
+    00:15 +276 -7: /home/yello/advid-app-test/app/test/nodelink/adv_hint_test.dart: a round S1: without a hint the same world waits for the window (the behaviour before the identifier) [E]
+    00:25 +384 -7: Some tests failed.
+## S5 round: exhausted at the first silence: rc=1 FAIL (as wanted)
+    00:00 +0 -1: a round S5: a silent 「像 Y」 address is tried once more after the 6 s gap, then no more in this round [E]
+    00:00 +0 -1: Some tests failed.
+## S5L: no silence limit: rc=1 FAIL (as wanted)
+    00:00 +0 -1: LoginFor S5L: after two silences a 「像 Y」 address is not preferred any more [E]
+    00:00 +0 -1: Some tests failed.
+## S6 round: the hint overrides the memos: rc=1 FAIL (as wanted)
+    00:00 +0 -1: a round S6: a memo wins over the hint: an address that 「是 Z」 or 「不是 Y」 is no 「像 Y」 candidate [E]
+    00:00 +0 -1: Some tests failed.
+## S6L: the hint overrides the memos: rc=1 FAIL (as wanted)
+    00:00 +0 -1: LoginFor S6L: a memo wins over the hint [E]
+    00:00 +0 -1: Some tests failed.
+## S7: first sightings only: rc=1 FAIL (as wanted)
+    00:00 +0 -1: S7: every scan result reaches the scheduler with its hint: B first without one (resolver not built yet), then with one -> tried at once [E]
+    00:00 +0 -1: Some tests failed.
+## S7 loginFor: the early hints are dropped at the replay: rc=1 FAIL (as wanted)
+    00:00 +0 -1: S7: loginFor: a hint seen before the login object exists is replayed into it [E]
+    00:00 +0 -1: Some tests failed.
+## S7 loginFor: later hints are not forwarded: rc=1 FAIL (as wanted)
+    00:00 +0 -1: S7: loginFor: a hint that arrives later is planned at once [E]
+    00:00 +0 -1: Some tests failed.
+## S9: no rebuild at the release: rc=1 FAIL (as wanted)
+    00:00 +0 -1: S9: a record written under a lease: the resolver is rebuilt at the release and the new node resolves [E]
+    00:00 +0 -1: Some tests failed.
+## S9: a failed build clears the resolver: rc=1 FAIL (as wanted)
+    00:00 +0 -1: S9: a build that fails keeps the last resolver; the trace names the error type only [E]
+    00:00 +0 -1: Some tests failed.
+## S9: the trace carries the error text: rc=1 FAIL (as wanted)
+    00:00 +0 -1: S9: a build that fails keeps the last resolver; the trace names the error type only [E]
+    00:00 +0 -1: Some tests failed.
+## S9: an older build may replace a newer one: rc=1 FAIL (as wanted)
+    00:00 +0 -1: S9: two builds overlap: the one of the newer record list stays, whichever ends last [E]
+    00:00 +0 -1: Some tests failed.
+## S9: a build that ended too late is not closed: rc=1 FAIL (as wanted)
+    00:00 +0 -1: S9: two builds overlap: the one of the newer record list stays, whichever ends last [E]
+    00:00 +0 -1: Some tests failed.
+## S9: a replaced resolver is not closed: rc=1 FAIL (as wanted)
+    00:00 +0 -1: S9: a record written under a lease: the resolver is rebuilt at the release and the new node resolves [E]
+    00:00 +0 -1: Some tests failed.
+## S9: dispose does not close the resolver: rc=1 FAIL (as wanted)
+    00:00 +0 -1: S9: a record written under a lease: the resolver is rebuilt at the release and the new node resolves [E]
+    00:00 +0 -1: Some tests failed.
+## log: every change of a hint is logged: rc=1 FAIL (as wanted)
+    00:00 +0 -1: a round onScan: true for a new address and for a changed hint only; one log line per address, however it flaps [E]
+    00:00 +0 -1: Some tests failed.
+## S9: one record that does not open fails the build: rc=1 FAIL (as wanted)
+    00:00 +0 -1: buildResolver: records that do not open are left out; the opened bytes are zeroed afterwards [E]
+    00:00 +0 -1: Some tests failed.
+## S9: the opened bytes are not zeroed: rc=1 FAIL (as wanted)
+    00:00 +0 -1: buildResolver: records that do not open are left out; the opened bytes are zeroed afterwards [E]
+    00:00 +0 -2: buildResolver: the opened bytes are zeroed when making the resolver throws [E]
+    00:00 +0 -2: Some tests failed.
+## S9: the build reports key errors (as the prober does): rc=1 FAIL (as wanted)
+    00:00 +0 -1: AppLink: a key error while the resolver build opens a record does not turn 「金鑰無法使用」 on [E]
+    00:00 +0 -1: Some tests failed.
+## V1: another label: rc=101 FAIL (as wanted)
+    adv_id_vector --- FAILED
+    thread 'adv_id_vector' (5120) panicked at tests/vectors.rs:202:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
+## V1: another company id: rc=101 FAIL (as wanted)
+    adv_id_vector --- FAILED
+    thread 'adv_id_vector' (5522) panicked at tests/vectors.rs:203:5:
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
+## R1: a 2-byte tag compare: rc=101 FAIL (as wanted)
+    api::owner::adv_tests::r1_own_payload_resolves_and_nothing_else_does --- FAILED
+    thread 'api::owner::adv_tests::r1_own_payload_resolves_and_nothing_else_does' (6065) panicked at src/api/owner.rs:1883:17:
+    test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 91 filtered out; finished in 0.00s
+## R1: the company id is not checked: rc=101 FAIL (as wanted)
+    api::owner::adv_tests::r1_own_payload_resolves_and_nothing_else_does --- FAILED
+    thread 'api::owner::adv_tests::r1_own_payload_resolves_and_nothing_else_does' (6350) panicked at src/api/owner.rs:1865:9:
+    test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 91 filtered out; finished in 0.00s
+## R1: the first match is returned: rc=101 FAIL (as wanted)
+    api::owner::adv_tests::r1_two_own_records_matching_one_payload_give_none --- FAILED
+    thread 'api::owner::adv_tests::r1_two_own_records_matching_one_payload_give_none' (6637) panicked at src/api/owner.rs:1905:9:
+    test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 91 filtered out; finished in 0.00s
+## R1/R2: keyed by the device id only: rc=101 FAIL (as wanted)
+    api::owner::adv_tests::r1_a_record_of_the_first_claim_code_resolves --- FAILED
+    api::owner::adv_tests::r1_the_record_a_claim_writes_resolves --- FAILED
+    api::owner::adv_tests::r1_own_payload_resolves_and_nothing_else_does --- FAILED
+    api::owner::adv_tests::r1_a_record_without_key_6_is_skipped --- FAILED
+    api::owner::adv_tests::r1_two_own_records_matching_one_payload_give_none --- FAILED
+    api::owner::adv_tests::r2_after_a_reclaim_the_old_record_does_not_resolve --- FAILED
+    thread 'api::owner::adv_tests::r1_a_record_of_the_first_claim_code_resolves' (6918) panicked at src/api/owner.rs:1933:9:
+    thread 'api::owner::adv_tests::r1_the_record_a_claim_writes_resolves' (6921) panicked at src/api/owner.rs:1944:9:
+## R1: a record with a short key 6 is taken: rc=101 FAIL (as wanted)
+    api::owner::adv_tests::r1_a_record_without_key_6_is_skipped --- FAILED
+    thread 'api::owner::adv_tests::r1_a_record_without_key_6_is_skipped' (7204) panicked at src/api/owner.rs:1895:9:
+    test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 91 filtered out; finished in 0.00s
+## S9: a throwing resolver is not caught: rc=1 FAIL (as wanted)
+    00:00 +0 -1: S9: a resolver that throws gives no hint, and the scan goes on [E]
+    00:00 +0 -1: Some tests failed.
+not discriminating / not applied: 0

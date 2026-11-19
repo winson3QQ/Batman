@@ -1,6 +1,7 @@
 // #329 PR 1 review (review-pr1-A.md / review-pr1-B.md): each finding's scenario as a regression test. RA-* / RB-* are
 // the reviewers' negative controls (they failed on 75683ab); the rest guard rules whose mutations survived.
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:batman_app/src/nodelink/app_link.dart' show bleStatusToRadio, wireRadio, keyErrorToRadio;
 import 'package:batman_app/src/nodelink/ble_gate.dart';
@@ -80,18 +81,19 @@ class SlowDiscRadio extends Radio {
 /// A scan whose cancel takes 20 ms on the platform.
 class SlowStopRadio extends Radio {
   @override
-  Stream<String> scan() {
+  Stream<(String, Uint8List?)> scan() {
     scans++;
-    return StreamController<String>(onCancel: () => Future<void>.delayed(const Duration(milliseconds: 20))).stream;
+    return StreamController<(String, Uint8List?)>(onCancel: () => Future<void>.delayed(const Duration(milliseconds: 20)))
+        .stream;
   }
 }
 
 /// Scans fail at once (Bluetooth off).
 class FailingScanRadio extends Radio {
   @override
-  Stream<String> scan() {
+  Stream<(String, Uint8List?)> scan() {
     scans++;
-    return Stream<String>.error(Exception('bluetooth off'));
+    return Stream<(String, Uint8List?)>.error(Exception('bluetooth off'));
   }
 }
 
@@ -313,7 +315,7 @@ void main() {
     for (var i = 0; i < 4; i++) {
       gate.noteScanStart(); // an older page's scans count (A-m7)
     }
-    final waiting = expectLater(gate.scan(reg.nodeLinkToken, (_) {}), throwsA(isA<Refused>()));
+    final waiting = expectLater(gate.scan(reg.nodeLinkToken, (_, _) {}), throwsA(isA<Refused>()));
     reg.acquire('新增節點', LeaseKind.raw);
     await clock.run(31000);
     await waiting;
@@ -458,7 +460,7 @@ void main() {
     expect(() => link.read(Char.ctrl), throwsA(isA<Refused>()));
     await link.close();
     Object? ended = 0;
-    await gate.scan(reg.nodeLinkToken, (_) {}, ended: (e) => ended = e);
+    await gate.scan(reg.nodeLinkToken, (_, _) {}, ended: (e) => ended = e);
     expect(gate.scans, 1);
     radio.endScan();
     await Future<void>.delayed(Duration.zero);
@@ -583,7 +585,7 @@ void main() {
     await clock.run(200);
     expect((gate.scans, radio.scans), (1, 0), reason: 'NodeLink''s scan waits inside the gate');
     final l = (await nl.acquire('flow', LeaseKind.session))!;
-    final f = gate.scan(l.token, (_) {}); // the holder scans right away (it waits for the slot like anyone)
+    final f = gate.scan(l.token, (_, _) {}); // the holder scans right away (it waits for the slot like anyone)
     await clock.run(31000);
     final s = await f;
     expect(s.open, isTrue);
@@ -599,7 +601,7 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     await link.close();
     expect(gate.links, 0);
-    final s = await gate.scan(reg.nodeLinkToken, (_) {});
+    final s = await gate.scan(reg.nodeLinkToken, (_, _) {});
     await s.stop();
     expect(gate.scans, 0);
   });
@@ -694,7 +696,7 @@ class _EndingRadio extends Radio {
   @override
   Stream<(String, bool, int?)> get linkStates => _st2.stream;
   @override
-  Stream<String> scan() => _scan.stream;
+  Stream<(String, Uint8List?)> scan() => _scan.stream.map<(String, Uint8List?)>((a) => (a, null));
 }
 
 class _Throws implements Prober {
@@ -713,5 +715,6 @@ class _ThrowingCancel extends Radio {
   }
 
   @override
-  Stream<String> scan() => StreamController<String>(onCancel: () => throw StateError('stop failed')).stream;
+  Stream<(String, Uint8List?)> scan() =>
+      StreamController<(String, Uint8List?)>(onCancel: () => throw StateError('stop failed')).stream;
 }

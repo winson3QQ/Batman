@@ -2,6 +2,7 @@
 //! info = label ‖ fields. The device id enters as its ASCII text (18 lowercase hex characters).
 
 use hkdf::Hkdf;
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
 pub const LABEL_PSK_OWNER: &[u8] = b"batman-psk-owner-v1";
@@ -9,6 +10,10 @@ pub const LABEL_PSK_REPLAY: &[u8] = b"batman-psk-replay-v1";
 pub const LABEL_PSK_MEMBER: &[u8] = b"batman-psk-member-v1";
 pub const LABEL_ADV_OWNER: &[u8] = b"batman-adv-owner-v1";
 pub const LABEL_ADV_MEMBER: &[u8] = b"batman-adv-member-v1";
+pub const LABEL_ADV_ID: &[u8] = b"batman-adv-id-v1";
+/// #329 rotating identifier (329-rotating-id-plan.md §3.1): the company id of the Manufacturer Data AD a claimed node
+/// advertises (node: provd `advCID`). 0xFFFF during development; an assigned id before production.
+pub const ADV_CID: u16 = 0xFFFF;
 
 /// HKDF-SHA256 with an empty salt, 32 bytes out.
 pub fn hkdf32(ikm: &[u8], info: &[u8]) -> [u8; 32] {
@@ -43,6 +48,16 @@ pub fn psk_member(net_root: &[u8], net_id: &[u8; 16], version: u32) -> [u8; 32] 
 /// adv_owner = HKDF(adv_owner_key, "batman-adv-owner-v1" ‖ device_id)
 pub fn adv_owner(adv_owner_key: &[u8], device_id: &str) -> [u8; 32] {
     hkdf32(adv_owner_key, &cat(LABEL_ADV_OWNER, device_id.as_bytes()))
+}
+
+/// The tag of the rotating identifier: HMAC-SHA256(adv_owner, "batman-adv-id-v1" ‖ n)[0..3], `n` the 3-byte nonce the
+/// node advertises next to it (node: proto.AdvIDTag, proto/proto.go:171).
+pub fn adv_id_tag(adv_owner: &[u8; 32], n: &[u8; 3]) -> [u8; 3] {
+    let mut m = Hmac::<Sha256>::new_from_slice(adv_owner).expect("HMAC takes a key of any length");
+    m.update(LABEL_ADV_ID);
+    m.update(n);
+    let t = m.finalize().into_bytes();
+    [t[0], t[1], t[2]]
 }
 
 /// adv_member = HKDF(net_root, "batman-adv-member-v1" ‖ net_id ‖ u32be(version))

@@ -204,7 +204,8 @@ void main() {
     expect(netReads(), isEmpty, reason: 'a home read opens no net / mnet record (reads: ${rust.reads})');
     expect(rust.lists, isEmpty, reason: 'a home read lists no network folder');
     expect(rust.summaries, 0);
-    expect(opens.length, 2, reason: 'only the node record, once per read');
+    // #329 rotating identifier §3.3: the resolver build at start opens each node record once more
+    expect(opens.length, 3, reason: 'only the node record: once for the identifier resolver at start, once per read');
     expect(a.link.hints, isEmpty, reason: 'no 「舊密碼」 line outside the node page');
 
     // the node page: X33 reads it at once; the node is in a network the phone knows -> exactly one record opened
