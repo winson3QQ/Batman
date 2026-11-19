@@ -20,6 +20,9 @@ version: 1.0.0+1
 
 environment:
   sdk: ^3.13.7
+  # The vendored reactive_ble_mobile needs Flutter >=3.44.0; pub ignores an
+  # overridden package's environment, so it is stated here.
+  flutter: ">=3.44.0"
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -37,7 +40,10 @@ dependencies:
   batman_bridge:
     path: rust_builder
   flutter_rust_bridge: 2.13.0
-  flutter_reactive_ble: ^5.6.0
+  # Pinned exactly while reactive_ble_mobile is vendored at 5.6.0 (see
+  # dependency_overrides below): a newer Dart side must not pair with it.
+  flutter_reactive_ble: 5.6.0
+  reactive_ble_platform_interface: 5.6.0
 
 dev_dependencies:
   flutter_test:
@@ -49,6 +55,13 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+
+# Vendored reactive_ble_mobile 5.6.0 with Android fixes for the
+# ConnectionQueue stall (upstream issue #558, #329). See
+# third_party/reactive_ble_mobile/PATCHED.md for what changed and how to drop it.
+dependency_overrides:
+  reactive_ble_mobile:
+    path: third_party/reactive_ble_mobile
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

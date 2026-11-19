@@ -60,7 +60,7 @@ if [ "$pv" = yes ]; then
 		say "L71 info during the join: $(echo $o)"; t=$(sed -n 's/^T=\([0-9]*\)ms$/\1/p' <<< "$o")
 		if inwin info; then grep -q '^RESULT info.state code=0 state=claimed ' <<< "$o" && [ "${t:-99999}" -le 2000 ] && ok "L71: info.state on its own connection in ${t} ms while the join holds the helper (<= 2 s)" || no "L71: info.state during the join: $(echo $o)"; fi
 		c0=$(qr "logread | grep -c 'batman-provd\[[0-9]*\]: provd: adv withdrawn reason=connect'")
-		o=$(timeout 300 ssh $SSHO root@$PEER sh -s -- read - < "$REPO/scripts/node/prov-p2-central-254.sh" 2>&1 | tr -d '\r'); sv=$(sed -n 's/^STATUS //p' <<< "$o")
+		lg_mark; o=$(timeout 300 ssh $SSHO root@$PEER sh -s -- read - < "$REPO/scripts/node/prov-p2-central-254.sh" 2>&1 | tr -d '\r'); sv=$(sed -n 's/^STATUS //p' <<< "$o"); lg_guard "L71 STATUS read"
 		c1=$(qr "logread | grep -c 'batman-provd\[[0-9]*\]: provd: adv withdrawn reason=connect'")
 		if inwin "STATUS read"; then
 			if [ -z "$sv" ]; then inv "L71: 02 could not read STATUS during the join (one claimed advertiser expected): $(echo $o)"
