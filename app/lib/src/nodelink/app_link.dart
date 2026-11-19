@@ -38,8 +38,10 @@ Future<Uint8List?> openSealedRecord(MethodChannel platform, String records, Stri
 /// #329 rotating identifier (329-rotating-id-plan.md §3.3): the resolver of the scan results' identifiers, from the
 /// node records [ids]. [open] is its only way to a key: a record that does not open (none on disk, a key error) is
 /// left out and that node is found the old way; nothing here reads the key abilities or reports a key error. [make]:
-/// the opened records -> the resolver (the app: Rust's AdvResolver, which keeps the keys). The opened bytes are
-/// zeroed here once [make] has them.
+/// the opened records -> the resolver (the app: Rust's AdvResolver, which keeps the keys). The bytes from the
+/// platform channel are a READ-ONLY view on the S20 (as claim_recovery.dart: fillRange on them throws, so every build
+/// failed there): each is copied, [make] gets the copies, and the copies are zeroed here once [make] has them; the
+/// channel's own buffer is left to the GC.
 @visibleForTesting
 Future<T> buildResolver<T>(List<String> ids, Future<Uint8List?> Function(String id) open,
     T Function(List<Uint8List> plains) make) async {
@@ -48,7 +50,7 @@ Future<T> buildResolver<T>(List<String> ids, Future<Uint8List?> Function(String 
     for (final id in ids) {
       try {
         final p = await open(id);
-        if (p != null) plains.add(p);
+        if (p != null) plains.add(Uint8List.fromList(p));
       } catch (_) {}
     }
     return make(plains);

@@ -26,16 +26,19 @@ class QuietBle extends OneNodeBle {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('buildResolver: records that do not open are left out; the opened bytes are zeroed afterwards', () async {
-    final plains = {'a': Uint8List.fromList([1, 2, 3]), 'd': Uint8List.fromList([4, 5])};
+  // The S20's platform channel hands back READ-ONLY views (claim_recovery.dart:271): [open] returns one here, as there.
+  test('buildResolver: records that do not open are left out; the copies it made are zeroed afterwards', () async {
+    final plains = {'a': Uint8List.fromList([1, 2, 3]).asUnmodifiableView(), 'd': Uint8List.fromList([4, 5]).asUnmodifiableView()};
     final asked = <String>[];
     List<List<int>>? got;
+    List<Uint8List>? given;
     final r = await buildResolver(['a', 'b', 'c', 'd'], (id) async {
       asked.add(id);
       if (id == 'b') return null; // no record file
       if (id == 'c') throw PlatformException(code: 'keyLevel', message: 'RECORD_AES'); // the Keystore refused
       return plains[id];
     }, (p) {
+      given = p;
       got = [for (final x in p) [...x]];
       return (mfr) => 'n${p.length}';
     });
@@ -45,13 +48,21 @@ void main() {
       [4, 5]
     ]);
     expect(r(Uint8List(8)), 'n2');
-    expect(plains.values.every((p) => p.every((b) => b == 0)), isTrue, reason: 'zeroed once the resolver has them');
+    expect(given!.every((p) => p.every((b) => b == 0)), isTrue, reason: 'the copies are zeroed once the resolver has them');
+    expect(plains['a'], [1, 2, 3], reason: "the channel's read-only buffer is not written");
   });
 
-  test('buildResolver: the opened bytes are zeroed when making the resolver throws', () async {
-    final plain = Uint8List.fromList([9, 9]);
-    await expectLater(buildResolver(['a'], (_) async => plain, (_) => throw StateError('x')), throwsStateError);
-    expect(plain, [0, 0]);
+  test('buildResolver: the copies are zeroed when making the resolver throws (a read-only view opened)', () async {
+    List<Uint8List>? given;
+    await expectLater(
+        buildResolver(['a'], (_) async => Uint8List.fromList([9, 9]).asUnmodifiableView(), (p) {
+          given = p;
+          throw StateError('x');
+        }),
+        throwsStateError);
+    expect(given, [
+      [0, 0]
+    ]);
   });
 
   test('AppLink: a key error while the resolver build opens a record does not turn 「金鑰無法使用」 on', () async {
