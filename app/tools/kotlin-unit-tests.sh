@@ -25,7 +25,7 @@ set -u
 cd "$(dirname "$0")/../android" || exit 2
 MUST="SwPutTest SwPickTest SwOwnedTest BleRxTest SignAllowListTest EcdhPeerTest KeyPolicyTest QrDecodeTest QrScanTest CameraErrorsTest ViewfinderFitTest"
 ALL="devDebug dev2Debug fieldDebug"
-PLUGIN_MUST='DeviceConnectorTest$QueueCleanupTest OrphanConnectorTest'
+PLUGIN_MUST='DeviceConnectorTest$QueueCleanupTest DeviceConnectorTest$NoStaleDisconnectTest OrphanConnectorTest'
 fail=0
 
 judge(){ # <results dir> <variant> [gradle rc]

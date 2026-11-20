@@ -76,6 +76,10 @@ class GateLink {
   Completer<void>? _gone;
   bool get open => _open;
 
+  /// #329 fast retry §2.1 (b): this link's own connect stream gave its first event (CONNECTING is filtered out by the
+  /// backend before [_on]). Until then a code-less down from [BleGate]'s linkStates does not mark it down.
+  bool _first = false;
+
   /// Open, and no down seen from either source (the connect stream, the backend's linkStates).
   bool get up => _open && !_down;
 
@@ -83,6 +87,7 @@ class GateLink {
   Stream<bool> get state => _state.stream;
 
   void _on(bool up) {
+    _first = true;
     if (!up) _downNow();
     if (!_state.isClosed) _state.add(up);
   }
@@ -159,13 +164,36 @@ class BleGate implements LeaseListener {
         // (the failure may come after the connect stream already ended the attempt); last 2 of the address only
         final a = e.$1;
         trace?.call('link …${a.length > 2 ? a.substring(a.length - 2) : a} down fail=${f < 0 ? '?' : f}');
+      } else {
+        _noteCodeless(e.$1);
       }
       for (final l in [..._links.where((l) => l.address == e.$1)]) {
+        // #329 fast retry §2.1 (b): while a link is connecting its own connect stream is the authority (its own
+        // failure always reaches it there, and with a code here); a code-less down then is someone else's, e.g. the
+        // late DISCONNECTED of an earlier connect to this address
+        if (f == null && l._open && !l._first) continue;
         l._downNow();
       }
     });
   }
   late final StreamSubscription<(String, bool, int?)> _states;
+
+  /// #329 fast retry §2: per address, the times ([now]) of its last 4 code-less downs, for at most 16 addresses (the
+  /// oldest address goes first: rotating addresses). Written only by the linkStates listener; NodeLink reads it for its
+  /// trace only, never for a decision.
+  final Map<String, List<int>> _codeless = {};
+  static const codelessMax = 4, codelessAddrs = 16;
+
+  void _noteCodeless(String a) {
+    final l = _codeless.remove(a) ?? <int>[]; // re-inserted: the map's order is the last code-less down's
+    l.add(now());
+    if (l.length > codelessMax) l.removeAt(0);
+    _codeless[a] = l;
+    if (_codeless.length > codelessAddrs) _codeless.remove(_codeless.keys.first);
+  }
+
+  /// The times of [address]'s last code-less downs (oldest first; empty when none).
+  List<int> codelessDowns(String address) => List.unmodifiable(_codeless[address] ?? const <int>[]);
 
   Future<void> dispose() => _states.cancel();
   final BleBackend backend;

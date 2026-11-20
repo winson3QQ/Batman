@@ -31,6 +31,17 @@ internal class DeviceConnector(
 
     private var timestampEstablishConnection: Long = 0
 
+    // PATCHED (Batman, #329 fast retry): set once this connector's result is a failure (a connect that
+    // never came up, or a connection that dropped), before the failure's own updates go out. Such a
+    // connector sends no synthesized DISCONNECTED on disconnectDevice: the failure already reached Dart,
+    // and a late one (up to 200 ms, more on a busy main thread) would land on a newer connect to the
+    // same address.
+    @Volatile
+    private var failed = false
+
+    private fun isFailed(): Boolean =
+        failed || connectDeviceSubject.hasThrowable() || connectDeviceSubject.value is EstablishConnectionFailure
+
     // PATCHED (Batman, upstream #558): this connector's single queue entry is removed exactly once,
     // on whichever exit comes first (first event, error, or dispose on disconnect).
     private val removedFromQueue = AtomicBoolean(false)
@@ -81,11 +92,12 @@ internal class DeviceConnector(
         if (diff < DeviceConnector.Companion.minTimeMsBeforeDisconnectingIsAllowed) {
             Single.timer(DeviceConnector.Companion.minTimeMsBeforeDisconnectingIsAllowed - diff, TimeUnit.MILLISECONDS)
                 .doFinally {
-                    sendDisconnectedUpdate(deviceId)
+                    // PATCHED (Batman, #329 fast retry): checked when the update would be sent
+                    if (!isFailed()) sendDisconnectedUpdate(deviceId)
                     disposeSubscriptions()
                 }.subscribe()
         } else {
-            sendDisconnectedUpdate(deviceId)
+            if (!isFailed()) sendDisconnectedUpdate(deviceId) // PATCHED (Batman, #329 fast retry)
             disposeSubscriptions()
         }
     }
@@ -127,6 +139,8 @@ internal class DeviceConnector(
                     error.message ?: "Unknown error",
                 )
             }
+            // PATCHED (Batman, #329 fast retry): before the updates of the next doOnNext go out
+            .doOnNext { if (it is EstablishConnectionFailure) failed = true }
             .doOnNext {
                 // Trigger side effect by calling the lazy initialization of this property so
                 // listening to changes starts.
@@ -138,6 +152,7 @@ internal class DeviceConnector(
                 }
             }
             .doOnError {
+                failed = true // PATCHED (Batman, #329 fast retry)
                 removeFromQueueOnce(deviceId)
                 updateListeners.invoke(
                     ConnectionUpdateError(

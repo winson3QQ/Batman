@@ -225,4 +225,79 @@ class DeviceConnectorTest {
             assertThat(realQueue.getCurrentQueue()).isEmpty()
         }
     }
+
+    // PATCHED (Batman, #329 fast retry, docs/design/329-fast-retry.md §2.1 (a)): a connector whose result is a
+    // failure sends no synthesized DISCONNECTED on disconnectDevice; one that is connected, or cancelled while still
+    // connecting, sends it as before. Only the updates after disconnectDevice are counted: the failure itself sends a
+    // state DISCONNECTED (startWith of connectionState) with or without the patch.
+    @Nested
+    @DisplayName("No stale DISCONNECTED from a failed connector (#329)")
+    inner class NoStaleDisconnectTest {
+        private val realQueue = ConnectionQueue()
+        private val updates = java.util.Collections.synchronizedList(mutableListOf<ConnectionUpdate>())
+
+        private fun connector(establish: Observable<RxBleConnection>): DeviceConnector {
+            val dev = io.mockk.mockk<RxBleDevice>()
+            every { dev.macAddress }.returns(deviceId)
+            every { dev.connectionState }.returns(RxBleConnection.RxBleConnectionState.DISCONNECTED)
+            every { dev.observeConnectionStateChanges() }.returns(Observable.never())
+            every { dev.establishConnection(any()) }.returns(establish)
+            return DeviceConnector(dev, Duration(8000L, TimeUnit.MILLISECONDS), { u -> updates.add(u) }, realQueue)
+        }
+
+        private fun disconnectedAfter(
+            c: DeviceConnector,
+            waitBeforeMs: Long,
+        ): Int {
+            if (waitBeforeMs > 0) Thread.sleep(waitBeforeMs)
+            updates.clear()
+            c.disconnectDevice(deviceId)
+            Thread.sleep(500) // past the 200 ms timer of the delayed branch
+            return synchronized(updates) {
+                updates.count { it == ConnectionUpdateSuccess(deviceId, ConnectionState.DISCONNECTED.code) }
+            }
+        }
+
+        @Test
+        @DisplayName("Failed, disconnect within 200 ms (timer branch): no DISCONNECTED")
+        fun failedTimerBranch() {
+            val c = connector(Observable.error(Exception("GATT status 133")))
+            assertThat(c.connection.test().values().first()).isInstanceOf(EstablishConnectionFailure::class.java)
+            assertThat(disconnectedAfter(c, 0)).isEqualTo(0)
+        }
+
+        @Test
+        @DisplayName("Failed, disconnect after 200 ms (immediate branch): no DISCONNECTED")
+        fun failedImmediateBranch() {
+            val c = connector(Observable.error(Exception("GATT status 133")))
+            assertThat(c.connection.test().values().first()).isInstanceOf(EstablishConnectionFailure::class.java)
+            assertThat(disconnectedAfter(c, 250)).isEqualTo(0)
+        }
+
+        @Test
+        @DisplayName("Connected: one DISCONNECTED, as before")
+        fun connectedSends() {
+            val c = connector(Observable.just(connection).concatWith(Observable.never()))
+            assertThat(c.connection.test().values().first()).isInstanceOf(EstablishedConnection::class.java)
+            assertThat(disconnectedAfter(c, 250)).isEqualTo(1)
+        }
+
+        @Test
+        @DisplayName("Cancelled while connecting: DISCONNECTED sent, as before")
+        fun connectingSends() {
+            val c = connector(Observable.never())
+            c.connection.test()
+            // two: the synthesized one, and the state one when disposeSubscriptions first touches the lazy
+            // connectionStatusUpdates (startWith of connectionState); both upstream behaviour, not this patch
+            assertThat(disconnectedAfter(c, 0)).isEqualTo(2)
+        }
+
+        @Test
+        @DisplayName("Connected, then dropped: no DISCONNECTED (the drop already went out)")
+        fun droppedSendsNone() {
+            val c = connector(Observable.just(connection).concatWith(Observable.error(Exception("GATT status 8"))))
+            c.connection.test()
+            assertThat(disconnectedAfter(c, 250)).isEqualTo(0)
+        }
+    }
 }

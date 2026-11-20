@@ -222,6 +222,11 @@ class NodeLink implements LeaseListener {
 
   /// §4.3.3-3: from the start of the connect to msg2, one budget.
   static const msg2 = Duration(seconds: 8);
+
+  /// #329 fast retry (329-fast-retry.md §2): a connect whose link fails within [fastMax] is tried once more after
+  /// [settle], inside the same [msg2] budget.
+  static const fastMax = Duration(milliseconds: 1500);
+  static const settle = Duration(milliseconds: 400);
   static const scanRetry = Duration(milliseconds: 500); // a refused scan start is tried again after this (B-M4)
   static const scanEndedRetry = Duration(seconds: 2); // the radio ended the scan by itself (A-M3)
 
@@ -612,17 +617,14 @@ class NodeLink implements LeaseListener {
     final t0 = now();
     GateLink? link;
     Outcome o;
+    var retried = false;
     try {
-      final k = link = gate.connect(lease.token, a.addr, timeout: msg2);
-      final up = await Future.any<bool>([
-        // design 329-ble-settle.md §2.1: the first link event, not the first `true`: a failure ends the attempt now
-        k.state.first.then((s) => s, onError: (Object _) => false),
-        due.future.then((_) => false),
-        cancel.future.then((_) => false),
-      ]);
-      o = (!up || cancel.isCompleted)
+      final c = await _connect(lease.token, a, due.future, cancel.future, 'loginFor',
+          still: () => identical(reg.current, lease) && lease.valid && !_disposed, onLink: (l) => link = l);
+      retried = c.retried;
+      o = (!c.up || cancel.isCompleted)
           ? const Outcome(Res.noResponse)
-          : await p.probe(k, a.id, due: due.future, cancelled: cancel.future);
+          : await p.probe(c.link, a.id, due: due.future, cancelled: cancel.future);
     } on Refused {
       o = const Outcome(Res.noResponse);
     } catch (e) {
@@ -632,7 +634,7 @@ class NodeLink implements LeaseListener {
     stopDue();
     stopBudget();
     if (identical(_lfCancel, cancel)) _lfCancel = null;
-    trace?.call(mask('loginFor $a result=${o.res.name} after ${now() - t0}ms'));
+    trace?.call(mask('loginFor $a result=${o.res.name} after ${now() - t0}ms${retried ? ' retried' : ''}'));
     // a failed attempt's link is gone before the next one (§2.1); a hand-off keeps its link
     if (o.extra is! LoginHandoff) await link?.close();
     return o;
@@ -1057,19 +1059,17 @@ class NodeLink implements LeaseListener {
       var tUp = -1;
       GateLink? mine;
       Outcome o;
+      _Connected? c;
       try {
-        final link = mine = _link = gate.connect(reg.nodeLinkToken, a.addr, timeout: msg2);
-        final up = await Future.any<bool>([
-          // design 329-ble-settle.md §2.1: the first link event, not the first `true`: a failure ends the attempt now
-          link.state.first.then((s) => s, onError: (Object _) => false),
-          due.future.then((_) => false),
-          cancel.future.then((_) => false),
-        ]);
-        tUp = up ? now() - t0 : -1;
-        if (!up || cancel.isCompleted) {
+        // §2: `mine` / `_link` always point at the attempt's current link (the second one after a retry), so the end
+        // below and [_abort] close it; never null in the retry window (329-fast-retry.md §4)
+        final k = c = await _connect(reg.nodeLinkToken, a, due.future, cancel.future, 'attempt',
+            still: () => identical(_attempt, a) && !_disposed, onLink: (l) => mine = _link = l);
+        tUp = k.up ? now() - k.t : -1;
+        if (!k.up || cancel.isCompleted) {
           o = const Outcome(Res.noResponse);
         } else {
-          o = await prober.probe(link, a.id, due: due.future, cancelled: cancel.future);
+          o = await prober.probe(k.link, a.id, due: due.future, cancelled: cancel.future);
         }
       } on Refused {
         o = const Outcome(Res.noResponse);
@@ -1078,7 +1078,11 @@ class NodeLink implements LeaseListener {
         trace?.call(mask('attempt $a: ${e.runtimeType} $e'));
       }
       stopDue();
-      trace?.call(mask('attempt $a connected=${tUp}ms result=${o.res.name} after ${now() - t0}ms'));
+      final r = c;
+      final downs = r != null && r.retried
+          ? ' retried downs=${[for (final d in gate.codelessDowns(a.addr)) if (d >= r.failedAt) '+${d - r.failedAt}'].join(',')}'
+          : '';
+      trace?.call(mask('attempt $a connected=${tUp}ms result=${o.res.name} after ${now() - t0}ms$downs'));
       // #329 UX plan §4.1: a read that returns its open session ([Outcome.keep]) keeps its link too: from here it is
       // parked or destroyed, never left
       final kp = o.keep;
@@ -1123,6 +1127,45 @@ class NodeLink implements LeaseListener {
     } finally {
       end(); // the early returns and an exception
     }
+  }
+
+  /// #329 fast retry (329-fast-retry.md §2): connect to [a]'s address and wait for the link's first event; a link that
+  /// fails (not [due], not [cancel]) within [fastMax] is closed, and after [settle] — when [still] holds and neither
+  /// [due] nor [cancel] came — connected once more, inside the same budget. Never a third connect. [onLink] gets every
+  /// link the moment it is made (the caller closes the last one). A [Refused] from the gate goes to the caller.
+  Future<_Connected> _connect(Token? token, Attempt a, Future<void> due, Future<void> cancel, String what,
+      {required bool Function() still, required void Function(GateLink) onLink}) async {
+    var done = false; // due or cancel came
+    unawaited(due.then((_) => done = true));
+    unawaited(cancel.then((_) => done = true));
+    Future<int> first(GateLink l) => Future.any<int>([
+          // design 329-ble-settle.md §2.1: the first link event, not the first `true`: a failure ends the attempt now
+          l.state.first.then((s) => s ? 1 : 0, onError: (Object _) => 0),
+          due.then((_) => -1),
+          cancel.then((_) => -1),
+        ]);
+    final t0 = now();
+    var link = gate.connect(token, a.addr, timeout: msg2);
+    onLink(link);
+    var e = await first(link);
+    if (e != 0 || done || now() - t0 >= fastMax.inMilliseconds) {
+      return _Connected(link, e == 1 && !done, t0, false, 0);
+    }
+    final failedAt = now();
+    trace?.call(mask('$what $a link failed after ${failedAt - t0}ms, connecting once more'));
+    await link.close(); // down already: no wait (ble_gate.dart _close)
+    final waited = Completer<void>();
+    final stop = after(settle, () => waited.isCompleted ? null : waited.complete());
+    await Future.any<void>([waited.future, due, cancel]);
+    stop();
+    // §2 step 3 -> 4: the checks and the connect in one synchronous step
+    if (done || !still()) return _Connected(link, false, t0, false, failedAt);
+    link = gate.connect(token, a.addr, timeout: msg2);
+    onLink(link);
+    final t1 = now();
+    trace?.call(mask('$what $a second connect +${t1 - failedAt}ms'));
+    e = await first(link);
+    return _Connected(link, e == 1 && !done, t1, true, failedAt);
   }
 
   void _abort() {
@@ -1192,4 +1235,13 @@ class _Waiter {
   _Waiter(this.name, this.gone);
   final String name;
   final bool Function() gone;
+}
+
+/// #329 fast retry: what [NodeLink._connect] ended with. [t] = the start of the connect that gave [up] (the second one
+/// after a retry); [failedAt] = the first link's failure, 0 when there was none.
+class _Connected {
+  _Connected(this.link, this.up, this.t, this.retried, this.failedAt);
+  final GateLink link;
+  final bool up, retried;
+  final int t, failedAt;
 }

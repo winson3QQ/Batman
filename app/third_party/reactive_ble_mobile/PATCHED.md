@@ -74,6 +74,30 @@ and nobody disposed it, so every later connect waited behind it.
 Upstream has no issue or PR for this path that we know of (PR #910 does not
 touch it).
 
+## Patch 3: a failed connector sends no late DISCONNECTED (Batman #329 fast retry)
+
+- `main/kotlin/com/signify/hue/flutterreactiveble/ble/DeviceConnector.kt`:
+  a `@Volatile failed` flag, set by a `doOnNext` placed before the existing
+  one (so before the failure's own updates go out) and by `doOnError`.
+  `disconnectDevice` skips `sendDisconnectedUpdate` in both branches (the
+  200 ms timer and the immediate one) when the connector failed (the flag,
+  or the subject holds an `EstablishConnectionFailure` / ended with an
+  error); `disposeSubscriptions()` runs as before.
+- `test/kotlin/com/signify/hue/flutterreactiveble/ble/DeviceConnectorTest.kt`:
+  `NoStaleDisconnectTest` (failed + timer branch, failed + immediate branch,
+  connected then dropped: no DISCONNECTED after `disconnectDevice`;
+  connected, cancelled while connecting: sent as before).
+
+Upstream sends a synthesized DISCONNECTED for the address on every
+`disconnectDevice`, up to 200 ms later on a timer when the connect ended less
+than 200 ms before, and later still when the main thread is busy (events reach
+Dart through `observeOn(mainThread)`). After a failed connect the failure was
+already reported (the state DISCONNECTED and the `ConnectionUpdateError`s), so
+that event only reaches a newer connect to the same address, which then ends
+at once. The app now retries a connect that failed fast after 400 ms
+(`docs/design/329-fast-retry.md`); without this patch the retry can get that
+stale event. Upstream has no issue or PR for it that we know of.
+
 ## How to drop this
 
 Drop the vendoring only when an upstream `reactive_ble_mobile` release fixes
@@ -81,8 +105,8 @@ BOTH paths: #558 (cancel before the first event leaves the address queued)
 and patch 2 (an operation on an address with no connector creates one).
 Then:
 
-1. Before deleting anything, copy `DeviceConnectorTest.kt` (`QueueCleanupTest`)
-   and `OrphanConnectorTest.kt` onto that release's source and run its
+1. Before deleting anything, copy `DeviceConnectorTest.kt` (`QueueCleanupTest`,
+   `NoStaleDisconnectTest`) and `OrphanConnectorTest.kt` onto that release's source and run its
    `:reactive_ble_mobile:testDebugUnitTest` (judge by the JUnit XML: every
    test runs, none fails). Both test classes must pass against the
    unpatched release; if either fails, keep the vendoring.
