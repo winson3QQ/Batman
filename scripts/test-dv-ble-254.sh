@@ -303,6 +303,9 @@ ai_case() {	# <name> <capture> <main.conf> <rc> <the one line: fixed string>
 AI_OLD="FAIL adv interval 1280.000 / 1280.000 msec (want 100.000 / 150.000): image without the interval [$AIV]"
 AI_WANT='(want 100.000 / 150.000 msec, ADV_IND, Success)'
 ai_case "real wsl.32 capture, no key in main.conf -> the fixed old-image line" "$AI/btmon-04-wsl32.txt" "$W/nokey.conf" 1 "$AI_OLD"
+# what the arm really captures (btmon -T): "> HCI Event: Command Comp.." — the first version of the judge read that as
+# "no Command Complete" (found on 04, 2026-11-20)
+ai_case "real wsl.32 capture from the arm (btmon -T), no key -> the fixed old-image line" "$AI/btmon-04-wsl32-dated.txt" "$W/nokey.conf" 1 "$AI_OLD"
 ai_case "the same capture with the key -> another FAIL line" "$AI/btmon-04-wsl32.txt" "$W/key.conf" 1 \
 	"FAIL adv interval block 1 of 1: min [1280.000 msec (0x0800)] max [1280.000 msec (0x0800)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has the key"
 ai_case "100 / 150 ms with the key -> PASS (edited fixture)" "$AI/btmon-edited-pass.txt" "$W/key.conf" 0 "PASS adv interval 100.000 / 150.000 msec, ADV_IND (1 block)"

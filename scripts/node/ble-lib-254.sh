@@ -396,7 +396,7 @@ adv_int_ver() { sed -n 's/^BATMAN_VERSION=//p' "${ADV_INT_BUILD:-/etc/batman-bui
 # adv_int_check <btmon text> [main.conf]: what the controller was told. One line, "PASS …" / "FAIL …"; rc 0 / 1.
 # Every HCI LE Set Advertising Parameters command (found by its opcode, 0x08|0x0006: btmon shortens the name) must say
 # 100 / 150 ms and ADV_IND (the kernel forces 100 / 150 ms on a non-connectable advertisement whatever is configured,
-# hci_sync.c:1908), and its Command Complete must say Success. Only lines of "< HCI Command" records are read: the
+# hci_sync.c:1908), and its Command Complete (found by the event code, 0x0e: with -T btmon shortens that name too) must say Success. Only lines of "< HCI Command" records are read: the
 # MGMT records print the same labels. No capture or no such command = FAIL (nothing was checked).
 adv_int_check() {
 	local _k=0
@@ -405,8 +405,8 @@ adv_int_check() {
 	awk -v key=$_k -v ver="$(adv_int_ver)" '
 		function val(s) { sub(/^[^:]*:[[:space:]]*/, "", s); return s }
 		/^[@<>=]/ { inb = 0; cc = 0; ccm = 0
-			if ($0 ~ /^< HCI Command/ && index($0, "(0x08|0x0006)")) { n++; inb = 1 }
-			else if ($0 ~ /^> HCI Event: Command Complete/) cc = 1
+			if ($0 ~ /^< HCI / && index($0, "(0x08|0x0006)")) { n++; inb = 1 }
+			else if ($0 ~ /^> HCI Event:/ && index($0, "(0x0e)")) cc = 1
 			next }
 		inb && /Min advertising interval:/ { mn[n] = val($0) }
 		inb && /Max advertising interval:/ { mx[n] = val($0) }
