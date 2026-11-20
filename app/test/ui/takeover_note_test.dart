@@ -2,7 +2,9 @@
 // leave page's status fields. Negative control: node_page.dart printing `v.warning` -> the node page case FAILs;
 // leaveFieldsOf giving `v.warning` -> the fields case FAILs.
 import 'package:batman_app/src/nodelink/app_link.dart';
+import 'package:batman_app/src/nodelink/lease.dart';
 import 'package:batman_app/ui/more_pages.dart' show leaveFieldsOf;
+import 'package:batman_app/ui/settings_pages.dart' show opDeps;
 import 'package:batman_app/ui/home_page.dart';
 import 'package:batman_app/ui/node_page.dart';
 import 'package:batman_app/ui/theme.dart';
@@ -44,6 +46,17 @@ void main() {
     expect(find.text(kNote), findsNothing, reason: 'the note itself is on the node page only');
     expect(t.widget<Text>(find.byKey(const Key('row-hint'))).data, '有一則提醒');
     await t.pumpWidget(const SizedBox());
+  });
+
+  // Review A M1: the pages get the app's one memo through opDeps, and the app's busy name.
+  // Negative control: opDeps without `memo: a.memo` -> FAIL.
+  test('opDeps: one SettingsMemo for every page (AppLink.memo); the busy name is the lease holder\'s', () async {
+    final a = app(null);
+    expect(identical(opDeps(a).memo, a.memo), isTrue);
+    expect(identical(opDeps(a).memo, opDeps(a).memo), isTrue);
+    final l = a.reg.acquire('建立網路', LeaseKind.session)!;
+    expect(opDeps(a).busyName(), '建立網路');
+    await l.release();
   });
 
   test('H5: the leave page\'s status fields carry the note as their ⚠️ line', () {

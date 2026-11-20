@@ -529,6 +529,21 @@ void main() {
       expect(find.textContaining('先讀到目前的國家。'), findsOneWidget);
     });
 
+    testWidgets('W4: a country set whose answer is lost -> gone', (t) async {
+      final f = await country(t);
+      await settle(t, f);
+      expect(f.d.memo[id]!.country, 'TW');
+      f.rigs[1].radio.silent = true;
+      await t.tap(find.byKey(const Key('country-US')));
+      await t.pumpAndSettle();
+      await t.tap(find.widgetWithText(FilledButton, '改'));
+      await settle(t, f);
+      f.rigs[1].radio.drop();
+      await settle(t, f);
+      expect(find.textContaining('結果不明'), findsOneWidget);
+      expect(f.d.memo[id], isNull);
+    });
+
     testWidgets('W4: a confirmed country set -> put', (t) async {
       final f = await country(t);
       await settle(t, f);

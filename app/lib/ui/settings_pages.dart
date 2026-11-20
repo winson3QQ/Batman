@@ -24,7 +24,7 @@ import 'widgets.dart';
 
 /// The app's OpSession parts (§2.0).
 OpDeps opDeps(AppLink a) => OpDeps(
-      acquire: (name, {forNode, gone}) => a.link.acquire(name, LeaseKind.session, forNode: forNode, gone: gone),
+      acquire: opAcquire(a.link),
       busyName: () => opBusyName(a.reg, a.link),
       login: (lease, id) => a.link.loginFor(lease, id),
       console: (lease, h) => OwnerConsole(h, lease, a.writer, a.console,
@@ -46,6 +46,10 @@ String memoLabel({required bool reading, required String? own, required String? 
   if (reading) return l != null ? '$l（確認中…）' : '讀取中…';
   return own ?? (l != null ? '上次讀到：$l' : '讀不到');
 }
+
+/// The app's session lease (329-takeover.md §1.1 (b)): the caller's node and gone go on to NodeLink's wait.
+Future<Lease?> Function(String name, {String? forNode, bool Function()? gone}) opAcquire(NodeLink link) =>
+    (name, {forNode, gone}) => link.acquire(name, LeaseKind.session, forNode: forNode, gone: gone);
 
 /// The operation a refused call names: the lease's holder, else (329-takeover.md §1.1 (b)) the call waiting for the
 /// attempt in flight.

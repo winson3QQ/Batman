@@ -346,8 +346,10 @@ are compile-time constants.
   value is its own `SettingsView` and is only printed as a label on its own pages.
 - Second phone: it can change the AP name; this phone then shows the old name marked 「確認中」 / 「上次讀到」 and never
   sends it (the field is not prefilled, W5).
-- Our mistakes: `_det` by identity, the per-attempt completer in a `finally`, the 8 s timer and the single waiter
-  each have a test that fails without them (T6, T7b, T15, T16, T17).
+- Our mistakes: `_det` by identity, the per-attempt completer, the 8 s timer and the single waiter
+  each have a test that fails without them (T6, T7b, T15, T16, T17). (Corrected after code review A m1: the `finally`
+  itself, `_det = null` in `_abort`, `(det && !_wanted(a))` in the park test and `_waiter = null` in `dispose` are
+  defensive; no test fails without them, as every path today ends or pumps before they matter.)
 - A lease holder gets a link only through `_loginFor`'s existing checks. The wait gives no lease earlier than today.
 - `SettingsMemo`: memory only, never logged, no passphrase; it cannot enable a change.
 - Failure mode: every non-success path closes the link and records nothing. Stated cost of 1.3 in 1.3.

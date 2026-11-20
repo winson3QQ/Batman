@@ -11,7 +11,7 @@ import 'package:batman_app/src/nodelink/core.dart';
 import 'package:batman_app/src/nodelink/lease.dart';
 import 'package:batman_app/src/nodelink/node_link.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
-import 'package:batman_app/ui/settings_pages.dart' show opBusyName;
+import 'package:batman_app/ui/settings_pages.dart' show opAcquire, opBusyName;
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_node.dart' show fLogin, fStatus;
@@ -358,8 +358,8 @@ void main() {
   group('T12: the detached attempt ends without a body', () {
     int attempts(KRig rig) => rig.n('attempt a1×Y1 connected=');
 
-    test('(a) an error code -> recorded, not parked; then the round\'s own logins, as many as without the detached '
-        'attempt', () async {
+    test('(a) an error code -> recorded, not parked; then the round\'s own login; as many attempts in all as a round '
+        'whose own first login got the error code', () async {
       final rig = await home();
       rig.s0.row = "2'";
       rig.nl.setPage(Page.node, node: 'Y1');
@@ -516,5 +516,18 @@ void main() {
     await rig.run(100, adv: false);
     expect((r.length, r.last.end, r.last.busyName), (2, OpEnd.busy, '手機 Wi-Fi'), reason: rig.tr);
     await w.lease!.release();
+  });
+
+  // Review A M1: the app's acquire (opAcquire, what opDeps passes) forwards the node and gone to the wait.
+  // Negative control: opAcquire calling `link.acquire(name, LeaseKind.session)` -> FAIL.
+  test('O3b: the app\'s acquire waits for the attempt to the page\'s node', () async {
+    final rig = await page();
+    final r = <Lease?>[];
+    unawaited(opAcquire(rig.nl)('手機 Wi-Fi', forNode: 'Y1', gone: () => false).then(r.add));
+    await rig.run(300, adv: false);
+    expect((rig.nl.waitingName, r.length, rig.aborted), ('手機 Wi-Fi', 0, 0), reason: rig.tr);
+    await rig.wait(() => r.isNotEmpty, what: 'the lease after the attempt');
+    expect((r.single != null, rig.kindOf('Y1'), rig.nl.keptState('Y1')), (true, Kind.read, p), reason: rig.tr);
+    await r.single!.release();
   });
 }

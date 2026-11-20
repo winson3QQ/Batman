@@ -182,7 +182,7 @@ HomeHero decideHome(HomeInputs i) {
   final noted = ns.where((n) => nodeRowHint(n).isNotEmpty).toList();
   if (noted.isNotEmpty) {
     return HomeHero(14, Look.ok, '可以使用',
-        next: noted.length == 1 ? '${noted.first.name} 有一則提醒，點節點看。' : '${noted.length} 台節點有提醒，點節點看。');
+        next: noted.length == 1 ? fillX('X有一則提醒，點節點看。', noted.first.name) : '${noted.length} 台節點有提醒，點節點看。');
   }
   return HomeHero(14, Look.ok, '一切正常，可以使用',
       next: ns.length == 1 ? '你的節點連上了隊伍網路。現在沒有需要你處理的事。' : '你的 ${ns.length} 台節點都連上了隊伍網路。現在沒有需要你處理的事。');

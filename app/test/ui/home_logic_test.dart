@@ -252,6 +252,11 @@ void main() {
       expect('${h.text}${h.next}', isNot(contains('一切正常')));
       expect(h.next, isNot(contains('現在沒有需要你處理的事')));
     });
+    test('H1: a nickname in Chinese -> no space before the reminder (the project\'s spacing, fillX)', () {
+      final n = noted('aaaa0001');
+      final cn = NodeInfo(id: n.id, name: '山腰中繼', state: n.state, fresh: true, shownWhy: null, view: n.view);
+      expect(home([cn]).next, '山腰中繼有一則提醒，點節點看。');
+    });
     test('H2: two nodes -> the count line, no action', () {
       final h = home([noted('aaaa0001'), noted('aaaa0002')]);
       expect((h.row, h.text, h.next, h.action), (14, '可以使用', '2 台節點有提醒，點節點看。', HomeAction.none));
