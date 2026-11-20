@@ -324,6 +324,36 @@ ai_case "the controller refused the command -> FAIL with the status" "$W/ai-refu
 awk '/\(0x08\|0x0006\) ncmd/ {exit} {l[++n] = $0} END {for (i = 1; i < n; i++) print l[i]}' "$AI/btmon-edited-pass.txt" > "$W/ai-nocc"
 ai_case "the capture ends before the Command Complete -> FAIL" "$W/ai-nocc" "$W/key.conf" 1 \
 	"FAIL adv interval block 1 of 1: min [100.000 msec (0x00a0)] max [150.000 msec (0x00f0)] type [Connectable undirected - ADV_IND (0x00)] status [no Command Complete] $AI_WANT; main.conf has the key"
+# one value right, the other not (edited): never PASS, never the old-image line
+sed 's/Max advertising interval: 150.000 msec (0x00f0)/Max advertising interval: 1280.000 msec (0x0800)/' "$AI/btmon-edited-pass.txt" > "$W/ai-minonly"
+sed 's/Min advertising interval: 100.000 msec (0x00a0)/Min advertising interval: 1280.000 msec (0x0800)/' "$AI/btmon-edited-pass.txt" > "$W/ai-maxonly"
+ai_case "only the minimum right, with the key -> FAIL" "$W/ai-minonly" "$W/key.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [100.000 msec (0x00a0)] max [1280.000 msec (0x0800)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has the key"
+ai_case "only the maximum right, with the key -> FAIL" "$W/ai-maxonly" "$W/key.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [1280.000 msec (0x0800)] max [150.000 msec (0x00f0)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has the key"
+ai_case "only the maximum at 1280 ms, no key -> not the old-image line" "$W/ai-minonly" "$W/nokey.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [100.000 msec (0x00a0)] max [1280.000 msec (0x0800)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has no key"
+ai_case "only the minimum at 1280 ms, no key -> not the old-image line" "$W/ai-maxonly" "$W/nokey.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [1280.000 msec (0x0800)] max [150.000 msec (0x00f0)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has no key"
+# only the Command Complete of 0x0006 counts: its two lines removed, the other commands' Success lines still there
+awk '/\(0x08\|0x0006\) ncmd/ {skip = 1; next} skip {skip = 0; next} {print}' "$AI/btmon-edited-pass.txt" > "$W/ai-othercc"
+grep -q 'Status: Success' "$W/ai-othercc" && tok "adv_int_check: the other-CC fixture keeps other Success lines" || tbad "adv_int_check: the other-CC fixture should keep other Success lines"
+ai_case "another command's Command Complete is not this one's -> FAIL" "$W/ai-othercc" "$W/key.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [100.000 msec (0x00a0)] max [150.000 msec (0x00f0)] type [Connectable undirected - ADV_IND (0x00)] status [no Command Complete] $AI_WANT; main.conf has the key"
+# the arm's format (btmon -T) with the two values edited by hand (NOT real) -> PASS
+sed 's/Min advertising interval: 1280.000 msec (0x0800)/Min advertising interval: 100.000 msec (0x00a0)/; s/Max advertising interval: 1280.000 msec (0x0800)/Max advertising interval: 150.000 msec (0x00f0)/' "$AI/btmon-04-wsl32-dated.txt" > "$W/ai-dated-pass"
+ai_case "the arm's format (btmon -T), values edited, with the key -> PASS" "$W/ai-dated-pass" "$W/key.conf" 0 "PASS adv interval 100.000 / 150.000 msec, ADV_IND (1 block)"
+# the arm's glue (adv_int_arm in prov-p2-254.sh): PASS -> ok, anything else -> no, with the judge's text
+arm_case() {	# <name> <capture> <main.conf> <want>
+	local o
+	o=$(ADV_INT_BUILD="$W/bb" sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; ok() { echo \"OK \$*\"; }; no() { echo \"NO \$*\"; }
+		adv_int_haskey() { grep -Eq '^[[:space:]]*MinAdvertisementInterval[[:space:]]*=' \"\$CONF\"; }
+		$(grep '^adv_int_arm() ' "$REPO/scripts/node/prov-p2-254.sh")
+		BMF=\"\$1\"; CONF=\"\$2\"; adv_int_arm" x "$2" "$3")
+	if [ "$o" = "$4" ]; then tok "adv_int_arm: $1"; else tbad "adv_int_arm: $1: [$o]"; fi; }
+arm_case "a PASS goes to ok" "$AI/btmon-edited-pass.txt" "$W/key.conf" "OK adv interval 100.000 / 150.000 msec, ADV_IND (1 block)"
+arm_case "the old image goes to no" "$AI/btmon-04-wsl32-dated.txt" "$W/nokey.conf" "NO ${AI_OLD#FAIL }"
+arm_case "no capture goes to no" "$W/ai-missing" "$W/key.conf" "NO adv interval: no btmon capture to read"
 ai_case "no capture file -> FAIL" "$W/ai-missing" "$W/key.conf" 1 "FAIL adv interval: no btmon capture to read"
 : > "$W/ai-empty"; ai_case "an empty capture -> FAIL" "$W/ai-empty" "$W/key.conf" 1 "FAIL adv interval: no btmon capture to read"
 cat "$AI/btmon-edited-pass.txt" "$AI/btmon-edited-pass.txt" > "$W/ai-two"

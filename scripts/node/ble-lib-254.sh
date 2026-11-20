@@ -412,7 +412,7 @@ adv_int_check() {
 		inb && /Max advertising interval:/ { mx[n] = val($0) }
 		inb && /^[[:space:]]*Type:/ { ty[n] = val($0) }
 		cc && index($0, "(0x08|0x0006)") { ccm = 1 }
-		cc && ccm && /Status:/ { if (done < n) st[++done] = val($0); ccm = 0 }
+		cc && ccm && /Status:/ { if (n) st[n] = val($0); ccm = 0 }
 		END {
 			if (!n) { print "FAIL adv interval: no LE Set Advertising Parameters (0x08|0x0006) in the capture"; exit }
 			good = 0; old = 0; bad = 0

@@ -115,6 +115,7 @@ sed 's/\(Type: 0x000a.*Value: \)0008/\1a000/; s/\(Type: 0x000b.*Value: \)0008/\1
 cp "$AS" "$T/as/old"; sed -n '1,/Type: 0x000a/p' "$AS" > "$T/as/cut"; : > "$T/as/empty"
 echo "FAIL timeout after 4s: sh -c : | bluetoothctl mgmt.read-sysconfig" > "$T/as/timeout"
 { sed -n '1,/Type: 0x000b/p' "$T/as/good"; echo "Segmentation fault"; } > "$T/as/died"
+sed 's/\(Type: 0x000a.*Value: \)0008/\1a000/' "$AS" > "$T/as/minonly"; sed 's/\(Type: 0x000b.*Value: \)0008/\1f000/' "$AS" > "$T/as/maxonly"
 # as_case <name> <main.conf> <readout of try 1..5, by name> <want: the lines printed>
 as_case() { local name=$1 conf=$2 want=$4 i=0 r o; rm -f "$T"/as/try.*
 	for r in $3; do i=$((i + 1)); cp "$T/as/$r" "$T/as/try.$i"; done
@@ -131,6 +132,10 @@ as_case "key: cut short every time -> unreadable" "$T/key.conf" "cut cut cut cut
 as_case "no key: nothing readable in 5 tries -> unreadable" "$T/nokey.conf" "empty cut timeout empty" "FAIL rebind 3: adv sysconfig unreadable"$'\n'"DET rebind 3: adv sysconfig tries=5 unreadable=5"
 as_case "no key: an empty read, then 0008 -> the fixed old-image line, tries=2" "$T/nokey.conf" "empty old" "$AS_OLD"$'\n'"DET rebind 3: adv sysconfig tries=2 unreadable=1"
 as_case "no key but a000 / f000 -> its own FAIL line" "$T/nokey.conf" "good" "FAIL rebind 3: adv sysconfig a000 / f000 but main.conf has no key"$'\n'"DET rebind 3: adv sysconfig tries=1 unreadable=0"
+as_case "key: only the minimum right, five times -> FAIL" "$T/key.conf" "minonly minonly minonly minonly minonly" "FAIL rebind 3: adv sysconfig a000 / 0008 after 5 tries (want a000 / f000)"$'\n'"DET rebind 3: adv sysconfig tries=5 unreadable=0"
+as_case "key: only the maximum right, five times -> FAIL" "$T/key.conf" "maxonly maxonly maxonly maxonly maxonly" "FAIL rebind 3: adv sysconfig 0008 / f000 after 5 tries (want a000 / f000)"$'\n'"DET rebind 3: adv sysconfig tries=5 unreadable=0"
+as_case "no key, only the minimum at 0008 -> not the old-image line" "$T/nokey.conf" "maxonly" "FAIL rebind 3: adv sysconfig 0008 / f000 but main.conf has no key"$'\n'"DET rebind 3: adv sysconfig tries=1 unreadable=0"
+as_case "no key, only the maximum at 0008 -> not the old-image line" "$T/nokey.conf" "minonly" "FAIL rebind 3: adv sysconfig a000 / 0008 but main.conf has no key"$'\n'"DET rebind 3: adv sysconfig tries=1 unreadable=0"
 as_case "key: 0008 five times -> FAIL after 5 tries" "$T/key.conf" "old old old old old" "FAIL rebind 3: adv sysconfig 0008 / 0008 after 5 tries (want a000 / f000)"$'\n'"DET rebind 3: adv sysconfig tries=5 unreadable=0"
 as_case "key: unreadable, then 0008 to the end -> the value seen, not 'unreadable'" "$T/key.conf" "empty old old cut old" "FAIL rebind 3: adv sysconfig 0008 / 0008 after 5 tries (want a000 / f000)"$'\n'"DET rebind 3: adv sysconfig tries=5 unreadable=2"
 o=$(lib 'pidof() { return 1; }; adv_sys_read() { echo CALLED; }; adv_sys_check "'"$T/key.conf"'" || no "rebind 3: $AS_MSG"; echo "tries=$AS_TRIES"')
