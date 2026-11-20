@@ -10,7 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'layout_test.dart' show app, id, keys, sv;
+import 'layout_test.dart' show app, id, keys, kNote, sv;
 import 'ui_state_test.dart' show MemStore;
 
 void main() {
@@ -24,6 +24,9 @@ void main() {
     'looking': (() => app(null), '正在找你的節點'),
     'not read yet': (() => app(null)..link.core.states[id]!.roundsEnded = 2, '還沒讀到'),
     'all normal': (() => app(sv('green')), '一切正常'),
+    // 329-takeover H7: home normal with a reminder (a short name); 「可以使用」 is also in 「一切正常，可以使用」, so the
+    // premise looks for the reminder line. Mutation: the variant with HomeAction.seeNode -> its y differs.
+    'a reminder': (() => app(sv('green', note: kNote)), '有一則提醒'),
   };
 
   // every other page: the status area is as before (no kept lines). Mutation: `steady = false` -> `true` in widgets.dart.
@@ -72,6 +75,7 @@ void main() {
       }
       final y = ys['all normal']!;
       expect(ys['looking'], closeTo(y, 0.5), reason: '$ys $heights');
+      expect(ys['a reminder'], closeTo(y, 0.5), reason: '$ys $heights');
       // Limit, stated (design C4): at text scale 1.3 the "not read yet" title is three lines at 360 dp (two are kept),
       // so that state is one title line (42 dp) lower. Equal at 1.0.
       expect(ys['not read yet'], closeTo(y + (scale == 1.0 ? 0 : 42), 0.5), reason: '$ys $heights');

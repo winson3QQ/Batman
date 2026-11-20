@@ -215,7 +215,7 @@ class World {
   late final List<String> disk;
 
   late final OpDeps op = OpDeps(
-    acquire: (name) async => (leaseNames..add(name), reg.acquire(name, LeaseKind.session)).$2,
+    acquire: (name, {forNode, gone}) async => (leaseNames..add(name), reg.acquire(name, LeaseKind.session)).$2,
     busyName: () => reg.current?.name ?? '',
     login: (lease, id) async {
       log.add('login $id');

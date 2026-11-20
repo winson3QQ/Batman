@@ -87,7 +87,7 @@ class KS extends Session {
         row: row,
         sentence: 's',
         lagNote: '',
-        warning: '',
+        warning: '', note: '',
         nodeState: 2,
         netId: netId,
         version: '',
@@ -226,6 +226,7 @@ class Wrap implements Prober, KeptReader {
   final SessionProber inner;
   void Function(Outcome o)? onReturn;
   bool failRead = false; // the next read on a kept link completes with an error (once)
+  Completer<void>? hold; // the next probe returns to NodeLink only when this completes (once; 329-takeover T17)
 
   @override
   bool Function(String id)? get keepFor => inner.keepFor;
@@ -244,6 +245,11 @@ class Wrap implements Prober, KeptReader {
   @override
   Future<Outcome> probe(GateLink link, String id, {required Future<void> due, required Future<void> cancelled}) async {
     final o = await inner.probe(link, id, due: due, cancelled: cancelled);
+    final h = hold;
+    if (h != null) {
+      hold = null;
+      await h.future;
+    }
     final f = onReturn;
     if (f != null && o.keep != null) {
       onReturn = null;
@@ -254,7 +260,7 @@ class Wrap implements Prober, KeptReader {
 }
 
 class KRig {
-  KRig(this.rust, {this.readFinds = true, List<Rec>? recs, bool wrap = false})
+  KRig(this.rust, {this.readFinds = true, List<Rec>? recs, bool wrap = false, Params params = const Params()})
       : recs = recs ?? [const Rec('Y1', 1), const Rec('Y2', 1)],
         base = rust.sessions.length {
     reg = LeaseRegistry(after: clock.after);
@@ -279,7 +285,7 @@ class KRig {
     );
     if (wrap) wrapped = Wrap(reads);
     nl = NodeLink(
-      core: NodeLinkCore(this.recs),
+      core: NodeLinkCore(this.recs, p: params),
       gate: gate,
       reg: reg,
       prober: wrapped ?? reads,
@@ -365,14 +371,14 @@ class KRig {
   }
 
   late final OpDeps d = OpDeps(
-    acquire: (name) async {
+    acquire: (name, {forNode, gone}) async {
       final g = given;
       if (g != null) {
         given = null;
         return g;
       }
       final sw = Stopwatch()..start();
-      final l = await nl.acquire(name, LeaseKind.session);
+      final l = await nl.acquire(name, LeaseKind.session, forNode: forNode, gone: gone);
       acqMs.add(sw.elapsedMilliseconds);
       return l;
     },

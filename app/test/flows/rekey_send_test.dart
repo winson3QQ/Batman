@@ -40,7 +40,7 @@ class SendFx {
 
   late final SendDeps d = SendDeps(
     op: OpDeps(
-      acquire: (name) async {
+      acquire: (name, {forNode, gone}) async {
         final l = _first;
         if (l != null) {
           _first = null;

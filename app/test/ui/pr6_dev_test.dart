@@ -423,7 +423,7 @@ void main() {
     mockChannels(t);
     final a = app();
     a.link.core.states[id]!.extra = StatusView(
-        color: 'green', row: '3', sentence: 'x', lagNote: '', warning: '', nodeState: 2, netId: '', version: '',
+        color: 'green', row: '3', sentence: 'x', lagNote: '', warning: '', note: '', nodeState: 2, netId: '', version: '',
         tech: const ['回覆\u001e代碼 7\u001f'], fresh: true, rateNote: '', unfinished: '', unfinishedUnderVerdict: false,
         canLeave: false);
     t.view.physicalSize = const Size(1080, 4000);
@@ -691,7 +691,7 @@ void main() {
         });
 
     StatusView withTech(List<String> tech) => StatusView(
-        color: 'green', row: '3', sentence: 'x', lagNote: '', warning: '', nodeState: 2, netId: '', version: '',
+        color: 'green', row: '3', sentence: 'x', lagNote: '', warning: '', note: '', nodeState: 2, netId: '', version: '',
         tech: tech, fresh: true, rateNote: '', unfinished: '', unfinishedUnderVerdict: false, canLeave: false);
 
     // Negative controls: the soft warning dropped from keyLines -> the warning row FAILs; diagCopy given one more
@@ -780,7 +780,7 @@ void main() {
     final now = DateTime(2026, 11, 15, 23, 0);
     final at = DateTime(2026, 11, 15, 22, 48); // home_logic_test's node() read time
     StatusView v(String c, {int nodeState = 2}) => StatusView(
-        color: c, row: '3', sentence: 's', lagNote: '', warning: '', nodeState: nodeState, netId: '', version: '',
+        color: c, row: '3', sentence: 's', lagNote: '', warning: '', note: '', nodeState: nodeState, netId: '', version: '',
         tech: const [], fresh: true, rateNote: '', unfinished: '', unfinishedUnderVerdict: false, canLeave: false);
 
     // Negative control: heroTime back to 「fresh only」 (null for an older read) -> the 上次讀取 cases FAIL.

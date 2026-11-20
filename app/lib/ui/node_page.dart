@@ -210,7 +210,7 @@ class _NodePageState extends State<NodePage> {
     final next = [
       // #329 PR 4 §2.3 (leave v4.1 §2): the unfinished-change line, right under the verdict when info key 10 is absent
       if (n.fresh && v != null && v.unfinished.isNotEmpty && v.unfinishedUnderVerdict) v.unfinished,
-      if (n.fresh && v != null && v.warning.isNotEmpty) v.warning,
+      if (n.fresh && v != null && lineOf(v).isNotEmpty) lineOf(v), // 329-takeover.md §1.3: the warning, else the note
       if (n.fresh && v != null && v.unfinished.isNotEmpty && !v.unfinishedUnderVerdict) v.unfinished,
       if (n.fresh && v != null && v.lagNote.isNotEmpty) v.lagNote,
       if (n.shownWhy != null) whyNext(n.shownWhy!),

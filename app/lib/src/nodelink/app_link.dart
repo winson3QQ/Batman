@@ -13,6 +13,7 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import '../../key_abilities.dart' show KeyAbilities, KeyUse;
 import '../flows/owner_console.dart' show ConsolePlatform;
 import '../flows/net_index.dart';
+import '../flows/op_session.dart' show SettingsMemo;
 import '../rust/api/claim.dart' show storeKeepCopy, storeRemove, storeWriteSealed;
 import '../rust/api/member.dart' show mnetSummary;
 import '../rust/api/owner.dart' show AdvResolver, listNodes, netSummary, storeReadSealed, storeWriteCas;
@@ -92,6 +93,9 @@ class AppLink {
 
   /// The record store directory.
   final String records;
+
+  /// 329-takeover.md §1.2: the settings pages' last values read in this app run (memory only).
+  final SettingsMemo memo = SettingsMemo();
 
   /// #329 PR 4 §2.8: the software updates left half-way (memory only).
   final sw = SwHolds();

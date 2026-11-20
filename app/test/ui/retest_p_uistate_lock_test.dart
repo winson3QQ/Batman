@@ -38,7 +38,7 @@ StatusView sv(String color, {int nodeState = 2, String warning = ''}) => StatusV
     row: '3',
     sentence: color == 'green' ? '已連上隊伍網路' : '有狀況',
     lagNote: '',
-    warning: warning,
+    warning: warning, note: '',
     nodeState: nodeState,
     netId: '',
     version: 'v',

@@ -13,6 +13,7 @@ import '../src/flows/op_session.dart';
 import '../src/flows/owner_console.dart';
 import '../src/nodelink/app_link.dart';
 import '../src/nodelink/lease.dart';
+import '../src/nodelink/node_link.dart' show NodeLink;
 import '../src/rust/api/owner.dart' show SettingsView;
 import 'home_logic.dart' show last4;
 import 'home_page.dart' show nodeInfo;
@@ -23,8 +24,8 @@ import 'widgets.dart';
 
 /// The app's OpSession parts (§2.0).
 OpDeps opDeps(AppLink a) => OpDeps(
-      acquire: (name) => a.link.acquire(name, LeaseKind.session),
-      busyName: () => a.reg.current?.name ?? '',
+      acquire: opAcquire(a.link),
+      busyName: () => opBusyName(a.reg, a.link),
       login: (lease, id) => a.link.loginFor(lease, id),
       console: (lease, h) => OwnerConsole(h, lease, a.writer, a.console,
           after: a.link.after,
@@ -34,7 +35,25 @@ OpDeps opDeps(AppLink a) => OpDeps(
           keyError: (e) => keyErrorToRadio(e, a.link),
           log: (l) => debugPrint('BMAPP ${logText(l)}')),
       keepScreen: keepScreen,
+      memo: a.memo,
     );
+
+/// 329-takeover.md §1.2: a settings row's right side: the page's own value ([own]), else the last value read in this
+/// app run ([last], from [SettingsMemo]) as a label: 「（確認中…）」 while the page reads, 「上次讀到」 after its read
+/// failed. An empty [last] is no label.
+String memoLabel({required bool reading, required String? own, required String? last}) {
+  final l = last != null && last.isNotEmpty ? last : null;
+  if (reading) return l != null ? '$l（確認中…）' : '讀取中…';
+  return own ?? (l != null ? '上次讀到：$l' : '讀不到');
+}
+
+/// The app's session lease (329-takeover.md §1.1 (b)): the caller's node and gone go on to NodeLink's wait.
+Future<Lease?> Function(String name, {String? forNode, bool Function()? gone}) opAcquire(NodeLink link) =>
+    (name, {forNode, gone}) => link.acquire(name, LeaseKind.session, forNode: forNode, gone: gone);
+
+/// The operation a refused call names: the lease's holder, else (329-takeover.md §1.1 (b)) the call waiting for the
+/// attempt in flight.
+String opBusyName(LeaseRegistry reg, NodeLink link) => reg.current?.name ?? link.waitingName ?? '';
 
 /// The line for an operation that did not end with the node's answer, or the answer's own words (no marks).
 String opLine(OpReply r) => switch (r.end) {
@@ -130,6 +149,7 @@ class _WifiPageState extends State<WifiPage> {
       _reading = false;
       if (v != null && v.read) {
         _now = v;
+        _d.memo.put(widget.id, v);
         if (_ssid.text.isEmpty) _ssid.text = v.apSsid;
       } else {
         _line = v != null ? '讀不到目前的名稱。' : readFailLine('讀不到目前的名稱', r); // #329 PR 7: no two colons (as the country page)
@@ -153,6 +173,7 @@ class _WifiPageState extends State<WifiPage> {
       if (apPassProblem(pass) != null || apSsidProblem(ssid) != null) {
         return Future.value(const ConsoleReply(ReplyKind.notSent, '[REQ_FAIL] 名稱或密碼不符合節點的規定，沒有送出'));
       }
+      _d.memo.drop(widget.id); // 329-takeover.md §1.2: a set whose answer is lost leaves no entry
       return c.setAp(ssid, pass);
     }, gone: () => !mounted);
     if (!mounted) return;
@@ -160,7 +181,10 @@ class _WifiPageState extends State<WifiPage> {
     setState(() {
       _sending = false;
       if (v != null) {
-        if (v.read) _now = v;
+        if (v.read) {
+          _now = v;
+          _d.memo.put(widget.id, v);
+        }
         _line = v.read ? '已更新。手機請用新的名稱「${v.apSsid}」和密碼連線。' : '已更新；目前的名稱要重新讀取才看得到。';
         _again = !v.read;
       } else {
@@ -187,7 +211,7 @@ class _WifiPageState extends State<WifiPage> {
               BatRow(
                   icon: Icons.wifi,
                   title: '目前的名稱',
-                  right: _reading ? '讀取中…' : (cur == null ? '讀不到' : cur.apSsid)),
+                  right: memoLabel(reading: _reading, own: cur?.apSsid, last: _d.memo[widget.id]?.apSsid)),
             ]),
             TextField(
               key: const Key('wifi-ssid'),
@@ -298,6 +322,7 @@ class _CountryPageState extends State<CountryPage> {
     setState(() {
       _reading = false;
       _cc = v != null && v.read && v.country.isNotEmpty ? v.country : null;
+      if (_cc != null) _d.memo.put(widget.id, v!);
       if (_cc == null) _line = v != null ? '讀不到目前的國家。' : readFailLine('讀不到目前的國家', r); // #329 PR 6: no two colons
     });
   }
@@ -337,13 +362,19 @@ class _CountryPageState extends State<CountryPage> {
       _sending = true;
       _line = '';
     });
-    final r = await OpSession.once(_d, widget.id, '國家', (c, gone) => c.setCountry(cc), gone: () => !mounted);
+    final r = await OpSession.once(_d, widget.id, '國家', (c, gone) {
+      _d.memo.drop(widget.id); // 329-takeover.md §1.2: a set whose answer is lost leaves no entry
+      return c.setCountry(cc);
+    }, gone: () => !mounted);
     if (!mounted) return;
     final v = okSettings(r);
     setState(() {
       _sending = false;
       if (v != null) {
-        if (v.read && v.country.isNotEmpty) _cc = v.country;
+        if (v.read && v.country.isNotEmpty) {
+          _cc = v.country;
+          _d.memo.put(widget.id, v);
+        }
         _line = '已更新。';
       } else {
         _line = opLine(r);
@@ -358,6 +389,8 @@ class _CountryPageState extends State<CountryPage> {
     final t = BatTheme.of(context);
     final no = _reading || _sending ? '' : _blocked();
     final cur = _cc;
+    // the memo's country is a label only, never a menu value (`_cc` is set only by this page's read)
+    final last = _d.memo[widget.id]?.country;
     return PopScope(
       canPop: !_sending,
       child: BatPage(title: '國家', body: [
@@ -367,7 +400,10 @@ class _CountryPageState extends State<CountryPage> {
               key: const Key('country-now'),
               icon: Icons.public,
               title: '目前',
-              right: _reading ? '讀取中…' : (cur == null ? '讀不到' : _countryName(cur))),
+              right: memoLabel(
+                  reading: _reading,
+                  own: cur == null ? null : _countryName(cur),
+                  last: last == null || last.isEmpty ? null : _countryName(last))),
         ]),
         BatCard(children: [
           for (final e in countries.entries)

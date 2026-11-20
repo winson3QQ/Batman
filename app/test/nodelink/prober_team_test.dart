@@ -32,7 +32,7 @@ class TeamSession extends HintSession {
       row: row,
       sentence: '',
       lagNote: '',
-      warning: '',
+      warning: '', note: '',
       nodeState: nodeState,
       netId: netId,
       version: '',

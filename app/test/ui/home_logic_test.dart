@@ -6,12 +6,13 @@ import 'package:batman_app/ui/home_logic.dart';
 import 'package:batman_app/ui/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-StatusView sv({String color = 'green', int nodeState = 2, String warning = '', String sentence = '可以使用'}) => StatusView(
+StatusView sv({String color = 'green', int nodeState = 2, String warning = '', String note = '', String sentence = '可以使用'}) =>
+    StatusView(
     color: color,
     row: '3',
     sentence: sentence,
     lagNote: '',
-    warning: warning,
+    warning: warning, note: note,
     nodeState: nodeState,
     netId: '',
     version: '',
@@ -234,6 +235,52 @@ void main() {
       expect(nameIn('「', 'Bob', '」'), '「Bob」');
       expect(nameIn('正在找', 'Alpha', '…'), '正在找 Alpha…', reason: 'none before 「…」');
       expect(nameIn('移除', '', ''), '移除');
+    });
+  });
+
+  // 329-takeover.md §1.3 / §7 H1-H4, H6: a node's note (joined but CRIT) keeps home normal.
+  // Negative controls: rule 12 reading the note -> H1 / H2; the variant with an action -> H1; nodeRowHint without the
+  // fresh test -> H4.
+  group('329-takeover: a node with a note', () {
+    const note = '節點回報異常，可能是手機 Wi-Fi 還沒設定 — 還沒設定的話，請到這台節點的「手機 Wi-Fi」設定；已設好仍然如此請找維修人員';
+    NodeInfo noted(String id) => node(id, v: sv(note: note));
+
+    test('H1: one node -> row 14, normal, 「可以使用」, the reminder line, no action', () {
+      final h = home([noted('aaaa0001'), node('aaaa0002', v: sv())]);
+      expect((h.row, h.look, h.text, h.action, h.second), (14, Look.ok, '可以使用', HomeAction.none, HomeAction.none));
+      expect(h.next, '節點 0001 有一則提醒，點節點看。');
+      expect('${h.text}${h.next}', isNot(contains('一切正常')));
+      expect(h.next, isNot(contains('現在沒有需要你處理的事')));
+    });
+    test('H1: a nickname in Chinese -> no space before the reminder (the project\'s spacing, fillX)', () {
+      final n = noted('aaaa0001');
+      final cn = NodeInfo(id: n.id, name: '山腰中繼', state: n.state, fresh: true, shownWhy: null, view: n.view);
+      expect(home([cn]).next, '山腰中繼有一則提醒，點節點看。');
+    });
+    test('H2: two nodes -> the count line, no action', () {
+      final h = home([noted('aaaa0001'), noted('aaaa0002')]);
+      expect((h.row, h.text, h.next, h.action), (14, '可以使用', '2 台節點有提醒，點節點看。', HomeAction.none));
+    });
+    test('H3: a power warning with the note\'s state -> rule 12 as before (regression pin)', () {
+      final h = home([node('aaaa0001', v: sv(warning: '電源電壓不足 — 請檢查電池／電源線'))]);
+      expect((h.row, h.look, h.action), (12, Look.warn, HomeAction.seeNode));
+      expect(h.text, '節點 0001：電源電壓不足 — 請檢查電池／電源線');
+    });
+    test('H4: nodeRowHint only for a fresh read of a node in a network with a note', () {
+      expect(nodeRowHint(noted('aaaa0001')), '有一則提醒');
+      expect(nodeRowHint(node('aaaa0001', v: sv(note: note), fresh: false)), '', reason: 'stale');
+      expect(nodeRowHint(node('aaaa0001')), '', reason: 'no view (as after an app restart)');
+      expect(nodeRowHint(node('aaaa0001', v: sv(note: note, nodeState: 1))), '', reason: 'not in a network');
+      expect(nodeRowHint(node('aaaa0001', v: sv())), '');
+      expect(lineOf(sv(note: note)), note);
+      expect(lineOf(sv(warning: 'w', note: note)), 'w');
+    });
+    test('H4: a stale node with a note does not make the variant (rule 10 first)', () {
+      expect(home([node('aaaa0001', v: sv(note: note), fresh: false)]).row, 10);
+    });
+    test('H6: no note -> rule 14 as before (regression pin)', () {
+      final h = home([node('aaaa0001', v: sv())]);
+      expect((h.row, h.text, h.next), (14, '一切正常，可以使用', '你的節點連上了隊伍網路。現在沒有需要你處理的事。'));
     });
   });
 }

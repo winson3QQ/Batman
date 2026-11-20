@@ -41,9 +41,13 @@ class Fx {
   bool loginFound = false; // #329 honest-errors C2
   bool busy = false;
   Completer<void>? slowLogin;
+  final acq = <(String, String?, bool)>[]; // each acquire call: name, forNode, a gone given
+  void Function()? onAcquire; // runs inside acquire (329-takeover O1 / O2: the page closes during the wait)
 
   late final OpDeps d = OpDeps(
-    acquire: (name) async {
+    acquire: (name, {forNode, gone}) async {
+      acq.add((name, forNode, gone != null));
+      onAcquire?.call();
       if (busy) return null;
       // the first Rig's lease is the operation's (Rig acquired it): hand it out once, then fresh ones
       final l = _first;
@@ -103,6 +107,35 @@ void main() {
       final f = Fx(rust)..busy = true;
       final r = await f.run(() => OpSession.once(f.d, 'Y1', 'x', (c, gone) => c.settings(), gone: () => false));
       expect((r.end, r.busyName, f.logins), (OpEnd.busy, '建立網路', 0));
+    });
+
+    // 329-takeover.md §7 O1 / O2 / O4. Negative controls: once without the gone() test after acquire -> O1 busy, O2
+    // logs in; once passing no forNode -> O4.
+    test('O1: no lease and the page gone meanwhile -> gone, not busy', () async {
+      var g = false;
+      final f = Fx(rust)
+        ..busy = true
+        ..onAcquire = () => g = true;
+      final r = await f.run(() => OpSession.once(f.d, 'Y1', 'x', (c, gone) => c.settings(), gone: () => g));
+      expect((r.end, f.logins), (OpEnd.gone, 0));
+    });
+
+    test('O2: a lease given after the page closed -> released at once, gone, no login', () async {
+      var g = false;
+      final f = Fx(rust)..onAcquire = () => g = true;
+      final o = Order(() => false);
+      f.reg.listeners.add(o);
+      final r = await f.run(() => OpSession.once(f.d, 'Y1', 'x', (c, gone) => c.settings(), gone: () => g));
+      expect((r.end, f.logins, f.consoles, f.reg.current), (OpEnd.gone, 0, 0, null));
+      expect(o.seen, ['released alive=false']);
+    });
+
+    test('O4: once passes its node and its gone; OpenSession.open passes neither', () async {
+      final f = Fx(rust);
+      await f.run(() => OpSession.once(f.d, 'Y1', 'x', (c, gone) => c.settings(), gone: () => false));
+      final s = await f.run(() => OpenSession.open(f.d, 'Y1', '軟體更新'));
+      expect(f.acq, [('x', 'Y1', true), ('軟體更新', null, false)]);
+      await s!.pageGone();
     });
 
     test('a login that finds no session -> login, nothing sent, the lease released', () async {

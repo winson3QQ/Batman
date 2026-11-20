@@ -189,7 +189,7 @@ class _MorePageState extends State<MorePage> {
 StatusFields leaveFieldsOf(StatusView v) => StatusFields(
     color: v.color,
     sentence: v.sentence,
-    warning: v.warning,
+    warning: lineOf(v), // 329-takeover.md §1.3: the warning, else the node's note (the ⚠️ line as before)
     fresh: v.fresh,
     unfinished: v.unfinished,
     unfinishedUnderVerdict: v.unfinishedUnderVerdict);

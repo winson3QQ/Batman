@@ -160,9 +160,13 @@ class StatusHero extends StatelessWidget {
 
 /// One node in a list (home, team, pick): nickname, one sentence, 「讀取於 HH:MM　後四碼 XXXX」.
 class NodeRow extends StatelessWidget {
-  const NodeRow({super.key, required this.look, required this.name, required this.line, required this.meta, this.onTap});
+  const NodeRow(
+      {super.key, required this.look, required this.name, required this.line, required this.meta, this.hint = '', this.onTap});
   final Look look;
   final String name, line, meta;
+
+  /// 329-takeover.md §1.3: one small line under the sentence (home: 「有一則提醒」); "" = none.
+  final String hint;
   final VoidCallback? onTap;
 
   @override
@@ -192,6 +196,12 @@ class NodeRow extends StatelessWidget {
                         height: 1.45,
                         color: look == Look.ok ? t.ink : look.ink(t),
                         fontWeight: look == Look.ok ? FontWeight.w400 : FontWeight.w700)),
+                if (hint.isNotEmpty)
+                  Text(hint,
+                      key: const Key('row-hint'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: Fs.meta, height: 1.45, color: t.ink, fontWeight: FontWeight.w700)),
                 const SizedBox(height: 2),
                 Text(meta, style: TextStyle(fontSize: Fs.meta, color: t.sub)),
               ]),

@@ -30,7 +30,7 @@ class HintSession extends FakeSession {
       row: '3',
       sentence: '',
       lagNote: '',
-      warning: '',
+      warning: '', note: '',
       nodeState: nodeState,
       netId: netId,
       version: '',

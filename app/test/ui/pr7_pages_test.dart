@@ -43,7 +43,7 @@ StatusView view(String color, {int nodeState = 2, String netId = 'ab12', String 
     row: '3',
     sentence: sentence,
     lagNote: '',
-    warning: '',
+    warning: '', note: '',
     nodeState: nodeState,
     netId: netId,
     version: '',

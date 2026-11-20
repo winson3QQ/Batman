@@ -29,7 +29,7 @@ StatusView view({int nodeState = 2, String netId = 'aa11'}) => StatusView(
     row: '3',
     sentence: '已連上隊伍網路',
     lagNote: '',
-    warning: '',
+    warning: '', note: '',
     nodeState: nodeState,
     netId: netId,
     version: 'v',

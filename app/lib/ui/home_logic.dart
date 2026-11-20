@@ -31,6 +31,16 @@ class NodeInfo {
   bool get notInNetwork => view != null && view!.nodeState.toInt() == 1; // §5.1 row 6 (F46)
 }
 
+/// 329-takeover.md §1.3: the node's one line on its own pages: the ⚠️ line, else its note ("" = none).
+String lineOf(StatusView v) => v.warning.isNotEmpty ? v.warning : v.note;
+
+/// 329-takeover.md §1.3: the home row's small line: a fresh read of a node in a network with a note ("" = none; no
+/// view, as after an app restart: none).
+String nodeRowHint(NodeInfo n) {
+  final v = n.view;
+  return n.fresh && v != null && !n.notInNetwork && v.note.isNotEmpty ? '有一則提醒' : '';
+}
+
 /// Which network records this phone holds (file names only; §4.3.8): net wins over mnet over mpend.
 enum NetRecords { net, mnet, mpend, none, unknown }
 
@@ -167,6 +177,12 @@ HomeHero decideHome(HomeInputs i) {
   final blank = ns.where((n) => n.fresh && n.view == null).toList();
   if (blank.isNotEmpty) {
     return HomeHero(13, Look.unk, '${blank.first.name}：有回應，還沒拿到狀態', action: HomeAction.seeNode, node: blank.first.id);
+  }
+  // 329-takeover.md §1.3: a node's note keeps home normal: the reminder in the hero's next line and the row, no button
+  final noted = ns.where((n) => nodeRowHint(n).isNotEmpty).toList();
+  if (noted.isNotEmpty) {
+    return HomeHero(14, Look.ok, '可以使用',
+        next: noted.length == 1 ? fillX('X有一則提醒，點節點看。', noted.first.name) : '${noted.length} 台節點有提醒，點節點看。');
   }
   return HomeHero(14, Look.ok, '一切正常，可以使用',
       next: ns.length == 1 ? '你的節點連上了隊伍網路。現在沒有需要你處理的事。' : '你的 ${ns.length} 台節點都連上了隊伍網路。現在沒有需要你處理的事。');

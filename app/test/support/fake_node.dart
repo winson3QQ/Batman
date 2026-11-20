@@ -108,7 +108,7 @@ class FakeSession implements OwnerSession {
       row: 'r',
       sentence: 's',
       lagNote: '',
-      warning: '',
+      warning: '', note: '',
       nodeState: 2,
       netId: netId,
       version: '',
