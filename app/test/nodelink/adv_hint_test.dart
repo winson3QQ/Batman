@@ -115,12 +115,16 @@ void main() {
       c.startup(0, Page.home);
       c.onScan(3 * s, 'B', hint: hinted ? 'Y1' : null);
       c.onScan(3 * s, 'C'); // no hint
-      for (var t = 3 * s; t <= 120 * s; t += 500) {
+      var t = 3 * s;
+      while (t <= 120 * s) {
         final a = c.next(t);
-        if (a != null) {
-          tried.add('${a.addr}@${t ~/ s}');
-          c.result(t + 2 * s, a, const Outcome(Res.noResponse));
+        if (a == null) {
+          t += 500;
+          continue;
         }
+        tried.add('${a.addr}@${t ~/ s}');
+        t += 2 * s; // review B MINOR-6: time never goes back; the next ask is after the result
+        c.result(t, a, const Outcome(Res.noResponse));
       }
       return c.states['Y1']?.kind;
     }
@@ -130,7 +134,7 @@ void main() {
       final hinted = <String>[], plain = <String>[];
       final k1 = roundEnd(true, hinted), k0 = roundEnd(false, plain);
       expect(hinted, ['B@3', 'B@11', 'C@30'], reason: 'B twice at once, then C when the window opens, no third B');
-      expect(plain.toSet(), {'B@30', 'C@30'}, reason: 'the same world without hints: both after the window');
+      expect(plain, ['B@30', 'C@32'], reason: 'the same world without hints: both after the window, one at a time');
       expect(k1, k0, reason: "Y's conclusion does not depend on the hint");
       expect(k1, isNotNull);
     });

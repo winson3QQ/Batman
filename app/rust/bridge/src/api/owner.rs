@@ -204,6 +204,18 @@ impl AdvResolver {
     }
 }
 
+/// One decoded node record -> (device id, adv_owner key), or none when it has no device id or no 32-byte key 6. The
+/// record is wiped on every path before this returns (code review A M-1: the decoded tree holds copies of every
+/// field, the keys included).
+fn take_adv_key(v: &mut Value) -> Option<(String, [u8; 32])> {
+    let k = match (v.get(1).and_then(Value::as_text), v.get(6).and_then(Value::as_bytes)) {
+        (Some(id), Some(key)) if key.len() == 32 => Some((id.to_string(), batman_proto::kdf::adv_owner(key, id))),
+        _ => None,
+    };
+    wipe_value(v);
+    k
+}
+
 /// Zeroes every byte and text string of a decoded CBOR value, nested ones included (a text of zero bytes is valid
 /// UTF-8). Used before a decoded record holding secrets is dropped.
 fn wipe_value(v: &mut Value) {
@@ -235,13 +247,9 @@ impl AdvResolver {
         let mut keys = Vec::new();
         for plain in &records {
             let Ok(mut v) = cbor::decode(plain) else { continue };
-            if let (Some(id), Some(key)) = (v.get(1).and_then(Value::as_text), v.get(6).and_then(Value::as_bytes)) {
-                if key.len() == 32 {
-                    keys.push((id.to_string(), batman_proto::kdf::adv_owner(key, id)));
-                }
+            if let Some(k) = take_adv_key(&mut v) {
+                keys.push(k);
             }
-            // code review A M-1 (rotating id): the decoded record holds copies of every field, the keys included
-            wipe_value(&mut v);
         }
         for plain in &mut records {
             plain.fill(0);
@@ -1993,11 +2001,34 @@ mod adv_tests {
         ]);
         wipe_value(&mut v);
         let Value::Map(m) = &v else { panic!() };
-        assert_eq!(m[0].1, Value::Text(" ".repeat(18)));
+        assert_eq!(m[0].1, Value::Text("\0".repeat(18)));
         assert_eq!(m[1].1, Value::Bytes(vec![0; 32]));
-        assert_eq!(m[2].0, Value::Text(" ".into()));
+        assert_eq!(m[2].0, Value::Text("\0".into()));
         assert_eq!(m[2].1, Value::Array(vec![Value::Bytes(vec![0; 3]), Value::Tag(24, Box::new(Value::Bytes(vec![0; 2])))]));
         assert_eq!(m[3].1, Value::Uint(5), "numbers are not secrets and stay");
+    }
+
+    // reviews A MINOR-2 / B MINOR-3: the record is wiped by the step the build runs, with a key, without key 6, and
+    // with a key 6 of the wrong length
+    #[test]
+    fn the_build_step_wipes_every_record() {
+        let zeroed = |v: &Value| cbor::encode(v).iter().filter(|b| **b != 0).count() < 12; // only the CBOR heads stay
+        let record = |key: Option<Vec<u8>>| {
+            let mut m = vec![(Value::Uint(1), Value::Text(Y.into())), (Value::Uint(2), Value::Bytes(vec![0x55; 32]))];
+            if let Some(k) = key {
+                m.push((Value::Uint(6), Value::Bytes(k)));
+            }
+            Value::Map(m)
+        };
+        let mut with = record(Some(vec![0x61; 32]));
+        let got = take_adv_key(&mut with);
+        assert_eq!(got.map(|(id, k)| (id, k == batman_proto::kdf::adv_owner(&[0x61; 32], Y))), Some((Y.to_string(), true)));
+        assert!(zeroed(&with), "{with:?}");
+        for key in [None, Some(vec![0x61; 16])] {
+            let mut v = record(key);
+            assert_eq!(take_adv_key(&mut v), None);
+            assert!(zeroed(&v), "{v:?}");
+        }
     }
 }
 

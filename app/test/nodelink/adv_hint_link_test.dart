@@ -96,9 +96,11 @@ void main() {
     expect(rig.traces.where((t) => t.startsWith('adv resolver 1: ? of 1 record(s) opened')), hasLength(1));
   });
 
-  // code review A M-5 (§8 S4): a resolver that gives no hint leaves the scheduler exactly as with no resolver at all —
-  // the same attempts at the same times and the same scheduler log
-  test('S4: no hint = the behaviour without the identifier (same attempts, same log)', () async {
+  // code review A M-5: a resolver that resolves to none leaves NodeLink exactly as with no resolver at all — the same
+  // attempts at the same times and the same scheduler log. (Design §8 S4 in the scheduler — a null hint is no hint —
+  // is held by the existing suite: a null hint read as 「像 Y」 fails core_test / core2_test.)
+  test('a resolver that resolves to none = no resolver (same attempts, same log)', () async {
+    var asked = 0;
     Future<(List<String>, List<String>)> run(ResolverBuilder build) async {
       final rig = Rig([const Rec('Y1', 1)], owner: {'B': 'Y1'}, build: build);
       rig.radio.mfr['B'] = adv(9); // resolves to no record of this phone
@@ -113,8 +115,12 @@ void main() {
     }
 
     final never = Completer<Resolver>();
-    final withResolver = await run((ids) async => byFirstByte(ids));
+    final withResolver = await run((ids) async => Resolver((mfr) {
+          asked++;
+          return byFirstByte(ids).resolve(mfr);
+        }));
     final without = await run((ids) => never.future);
+    expect(asked, greaterThan(0), reason: 'review A MINOR-1: the resolver was installed and asked');
     expect(withResolver.$1, isNotEmpty, reason: 'the world has attempts to compare');
     expect(withResolver.$1, without.$1);
     expect(withResolver.$2, without.$2);
