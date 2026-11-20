@@ -356,10 +356,13 @@ class NodeLink implements LeaseListener {
     core.acquireLease(now());
     // #329 UX plan §4.2: a kept link that is reading goes (the flow logs in from the start); a parked one stays for
     // a session lease's loginFor and goes for a raw lease (an older page uses the radio itself)
+    final closes = <Future<void>>[];
     for (final e in _kept.entries.toList()) {
       final st = e.value.st;
-      if (st == KeptState.reading || (st == KeptState.parked && kind == LeaseKind.raw)) _closeKept(e.key);
+      if (st == KeptState.reading || (st == KeptState.parked && kind == LeaseKind.raw)) closes.add(_closeKept(e.key));
     }
+    // the lease is given with these links gone and their sessions disposed (bounded as the wait in _dropAll)
+    await Future.wait(closes).timeout(const Duration(seconds: 5), onTimeout: () => const []);
     await _dropAll();
     final mine = reg.nodeLinkToken; // NodeLink's own token (no lease is held here), until the lease replaces it
     final l = reg.acquire(name, kind);
@@ -685,6 +688,9 @@ class NodeLink implements LeaseListener {
     final e = _kept[id];
     if (e == null || e.st == KeptState.lent) return Future.value();
     _forget(id);
+    // the gate counts the link as closing from here on: destroy() unsubscribes first, and until that returned the
+    // link would still be open and parked, which nothing waits for (review 009d592 A-1 / B-1)
+    unawaited(e.h.link.close().catchError((Object _) {}));
     return e.h.destroy().then(_pumpAfterClose);
   }
 
@@ -702,11 +708,9 @@ class NodeLink implements LeaseListener {
     var cut = false;
     unawaited(cancelled.then((_) => cut = true));
     if (_kept.length >= keptMax) {
-      for (final e in _kept.entries) {
+      for (final e in _kept.entries.toList()) {
         if (e.value.st == KeptState.parked) {
-          // wait for this close itself: its link counts as closing only once the session is disposed, later than
-          // the check below would look
-          await Future.any([_closeKept(e.key), cancelled]);
+          _closeKept(e.key); // its link counts as closing from here on: the wait below sees it
           break;
         }
       }

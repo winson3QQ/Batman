@@ -41,8 +41,9 @@ void main() {
   });
 
   /// The home page with [n] records Y1..Yn, node Yi on address ai; the first round is over.
-  Future<KRig> home(int n, {int? advertising}) async {
+  Future<KRig> home(int n, {int? advertising, int subCancelMs = 0}) async {
     final rig = KRig(rust, recs: [for (var i = 1; i <= n; i++) Rec('Y$i', 1)]);
+    rig.radio.subCancelMs = subCancelMs;
     rig.advs = [for (var i = 1; i <= (advertising ?? n); i++) 'a$i'];
     await rig.nl.start(Page.home);
     await rig.wait(() => !rig.nl.core.roundActive, what: 'round 1 ended');
@@ -50,8 +51,8 @@ void main() {
   }
 
   /// [home] with 2 records, both links kept: Y1 on a1, Y2 on a2.
-  Future<KRig> home2() async {
-    final rig = await home(2);
+  Future<KRig> home2({int subCancelMs = 0}) async {
+    final rig = await home(2, subCancelMs: subCancelMs);
     expect((rig.nl.keptState('Y1'), rig.nl.keptState('Y2'), rig.gate.links, rig.radio.connects), (p, p, 2, 2),
         reason: rig.tr);
     expect((rig.at('Y1'), rig.at('Y2')), ('a1', 'a2'));
@@ -170,6 +171,24 @@ void main() {
     expect((rig.gate.links, rig.radio.open, rig.nl.keptCount, s1.disposed, s2.disposed), (0, 0, 0, true, true),
         reason: rig.tr);
     await l.release();
+  });
+
+  test('L7: the same when the unsubscribe of tx takes 300 ms', () async {
+    final rig = await home2(subCancelMs: 300);
+    final (s1, s2) = (rig.ks('Y1'), rig.ks('Y2'));
+    final f = rig.nl.acquire('舊頁', LeaseKind.raw);
+    await rig.run(1000, adv: false);
+    final l = (await f)!;
+    expect((rig.gate.links, rig.radio.open, rig.nl.keptCount, s1.disposed, s2.disposed), (0, 0, 0, true, true),
+        reason: rig.tr);
+    await l.release();
+  });
+
+  test('L20: a kept link being closed is gone from the gate before its unsubscribe returns', () async {
+    final rig = await home2(subCancelMs: 2000);
+    rig.nl.background();
+    await rig.run(300, adv: false);
+    expect((rig.gate.links, rig.gate.active, rig.radio.open, rig.nl.keptCount), (0, 0, 0, 0), reason: rig.tr);
   });
 
   test('L8: Bluetooth off with 2 parked: both closed', () async {

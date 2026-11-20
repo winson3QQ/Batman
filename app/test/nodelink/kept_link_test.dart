@@ -135,6 +135,7 @@ class KRadio implements BleBackend {
   final hold = <int, List<int>>{};
   String addr = '';
   int goneMs = 0; // the stack reports a closed link gone this long (fake clock) after the disconnect
+  int subCancelMs = 0; // the unsubscribe of tx returns after this long (fake clock), as a platform call does
 
   StreamController<List<int>> txOf(String a) => txs[a] ??= StreamController<List<int>>.broadcast(sync: true);
   StreamController<List<int>> get tx => txOf(addr);
@@ -185,7 +186,22 @@ class KRadio implements BleBackend {
   @override
   Future<List<int>> read(String address, Char c) async => [0];
   @override
-  Stream<List<int>> subscribe(String address, Char c) => txOf(address).stream;
+  Stream<List<int>> subscribe(String address, Char c) {
+    final src = txOf(address).stream;
+    if (subCancelMs == 0) return src;
+    StreamSubscription<List<int>>? s;
+    late StreamController<List<int>> out;
+    out = StreamController<List<int>>(
+        sync: true,
+        onListen: () => s = src.listen(out.add),
+        onCancel: () {
+          s?.cancel();
+          final d = Completer<void>();
+          clock.after(Duration(milliseconds: subCancelMs), d.complete);
+          return d.future;
+        });
+    return out.stream;
+  }
   @override
   Future<void> write(String address, Char c, List<int> value) async {
     final f = value[0];

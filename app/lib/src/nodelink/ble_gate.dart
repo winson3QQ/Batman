@@ -119,8 +119,11 @@ class GateLink {
     return gate.backend.write(address, c, value);
   }
 
-  /// Drop the link and wait until the stack reports it gone, or 5 s (§4.2).
-  Future<void> close() async {
+  /// Drop the link and wait until the stack reports it gone, or 5 s (§4.2). A second call waits for the same end.
+  Future<void> close() => _closing ??= _close();
+  Future<void>? _closing;
+
+  Future<void> _close() async {
     if (!_open) return;
     _open = false;
     _parked?.call();
