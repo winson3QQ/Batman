@@ -1,6 +1,6 @@
 # #329 A2 — take over the connection in progress; known values first; the "joined but critical" line leaves home's hero
 
-Status: v4, for review (reviews so far: `329-reviews/review-takeover-r1-A.md`, `-r1-B.md`, `-r2-A.md`, `-r2-B.md`, `-r3-A.md`, `-r3-B.md`; what changed is in §9). App only
+Status: v5, for review (reviews so far: `329-reviews/review-takeover-r1-A.md` … `-r4-B.md`, two per round; what changed is in §9). App only
 (Dart + the status verdict in `batman-proto` + one bridge field). No node, firmware or harness change.
 
 Baseline (reviewed, not re-reviewed here): `329-link-per-node.md` (#366: one kept link per node, lend / park /
@@ -11,13 +11,13 @@ Everything below is a change against main 99d156a. §1.3 **supersedes** two revi
 ## 0. What the user sees today (reproduced, phone S20, main-equivalent APK, 2026-11-20)
 
 Evidence: `Desktop\Batman\a1\a2-step1-2026-11-20.logcat` (script `a2step1.sh`: background 8 s → launch → tap 04 after
-1.0–3.5 s; phone clock 12:22–12:25) and `Desktop\Batman\a1\a2-repro-2026-11-20.logcat` (script `a2repro2.sh`: the same,
+1.0–3.5 s; phone clock 12:21:00–12:24:42) and `Desktop\Batman\a1\a2-repro-2026-11-20.logcat` (script `a2repro2.sh`: the same,
 then 「手機 Wi-Fi」 0.7 s later; 11:45–11:49).
 
 | Step | Seen |
 |---|---|
 | Home → node page of 04 while the home round's attempt to 04 is in flight | 3 of 3 such taps in the file: the attempt is cancelled 0.7 s / 1.7 s / 2.2 s after it started (`attempt …9B×…7d2c connected=-1ms result=noResponse after 736ms` at 12:21:13.530, `1696ms` at 12:23:00.864, `2201ms` at 12:23:37.418, each with `round N full […7d2c]` and a second `connect()` to the same device); body 4.5 s / 4.0 s / 4.8 s after the tap. Attempts left alone in the same log take 2.9–4.8 s from start to body (11 lines `result=body after …ms`: 2907–4802), so about 1–2.5 s were left in the last two (inferred, not measured). Three other taps fell while the attempt in flight was to 02 (12:21:48, 12:22:24, 12:24:14): not this case, unchanged by this design. |
-| Node page still connecting → 「手機 Wi-Fi」 | 4 taps. In 3 an attempt to 04 was in flight: it is cancelled and the sub-page logs in from the start: 3.5 s, 6.1 s, 4.0 s until logged in. In the fourth (25.7 s) the attempt in flight was to 02 (`11:47:27.135 attempt …5A×…880c connected=1633ms result=noResponse after 2163ms`), the first connect to 04 came 12 s later (11:47:40.775) and the first login got no response: **not this case, not improved by this design** (§8). Neither capture has a `kept link` line; with a parked kept link (#366) the same step logged in 0.1 s (PR #366 body, test results, D3). |
+| Node page still connecting → 「手機 Wi-Fi」 | 4 taps. In 3 an attempt to 04 was in flight: it is cancelled and the sub-page logs in from the start: 3.5 s, 6.1 s, 4.0 s until logged in. In the fourth (25.7 s) the attempt in flight was to 02 (`11:47:27.135 attempt …5A×…880c connected=1633ms result=noResponse after 2163ms`), the first connect to 04 came 12.6 s after the tap (11:47:40.775) and the first login got no response: **not this case, not improved by this design** (§8). Neither capture has a `kept link` line; with a parked kept link (#366) the same step logged in 0.1 s (PR #366 body, test results, D3). In the three counted taps the cancelled attempt was only 0.5 / 0.5 / 0.1 s old (`connected=-1ms result=noResponse after 524ms` / `465ms` / `104ms`). |
 | Home, 02 joined but `k2 = 2` | The yellow hero: 「02：節點回報異常，可能是手機 Wi-Fi 還沒設定 — …」 while 02's row is green (user, 2026-11-20: a reminder that belongs in the node; on home it alarms). |
 | 「手機 Wi-Fi」 / 「國家」 opened a second time | 「讀取中…」 again, although the app read the same value a moment ago (user, same message). |
 
@@ -47,8 +47,9 @@ blocked, any other lease; cap, `refresh` and early → full for an attempt that 
   field, and by `_run`. Order at `_run`'s end, written out: complete `ended` → null the field `if
   (identical(_ended, ended))` → then the tail `_pump()` (`:1057`). A `finally` around the body completes it on the
   early returns (`:999`, `:1038`, which do not pump) and on an exception; it is the backstop, not the ordering. A
-  completer's listeners run as microtasks, so the waiter always resumes after `_run`'s synchronous tail; it then
-  runs today's lease path, which aborts whatever the pump started (as today's `acquire` does).
+  completer's listeners run as microtasks, so the waiter always resumes after `_run`'s synchronous tail whichever
+  statement completes it; it then runs today's lease path, which aborts whatever the pump started (as today's
+  `acquire` does). The order is written for the reader; no test can tell the two orders apart, and none claims to.
 - `_waiter`: the one `acquire` call that is waiting (its name, its `gone`), or null. `dispose` clears it.
 
     wanted(a) = _onPage(a.id) && core.blocked == null && core.states.containsKey(a.id)
@@ -76,7 +77,7 @@ When a detached attempt ends in `_run` (the `core.result` branch is skipped; the
   (`core.blocked == null`, `core.fg`, no kept link for the node, `_kept.length < keptMax`); else destroyed. This is
   line 1051 with `taken` in the place of `accepted`.
 - An error code: recorded (`t.err`, the error line on the page), nothing parked. `_candidates` stops only on a body
-  or a reason (`core.dart:475`), so the round then makes its own attempts as if the detached one had not been: up
+  or a reason (`core.dart:474`), so the round then makes its own attempts as if the detached one had not been: up
   to the round's usual number of logins, each of which can replace the recorded code. One login more than today.
 - Anything else (`noResponse`, refused, exception): nothing recorded, link closed; the round then makes its own
   first attempt at once (the core never counted the detached one: no `freeAt` gap, no per-address count for it).
@@ -84,13 +85,13 @@ When a detached attempt ends in `_run` (the `core.result` branch is skipped; the
 
 Bound: a detached attempt keeps its own limits (8 s from its connect to msg2, then the prober's answer limits); it
 is detached only after its connect started (no `_makeRoom` wait is taken over). `wanted(a)` does not ask whether a
-round has the node as a target; it need not: a node page's round has that node as its only target (`core.dart:218,
+round has the node as a target; it need not: a node page's round has that node as its only target (`core.dart:216–218,
 258`), and with no such round `keptRead` takes nothing.
 
 **(b) A settings-type session asked for the node whose page is open.** `NodeLink.acquire(name, kind, {String?
-forNode, bool Function()? gone})`. `OpDeps.acquire` (`op_session.dart:68`) becomes `Future<Lease?> Function(String
+forNode, bool Function()? gone})`. `OpDeps.acquire` (`op_session.dart:69`) becomes `Future<Lease?> Function(String
 name, {String? forNode, bool Function()? gone})`; `OpSession.once` (`:94`) passes its `id` and its `gone`,
-`OpenSession.open` (`:150`) passes neither; `opDeps` (`settings_pages.dart:26`, the only maker of `OpDeps` in the
+`OpenSession.open` (`:150`) passes neither; `opDeps` (`settings_pages.dart:25`, the only maker of `OpDeps` in the
 app) forwards them; the test rigs that build `OpDeps` follow the new signature. After the `_releasing` wait and
 the first `reg.current` check and **before `core.acquireLease`**: if `forNode != null`, there is an attempt `a` (the
 round's own or `_det`) with `a.id == forNode`, `_link != null` and `wanted(a)`:
@@ -139,8 +140,13 @@ login budget (it starts after `acquire`, as today).
 Cost: when the attempt taken over does not end with a body, the sub-page's own login starts later than today by the
 time waited, at most 8 s. A device that answers on a node's old address without being the node costs one connect
 more per entry to that node's page and each sub-page opening up to those 8 s; nothing is parked, recorded or shown
-from it. When the attempt succeeds the step is its remaining time plus the kept-link login (0.1 s in the #366
-run) in place of the 3.5–6.1 s of §0.
+from it. The 8 s timer runs from the start of the wait, not from the attempt's start: an attempt that is logged in
+and still reading when it fires is aborted like any other (its answer limit after msg2 is 20 s,
+`prober.dart:233`), and the sub-page logs in from the start. When the attempt succeeds the step is its
+remaining time plus the kept-link login (0.1 s in the #366 run). Read against §0: an attempt takes 2.9–4.8 s and
+the three counted taps came 0.1–0.5 s after its start, so for taps like those the step is expected at about
+2.5–4.8 s against 3.5–6.1 s today; the gain grows with how late in the attempt the tap comes (inferred from the
+captures; D2 measures it).
 
 Not handled (listed in #329): a kept link in state `reading` is still closed by `acquire` (about 0.35 s per round;
 not reproduced); a sub-page tapped while the attempt in flight is to another node, and the 12 s gap before a
@@ -160,11 +166,14 @@ memory only. One object, a field of `AppLink` (`app_link.dart:80`); `opDeps` han
   page refuses keeps the entry (nothing was sent); a set whose answer is lost leaves no entry.
 - 「手機 Wi-Fi」: while the page's own read runs, 「目前的名稱」 shows 「<名稱>（確認中…）」 in place of 「讀取中…」. **The
   text field is not prefilled from the memo**; it is filled only from the page's own read, as today (`:133`). If
-  the read fails: today's failure line plus 「上次讀到：<名稱>」; the field stays as today.
-- 「國家」: the shown country the same way. `_cc` (which enables the menu, `:307–314`) is set only by the page's own
+  the read fails: today's failure line is unchanged and the row's right side (`:190`) shows 「上次讀到：<名稱>」 in
+  the place of 「讀不到」; the field stays as today.
+- 「國家」: the shown country the same way (`:370`), printed through the same `_countryName` as a read value
+  (`:255`), never as a raw code. `_cc` (which enables the menu, `:307–314`) is set only by the page's own
   read, never from the memo.
 - A label is shown only for a non-empty value (an empty name or country in the memo: 「讀取中…」 as today).
-- Sending stays disabled while the page's read runs (unchanged).
+- Sending stays disabled while the page's read runs (unchanged). After a failed read the name field is empty, so
+  「送出」 is disabled as today; the memo changes neither.
 - The memo holds what `SettingsView` holds: no passphrase (the node never sends one, `owner.dart:573–574`). The name is
   shown only on 「手機 Wi-Fi」 (inside `SecureScreen`, `:182`), the country only on 「國家」.
 - An entry is used for nothing but these two labels. It can be old: the country changes when the node joins a
@@ -191,7 +200,7 @@ changed.
 | Reader of `warning` today | After |
 |---|---|
 | Home hero rule 12 (`home_logic.dart:155, 158`) | reads `warning` only: the note does not make home yellow |
-| Home hero rule 14 (`:171`) | no fresh node with a note: unchanged. Else: `HomeHero(14, Look.ok, '可以使用', next: …, action: …, node: …)` with, for one such node, `next` 「<名稱> 有一則提醒，點進去看。」 and `HomeAction.seeNode` with `node:` its id; for more, 「N 台節點有提醒，點節點看。」 and `HomeAction.showList`. Neither 「一切正常」 nor 「現在沒有需要你處理的事」 is printed then. The hero's small word above stays `Look.ok`'s 「正常」 (`widgets.dart:31, 133`): home is normal, with a reminder. The variant has a button where 「一切正常」 has none; the steady hero already keeps the button's place (rule 10 「還沒讀到」 has one), and the variant is added to `home_steady_test` (H7). |
+| Home hero rule 14 (`:171`) | no fresh node with a note: unchanged. Else: `HomeHero(14, Look.ok, '可以使用', next: …)` with **no action** (`HomeAction.none`, as rule 14 today): for one such node `next` is 「<名稱> 有一則提醒，點節點看。」, for more 「N 台節點有提醒，點節點看。」. The node's row under it carries 「有一則提醒」 and is the tap target. Neither 「一切正常」 nor 「現在沒有需要你處理的事」 is printed then. The hero's small word above stays `Look.ok`'s 「正常」 (`widgets.dart:31, 133`): home is normal, with a reminder. No button: a hero button is drawn in `extra`, which adds height outside the kept lines (`widgets.dart:104–106, 143`; `HomeAction.refresh` draws none, `home_page.dart:321–331`), so a button would move the node list at every launch (「正在找」 → the variant). Without one the variant has the lines of 「一切正常」 and the same height for a name whose `next` line fits the two kept lines; a long name adds lines, as a long title does in C4 (#367). Pinned in `home_steady_test` (H7). |
 | Home node row | `nodeRowHint(n)`: 「有一則提醒」 when the node's read is fresh, it is in a network and its note is not empty; else empty (a stored view after an app restart is not fresh: no hint). `NodeRow` (`widgets.dart:162`) gets an optional `hint` (default empty: the other lists that use `NodeRow` are unchanged); home prints it as one small line under the row's sentence (one line, ellipsis). |
 | Home tip card (`home_page.dart:361`, shown once on row 14) | unchanged: it can first appear on the variant with a reminder (its text is about the page, not the state) |
 | Node page (`node_page.dart:213`) | `lineOf(v)`: the same place and style as today |
@@ -202,7 +211,7 @@ changed.
 
 Documents edited in this PR (reviewed lines superseded on the user's request):
 - `254-app-status-page.md:28, 60, 73` (the ⚠️ line of this state on home): it stays on the node page, the leave
-  page and the status fields; on home it is the row's small line and the hero's `next` line.
+  page and the status fields; on home it is the row's small line and the hero's `next` line (no button).
 - `329-app-uiux.md:682` (rule 14's row: add the variant), `:716` and `:976` (they say 「一切正常」 of a home that may
   now be the variant).
 - `329-honest-errors.md:14` (the F1 row: where the sentence is shown) and `:158` (a device-check note saying home
@@ -246,6 +255,7 @@ are compile-time constants.
 |---|---|---|---|
 | First run / no records | no round, no attempt | same | existing suite |
 | Home → tap a node mid-attempt (connect started) | cancel + new scan / connect | attempt finishes, body in the page's round, parked | T1 (device D1) |
+| Back from a net page to the node page (`net_pages.dart:224`, `dispose` → `setPage(back, node)`) mid-attempt of the round then running | cancel + new connect | as the tap from home: detached if the attempt is to that node and its connect started | T1 (second case) |
 | Same, attempt still in `_makeRoom` | cancel | cancel | T1b |
 | Tap another node's page mid-attempt | cancel | cancel | T2 |
 | Detached attempt answers with an error code | — | recorded by `keptRead`, nothing parked; the round's own attempts follow | T12 |
@@ -257,7 +267,7 @@ are compile-time constants.
 | Record removed while detached | result dropped | aborted at the next `_pump`; else not taken by `keptRead`, destroyed | T9 |
 | Round cap / `refresh` / early → full with the round's own attempt in flight on the node page | abort | abort (not detached: only `setPage` detaches) | T14 |
 | `refresh` / early → full on the node page while a detached attempt runs | — | not aborted; its answer is recorded in the round active when it ends | T14b |
-| The page's round ends at its window while a detached attempt runs | — | not taken: nothing recorded, session destroyed | T14c |
+| The page's round ends at its window while a detached attempt runs (defensive: an attempt's limits are shorter than the window in normal use) | — | not taken: nothing recorded, session destroyed | T14c |
 | Node page connecting → sub-page (session lease) | cancel + login from start | wait, parked link lent, one connect | T3 (device D2) |
 | Same, attempt fails | — | lease given when it ends; own login | T5 |
 | Same, attempt silent after connect | — | 8 s, `_abort()`, own login | T6 |
@@ -270,7 +280,7 @@ are compile-time constants.
 | Attempt ends without a body during the wait and the round starts another | — | the lease path aborts it as today; no second wait | T5 |
 | `dispose` during the wait | — | waiter returns null, `_waiter` cleared, timer stopped | T11b |
 | Page closed during the wait, no second call | — | on wake the call returns null: no lease, the round is not cancelled (`OpEnd.gone`) | T15c, O1 |
-| Page closed before a lease given without a wait | lease, login | lease released at once (`OpEnd.gone`) | O2 |
+| Page closed before a lease given without a wait | lease, login | lease released at once (`OpEnd.gone`). This holds for all 11 `once` callers, also away from the node page: a page already closed no longer logs in | O2 |
 | Background / Bluetooth off / page left during the wait | — | attempt aborted → wait ends at once → today's path (login ends as today) | T7b, T8b |
 | A lease is held (update, claim) | no round, no attempt | same: nothing to detach or wait for | existing lease tests |
 | Two nodes, one unreachable | — | home round unchanged; the node page's round has one target | T1 |
@@ -289,7 +299,7 @@ are compile-time constants.
 | `core.keptRead` records a body or an error code for a target of the active round, returns false with no round | `core.dart:603–626` |
 | An error code (`t.err`) does not stop the round's further candidates; a body or a reason does | `core.dart:472–480` |
 | `_run`'s tail `_pump()` is its last statement; the early returns do not pump | `node_link.dart:1057`, `:999`, `:1038` |
-| `setPage(Page.node)` leaves a new round with that node as its only target | `core.dart:218, 244–258` (X33), log `round N full […7d2c]` in the reproduction |
+| `setPage(Page.node)` leaves a new round with that node as its only target | `core.dart:216–218, 244–258` (X33), log `round N full […7d2c]` in the reproduction |
 | `core.acquireLease` cancels the round (so the wait must come before it) | `core.dart:285–290`, `node_link.dart:360` |
 | A parked link is not counted by `gate.active` and not closed by `revoked(token)` | `ble_gate.dart:195`, `:302–309` |
 | `_loginFor` lends a parked link when the node's page is open | `node_link.dart:446–452` |
@@ -302,7 +312,7 @@ are compile-time constants.
 | `_link` is set when the connect starts, not when it is up | `node_link.dart:1008` |
 | A login on a parked kept link takes about 0.1 s | PR #366 body, test results D3 |
 | Every `once` caller has its page or progress on screen first; `open` does not | `settings_pages.dart:126, 148, 295, 340`, `dev_pages.dart:183, 274`, `more_pages.dart:258`, `join_pages.dart:117, 721`, `rekey_send.dart:112, 139`, `remove_pages.dart:102`; `update_route.dart:28–36` |
-| All callers of `NodeLink.acquire` | grep: `op_session.dart:94, 150` (through `settings_pages.dart:26`; `team_deps.dart:23–25` builds `OfflineDeps`, not `OpDeps`), `offline_op.dart:118`, `raw_use.dart:74, 88`, `dev_pages.dart:459`, `more_pages.dart:84`, `net_pages.dart:271, 342, 917` |
+| All callers of `NodeLink.acquire` | grep: `op_session.dart:94, 150` (through `settings_pages.dart:25–26`; `team_deps.dart:23–25` builds `OfflineDeps`, not `OpDeps`), `offline_op.dart:118`, `raw_use.dart:74, 88`, `dev_pages.dart:459`, `more_pages.dart:84`, `net_pages.dart:271, 342, 917` |
 | The hero prints the look's word above the text | `widgets.dart:30–36, 133` |
 | 「國家」 is not inside `SecureScreen` (a dump of it is possible); 「手機 Wi-Fi」 is | `settings_pages.dart:290–380`, `:182` |
 | A settings page fills its field only when it is empty, from its own read | `settings_pages.dart:133` |
@@ -334,7 +344,8 @@ Tests that pass on main because they pin "still aborted" name the mutation of th
 
 NodeLink (`test/nodelink`, fake gate / prober):
 T1 enter the node page mid-attempt (connect started): one connect, body in the new round, `_noteRead`, parked; a
-second node unreachable in the home round changes nothing. T1b the same in `_makeRoom`: aborted [mutation: detach
+second node unreachable in the home round changes nothing; the same when the page is entered by
+`setPage(Page.node, node)` from `Page.other` (the net pages' way back). T1b the same in `_makeRoom`: aborted [mutation: detach
 without `_link != null`]. T2 other node's page: aborted [mutation: detach without `wanted`]. T3 `acquire(forNode)`
 on the node's page mid-attempt: returns after the attempt, state recorded, `loginFor` gives the kept link, one
 connect (negative control: wait placed after `core.acquireLease` → nothing recorded, second connect). T4 no wait
@@ -344,24 +355,23 @@ new attempt the round started meanwhile is aborted, no second wait. T6 silent af
 attempt aborted. T6b in `_makeRoom`: no wait [mutation: wait without `_link != null`]. T7 background while
 detached; T7b during the wait: wait ends within one tick. T8 / T8b radio blocked, the same two. T9 record gone
 while detached: aborted at the next pump (defensive: the app has no way to remove a node from its own page while
-an attempt runs). T10 back to home. T11 dispose while detached; T11b dispose during the wait: null, no timer left,
+an attempt runs). T10 back to home. [T7–T10, one mutation: line 900 with `identical(_det, a)` alone, without
+`wanted(a)` → the attempt lives on.] T11 dispose while detached (regression pin: `_dropAll` as today); T11b dispose during the wait: null, no timer left,
 no waiter left (`waitingName` null). T12 detached error code: recorded, not parked, then the round's own logins
 (their number asserted, equal to a round without the detached attempt); detached no response / cert rejected:
 nothing recorded, the round's own attempt starts at once (one extra attempt, asserted). T13 detached body with a
-kept link present / no room: recorded, destroyed. T14 cap / `refresh` / early → full with the round's own attempt
+kept link present / no room: recorded, destroyed [mutation: park without the "no kept link for the node / room"
+test]. T14 cap / `refresh` / early → full with the round's own attempt
 on the node page: aborted [mutation: line 900 with `wanted(a)` in place of `identical(_det, a) && wanted(a)`].
 T14b `refresh` on the node page while a detached attempt runs: not aborted, one connect, its body recorded in the
 new round, parked. T14c the page's round ended before a detached attempt answers: nothing recorded, session
-destroyed. T15 second `acquire(forNode)` during the wait with the first `gone`: first null, second the lease.
+destroyed (defensive, as T9). T15 second `acquire(forNode)` during the wait with the first `gone`: first null, second the lease.
 T15b first not gone: second null, `waitingName` is the first's name, the first gets the lease. T15c the only
 waiter's `gone` turns true during the wait: on wake null, the round is not cancelled, no lease taken or released,
 `waitingName` null (fails if the wake path does not ask `gone()`). T16 after a detached attempt was aborted, the
 next ordinary attempt's result goes through `core.result` (fails if `_det` is a flag that is not cleared). T17
 attempt A aborted while its probe is pending, attempt B started and detached, then A's `_run` ends: B is still
 detached, a waiter on B is still waiting, no exception (fails with one shared completer or an unconditional clear).
-T18 a waiter on the round's own attempt that ends with a body: when `acquire` goes on, the state is recorded and
-the link parked (fails if `ended` is completed only after the tail pump has started the next attempt and that
-attempt is what `acquire` aborts — asserted by: exactly one connect, none aborted).
 
 OpSession: O1 null lease with `gone()` → `OpEnd.gone`; O2 lease with `gone()` → released, `OpEnd.gone`, no login;
 O3 null lease, page alive → busy with a non-empty name; O4 `OpenSession.open` passes no `forNode`, `once` passes
@@ -370,40 +380,54 @@ its id and its `gone`.
 Widgets: W1 Wi-Fi page with a memo: the name with 「（確認中…）」 at once, then the read value; W2 failed read:
 「上次讀到」; W3 country shown from the memo, menu disabled until the page's read; W4 `put` after a read and after a
 confirmed set; set with a failed login → entry kept; set the page refuses (`notSent`) → entry kept; set whose
-answer is lost → entry gone; W5 with a memo and a failed read the name field is empty and sending is disabled;
+answer is lost → entry gone; W5 with a memo and a failed read the name field is empty, so 「送出」 is disabled [mutation: prefill the field
+from the memo];
 with a memo and a read that returns another name the field has the read name; W6 no memo, or an empty value in it:
 「讀取中…」 as today.
 
 Verdict / home: R1 Rust: joined + `k2 = 2` → `warning` none, `note` set, text equal to the old constant; with the
-power bit → `warning` power, `note` none. `tests/statuspage.rs:305–307, 390` change (they pin the old place of the
+power bit → `warning` power, `note` none. `tests/statuspage.rs:303–305, 390` change (they pin the old place of the
 text); the bridge test at `owner.rs:2792` asserts `note` beside `warning`. Every `StatusView(` in the Dart tests
-gets `note`. H1 one node with a note: rule 14, `Look.ok`, 「可以使用」, the reminder line, `seeNode` with that
-node's id, and neither 「一切正常」 nor 「現在沒有需要你處理的事」. H2 two nodes with notes: the count line,
-`showList`. H3 a power warning: rule 12 as today. H4 `nodeRowHint`: set only for a fresh, joined node with a note;
+gets `note`. H1 one node with a note: rule 14, `Look.ok`, 「可以使用」, the reminder line, `HomeAction.none`, no button in
+the hero, and neither 「一切正常」 nor 「現在沒有需要你處理的事」. H2 two nodes with notes: the count line, no
+action. H3 a power warning: rule 12 as today (regression pin). H4 `nodeRowHint`: set only for a fresh, joined node with a note;
 a stale node and a stored view after a restart (not fresh) → empty. H5 node page, leave page and status fields
-print the note where the warning was. H6 no note: rule 14 text as today. H7 layout: home with the variant and the
+print the note where the warning was. H6 no note: rule 14 text as today (regression pin). H7 layout: home with the variant and the
 row hint at text scale 1.0 / 1.3 / 2.0 and a 32-character node name: no overflow (the existing layout test's
-method); in `home_steady_test` the variant's 「我的節點」 is at the y of 「還沒讀到」 (the state that already has a
-button).
+method); in `home_steady_test` the variant with a short name is a fourth state: its 「我的節點」 is at the y of
+「一切正常」 at scale 1.0 and 1.3 [mutation: give the variant `HomeAction.seeNode` → the y differs]. The steady
+height is claimed for a short name only.
 
 Whole suite, `dart analyze`, `cargo test` (statuspage, bridge), a mutation for each changed condition.
 
 Device (S20, 04 / 02, no node change; taps: node card, sub-page entry, Back). For every scripted run the PR lists
 **every** tap with its time and which attempt was in flight, counted or not.
-- D1 `a2step1.sh`, at least 6 launches. Counted: taps where the attempt in flight is to 04. Pass: in each, no
-  second `connect()` to 04 between the tap and the body, one `attempt …7d2c … result=body`, and the next round logs
-  `kept …7d2c`. At least 2 counted taps, else repeat. Negative control: §0 row 1 (3 of 3 cancelled).
-- D2 `a2repro2.sh`. Counted the same way at the 「手機 Wi-Fi」 tap. Pass: `loginFor …7d2c -> ok (kept link)`, one
-  `connect()`, logged in no later than 1 s after the attempt's end. At least 2 counted. Negative control: §0 row 2
-  (3 of 3 logged in from the start, no `kept link` line).
-- D3 home with 02 joined-critical (it is now): screenshot of home (green, 「可以使用」, the reminder line, 02's row
-  hint) and of 02's page (the full text). Negative control: `Desktop\Batman\a1\a1-home-c1.png` (main: the yellow
-  hero with the sentence).
-- D4 「手機 Wi-Fi」 opened twice: time to logged in from logcat only (secure page: no screenshot, no dump).
-- D5 mid-connect: 「手機 Wi-Fi」 → Back → 「國家」 within 1 s. Counted as D2, at least 2. Pass: 「國家」 reads; its dump
-  has no 「另一個操作還在進行」; the log has one lease for 「國家」 and none for 「手機 Wi-Fi」. This is new code with no
-  failing state on main to flip: the negative controls are T15 / T15c with their mutations; the same script is run
-  on the main APK first and what main shows is reported as the baseline.
+Rules for every device run: an attempt is tied to 04 by its `attempt …×…7d2c` line (the device name in a
+`connect()` line is masked and rotates). A `uiautomator dump` is made only right after the script's `secure` check
+(a screencap whose size tells a blank secure page; the file is deleted on the phone at once and never pulled) says
+"not secure"; when it says secure, or the screencap fails, the dump is skipped and that try is "not shown", never a
+pass. No dump is made of 「手機 Wi-Fi」.
+- D1 `a2step1.sh`, at least 6 launches. Counted: taps where the attempt in flight is to 04. Pass, in each: between
+  the tap and the page's round end there is no second `connect()` followed by an `attempt …7d2c` line; the round the
+  tap started (`round N full […7d2c]`) logs `kept …7d2c -> body` and ends with 04 read. At least 2 counted taps, else
+  repeat. Negative control: §0 row 1 (3 of 3 cancelled, each with a second connect).
+- D2 `a2repro2.sh`. Counted the same way at the 「手機 Wi-Fi」 tap. Pass: `loginFor …7d2c -> ok (kept link)`, no
+  second connect to 04, logged in no later than 1 s after the attempt's end; the tap-to-logged-in times are
+  reported against 1.1's expected range. At least 2 counted. Negative control: §0 row 2 (3 of 3 logged in from the
+  start, no `kept link` line).
+- D3 home with 02 joined-critical. First read 02's state (its row on home has a read time of this launch; its node
+  page shows the sentence); if 02 is not in that state or not fresh, D3 is "not run". Then: screenshot of home
+  (green, 「可以使用」, the reminder line, no button, 02's row hint) and of 02's page (the full text). Negative
+  control: `Desktop\Batman\a1\a1-home-c1.png` (main: the yellow hero with the sentence).
+- D4 dropped: D2 measures the same step, and what 「手機 Wi-Fi」 shows the second time cannot be seen remotely
+  (on-site list).
+- D5 mid-connect: 「手機 Wi-Fi」 → Back → 「國家」 0.6–1.5 s after Back (after the route's transition, so the closed
+  page's `gone()` is true). Counted: the attempt to 04 is still in flight at the 「國家」 tap; at least 2. Pass:
+  「國家」 shows its value; its dump has no 「另一個操作還在進行」; between the 「手機 Wi-Fi」 tap and that value the log
+  has exactly one `round N cancelled` (a gone waiter does not cancel the round, T15c: two would mean the closed
+  page took the lease) and exactly one `loginFor …7d2c` block, ending `ok (kept link)` when the attempt ended with a
+  body. This is new code with no failing state on main to flip: the negative controls are T15 / T15c with their
+  mutations; the same script is run on the main APK first and the same counts are reported as the baseline.
 - D6 mid-connect: 「手機 Wi-Fi」 → app to the background 8 s → back. Pass, from logcat (secure page): within 40 s of
   the return a round for 04 ends (`result=body` or a failure line) and the page's `loginFor` has ended; a tap on
   Back then shows the node page. Baseline on main reported the same way; negative control T7b.
@@ -411,7 +435,7 @@ Device (S20, 04 / 02, no node change; taps: node card, sub-page entry, Back). Fo
   8 s, launch, 04's card, 「國家」 at once, `uiautomator dump` while the read runs. Pass: the dump has
   「<國家>（確認中…）」 and no 「讀取中…」; a later dump has the read value. Negative control: the same steps on the
   main APK before the new one is installed: 「讀取中…」. If no dump lands inside the read in 3 tries, reported as
-  not shown on the device (W3 only). Never done on 「手機 Wi-Fi」.
+  not shown on the device (W3 only).
 - On-site list (cannot be done remotely or by a secure-page dump): what 「手機 Wi-Fi」 shows the second time (W1–W6
   cover it); a node out of range while its page opens; Bluetooth off during the wait.
 
@@ -481,3 +505,20 @@ criteria and things v3 left unstated.
 | B-m9, B-m10, B-m11: `owner.rs:2792`, `tests/statuspage.rs:307`, `329-honest-errors.md:14`, restart | 1.3, R1, H4 |
 | A-m12, B-m3: cites | corrected (`:1008`, `statuspage.rs:333`, `owner.dart:616 / 630`, `:573–574`, `settings_pages.dart:326`, `core.dart:603–626`) |
 | B-m12: cost of an address that answers without being the node | 1.1 cost, §6 |
+
+Round 4 (r4-A: 0 MAJOR; r4-B: 2 MAJOR) → v5. 1.1 and 1.2 are as in v4. 1.3 loses the variant's button.
+
+| Finding | Change |
+|---|---|
+| B-M1: "the steady hero keeps the button's place" is false (`extra` adds height; rule 10 draws no button) | the variant has no button (`HomeAction.none`); the row hint is the tap target; H1, H2, H7, D3 follow; steady for a short name only (B-m10) |
+| B-M2: D5 named a log line that does not exist | D5 stated in `round N cancelled` and `loginFor` lines; baseline on main with the same counts |
+| A-m1: T18's negative control cannot fail | T18 removed; 1.1 says the order is not testable |
+| A-m2, B-m4: D1's "next round logs kept" is true on main | D1 pass = no second connect + `kept … -> body` in the page's own round; how a connect is tied to 04 |
+| A-m3: D5 too fast for `gone()` | 0.6–1.5 s after Back |
+| A-m4, B-m1: the 8 s timer and a reading attempt; expected gain; §0 slips | 1.1 cost; §0 |
+| A-m5, A-m7, B-m9: T14c defensive; O2 for all `once` callers; the net pages' way back | §4, §7 |
+| A-m6, B-m2: cites | corrected (`tests/statuspage.rs:303–305`, `op_session.dart:69`, `core.dart:216–218, 474`, `settings_pages.dart:25`) |
+| B-m3: dump guard fail-open | rule above D1: dump only after a "not secure" check; skipped = not shown |
+| B-m5, B-m6: D4 without criterion; D3 precondition | D4 dropped; D3 reads 02 first |
+| B-m7: mutations missing | T7–T10, T13, W5 named; T11, H3, H6 marked regression pins |
+| B-m8: where 「上次讀到」 is printed; `_countryName`; why sending is disabled | 1.2 |
