@@ -50,9 +50,3 @@ prov-fw-boot-254	^FAIL [^ ]+: prov-fw-boot-254: pre-S5 image [^ ]+: batman-slot 
 # a version on scripts/dv/pre-team-status-versions.txt without the feature marker and without keys 8 / 9; every other
 # SD6 FAIL (no key 9, a stale or missing peer, a bad key 9, a large answer, a lost marker) is NEW. Expires 2026-12-15.
 prov-status-diag-254	^FAIL prov-status-diag-254: SD6: image without whole-team status \(1\.5\.14-wsl\.[0-9]+\+[0-9a-f]+\.fw[0-9a-f]+(\.bench)?\)$	254	expires=2027-01-15
-# #329 advertising interval (docs/design/329-adv-interval.md §8): the node prints these fixed lines only when its
-# /etc/bluetooth/main.conf has no MinAdvertisementInterval key (an image from before the change). Every other
-# FAIL of the interval checks (wrong value with the key, no capture, unreadable, refused) is NEW. Expires 2026-12-20.
-prov-boot-provd-254	^FAIL prov-boot-provd-254: adv-data: adv interval 1280\.000 / 1280\.000 msec \(want 100\.000 / 150\.000\): image without the interval \[[^]]+\]$	329	expires=2026-12-20
-prov-dep-restart-254	^FAIL prov-dep-restart-254: dep-(bluetoothd|bluetoothd-kill|dbus|power): adv interval 1280\.000 / 1280\.000 msec \(want 100\.000 / 150\.000\): image without the interval \[[^]]+\]$	329	expires=2026-12-20
-bt-uart-rebind-305	^FAIL rebind [0-9]+: adv sysconfig 0008 / 0008 \(want a000 / f000\): image without the interval \[[^]]+\]$	329	expires=2026-12-20

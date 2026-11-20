@@ -1,0 +1,137 @@
+Bluetooth monitor ver 5.72
+btmon[13303]: = Note: Linux version 6.6.138 (aar..   2025-08-14 23:04:26.390649
+btmon[13303]: = Note: Bluetooth subsystem versio..   2025-08-14 23:04:26.390655
+= New Index: 88:A2:9E:.. (Primary,UART,hci0)  [hci0] 2025-08-14 23:04:26.390657
+= Open Index: 88:A2:9E:B5:6C:8B               [hci0] 2025-08-14 23:04:26.390658
+= Index Info: 88:A.. (Cypress Semiconductor)  [hci0] 2025-08-14 23:04:26.390658
+bluetoothd[202..]: @ MGMT Open (privileged) version 1.22              {0x0001} 2025-08-14 23:04:26.390661
+bluetoothd[20231]..@ MGMT Command (0x003f) plen 1              {0x0001} [hci0] 2025-08-14 23:04:28.390885
+        Instance: 1
+< HCI Command: LE... (0x08|0x000a) plen 1  #1 [hci0] 2025-08-14 23:04:28.390948
+        Advertising: Disabled (0x00)
+> HCI Event: Command Comp.. (0x0e) plen 4  #2 [hci0] 2025-08-14 23:04:28.393395
+      LE Set Advertise Enable (0x08|0x000a) ncmd 1
+        Status: Success (0x00)
+@ MGMT Event: Com.. (0x0001) plen 4  {0x0001} [hci0] 2025-08-14 23:04:28.393454
+      Remove Advertising (0x003f) plen 1
+        Status: Success (0x00)
+        Instance: 1
+batman-provhel..3479]: @ MGMT Open (privileged) version 1.22                  {0x0002} 2025-08-14 23:04:28.493929
+batman-provhelp[3..9]: @ MGMT Command (0x003d) plen 0                  {0x0002} [hci0] 2025-08-14 23:04:28.493947
+@ MGMT Event: Co.. (0x0001) plen 11  {0x0002} [hci0] 2025-08-14 23:04:28.493953
+      Read Advertising Features (0x003d) plen 8
+        Status: Success (0x00)
+        Flags: 0x0001f07f
+          Switch into Connectable mode
+          Advertise as Discoverable
+          Advertise as Limited Discoverable
+          Add Flags field to Advertising Data
+          Add TX Power field to Advertising Data
+          Add Appearance field to Scan Response
+          Add Local Name in Scan Response
+          Use provided duration parameter
+          Use provided timeout parameter
+          Use provided interval parameters
+          Use provided tx power parameter
+          Contain Scan Response Data
+        Advertising data length: 31
+        Scan response length: 31
+        Max instances: 5
+        Instances: 0
+batman-provhelp[3479]: @ MGMT Close: ba..   {0x0002} 2025-08-14 23:04:28.493970
+batman-provhel..3479]: @ MGMT Open (privileged) version 1.22                  {0x0002} 2025-08-14 23:04:28.494006
+batman-provhelp[3..9]: @ MGMT Command (0x0004) plen 0                  {0x0002} [hci0] 2025-08-14 23:04:28.494010
+@ MGMT Event: C.. (0x0001) plen 283  {0x0002} [hci0] 2025-08-14 23:04:28.494014
+      Read Controller Information (0x0004) plen 280
+        Status: Success (0x00)
+        Address: 88:A2:9E:B5:6C:8B (OUI 88-A2-9E)
+        Version: Bluetooth 5.0 (0x09)
+        Manufacturer: Cypress Semiconductor (305)
+        Supported settings: 0x0001feff
+          Powered
+          Connectable
+          Fast Connectable
+          Discoverable
+          Bondable
+          Link Security
+          Secure Simple Pairing
+          BR/EDR
+          Low Energy
+          Advertising
+          Secure Connections
+          Debug Keys
+          Privacy
+          Controller Configuration
+          Static Address
+          PHY Configuration
+        Current settings: 0x00002a01
+          Powered
+          Low Energy
+          Secure Connections
+          Privacy
+        Class: 0x000000
+          Major class: Miscellaneous
+          Minor class: 0x00
+        Name: Batman
+        Short name: 
+batman-provhelp[3479]: @ MGMT Close: ba..   {0x0002} 2025-08-14 23:04:28.494023
+bluetoothd[20231.. @ MGMT Command (0x0054) plen 18               {0x0001} [hci0] 2025-08-14 23:04:28.999189
+        Instance: 1
+        Flags: 0x00000001
+          Switch into Connectable mode
+        Duration: 0
+        Timeout: 0
+        Min advertising interval: 0.000 msec (0x0000)
+        Max advertising interval: 0.000 msec (0x0000)
+        TX power: 0 dbm (0x00)
+@ MGMT Event: Com.. (0x0001) plen 7  {0x0001} [hci0] 2025-08-14 23:04:28.999206
+      Add Extended Advertising Parameters (0x0054) plen 4
+        Status: Success (0x00)
+        Instance: 1
+        TX power: 127 dbm (0x7f)
+        Available adv data len: 31
+        Available scan rsp data len: 31
+bluetoothd[20231.. @ MGMT Command (0x0055) plen 42               {0x0001} [hci0] 2025-08-14 23:04:28.999278
+        Instance: 1
+        Advertising data length: 31
+        128-bit Service UUIDs (complete): 1 entry
+          Vendor specific
+        Company: internal use (65535)
+          Data: 82c13d0adc1d
+        Flags: 0x04
+          BR/EDR Not Supported
+        Scan response length: 0
+< HCI Command: LE.. (0x08|0x0008) plen 32  #3 [hci0] 2025-08-14 23:04:28.999319
+        Length: 31
+        128-bit Service UUIDs (complete): 1 entry
+          Vendor specific
+        Company: internal use (65535)
+          Data: 82c13d0adc1d
+        Flags: 0x04
+          BR/EDR Not Supported
+> HCI Event: Command Comp.. (0x0e) plen 4  #4 [hci0] 2025-08-14 23:04:29.001452
+      LE Set Advertising Data (0x08|0x0008) ncmd 1
+        Status: Success (0x00)
+< HCI Command: LE.. (0x08|0x0006) plen 15  #5 [hci0] 2025-08-14 23:04:29.001492
+        Min advertising interval: 100.000 msec (0x00a0)
+        Max advertising interval: 150.000 msec (0x00f0)
+        Type: Connectable undirected - ADV_IND (0x00)
+        Own address type: Random (0x01)
+        Direct address type: Public (0x00)
+        Direct address: 00:00:00:00:00:00 (OUI 00-00-00)
+        Channel map: 37, 38, 39 (0x07)
+        Filter policy: Allow Scan Request from Any, Allow Connect Request from Any (0x00)
+> HCI Event: Command Comp.. (0x0e) plen 4  #6 [hci0] 2025-08-14 23:04:29.002903
+      LE Set Advertising Parameters (0x08|0x0006) ncmd 1
+        Status: Success (0x00)
+< HCI Command: LE... (0x08|0x000a) plen 1  #7 [hci0] 2025-08-14 23:04:29.002984
+        Advertising: Enabled (0x01)
+> HCI Event: Command Comp.. (0x0e) plen 4  #8 [hci0] 2025-08-14 23:04:29.003796
+      LE Set Advertise Enable (0x08|0x000a) ncmd 1
+        Status: Success (0x00)
+@ MGMT Event: Com.. (0x0001) plen 4  {0x0001} [hci0] 2025-08-14 23:04:29.003813
+      Add Extended Advertising Data (0x0055) plen 1
+        Status: Success (0x00)
+        Instance: 1
+batman-provhel..3479]: @ MGMT Open (privileged) version 1.22                  {0x0002} 2025-08-14 23:04:32.495009
+batman-provhelp[3..9]: @ MGMT Command (0x003d) plen 0                  {0x0002} [hci0] 2025-08-14 23:04:32.495026
