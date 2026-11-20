@@ -1,6 +1,6 @@
 # #329 A4 — the node advertises every 100–150 ms instead of every 1.28 s
 
-Status: v4 (reviews `329-reviews/review-advint-r1-{A,B}.md`, `-r2-{A,B}.md`, `-r3-{A,B}.md` answered; changes
+Status: **v4.1 FROZEN** (round 4: A APPROVE, B APPROVE-WITH-CHANGES, 0 BLOCKER / 0 MAJOR; their MINORs are §11). v4 (reviews `329-reviews/review-advint-r1-{A,B}.md`, `-r2-{A,B}.md`, `-r3-{A,B}.md` answered; changes
 listed in §10). One change:
 two keys in the image's `/etc/bluetooth/main.conf` (firmware repo, `package/batman/batman-ble/files/main.conf`).
 No app, provd, helper or protocol change. Harness judges in a separate PR, first (#290).
@@ -127,7 +127,7 @@ present in `main.conf`** — which after this change includes the interval.
 | First boot of a new image (flash or sysupgrade; both reboot) | bluetoothd starts, sends the keys, provd registers: 100–150 ms from the first advertisement | T1a in `prov-boot-provd-254` (its capture starts by restarting provd, not at boot; the boot order itself is ⚠️ source only: provd can register only after bluetoothd has registered the adapter object, and `load_defaults` runs inside that registration) |
 | Restart of bluetoothd (clean, killed, D-Bus restart) | provd re-registers when BlueZ re-appears (unchanged); the kernel value is still there, and `load_defaults` writes it again | T1a in `prov-dep-restart-254` (arms `dep-bluetoothd`, `dep-bluetoothd-kill`, `dep-dbus`). This proves the advertisement after the restart is at 100–150 ms; it cannot prove the re-send (the value survives in `hdev`) — the row after next does |
 | Adapter power off / on | `hdev` and its value stay; provd registers again when the adapter is powered | T1a in arm `dep-power` (same suite; its capture holds the registration after power on) |
-| hci0 re-appearing (UART re-attach, #305) | new `hdev` starts at 0x0800 (unbind frees it, `drivers/bluetooth/hci_serdev.c:383`; bind allocates a new one, `:329` → `hci_core.c:2470`); bluetoothd takes the adapter and sends the keys | **T1b** in `bt-uart-rebind-305` (10 unbind/bind): the kernel value is read back after each rebind. That provd's next advertisement then uses it is ⚠️ source only (`adapter.c:9383`: the keys are queued inside the adapter's registration, before provd can see the adapter object; mgmt commands go out in order) — the suite has no btmon |
+| hci0 re-appearing (UART re-attach, #305) | new `hdev` starts at 0x0800 (unbind frees it, `drivers/bluetooth/hci_serdev.c:395-402`; bind allocates a new one, `:329` → `hci_core.c:2470`); bluetoothd takes the adapter and sends the keys | **T1b** in `bt-uart-rebind-305` (10 unbind/bind): the kernel value is read back after each rebind. That provd's next advertisement then uses it is ⚠️ source only (`adapter.c:9383`: the keys are queued inside the adapter's registration, before provd can see the adapter object; mgmt commands go out in order) — the suite has no btmon |
 | provd restart, a connection ending, the 900 s rotation | the kernel value is untouched; the new registration reads it | T1a (`adv-data` arm restarts provd). Rotation: same code path as any registration; the `rpa` unit's capture filter drops the parameters command and is not changed |
 | Upgrade wsl.32 → new image | reboot → new file → new value | T1a / T1b after the OTA |
 | Rollback / downgrade to an image without the keys | the slot switch is a reboot: the kernel starts at 0x0800 and the old file sends nothing → 1.28 s, exactly today. Nothing is stored outside RAM and the image. | ⚠️ source only for the switch itself; wsl.32 giving 1280 ms in T1a / T1b shows what an image without the keys does |
@@ -242,7 +242,7 @@ T2 and T3 therefore start by printing this grep's result on both nodes and need 
     0008 (want a000 / f000): image without the interval`. Any other complete value → FAIL `rebind i: adv
     sysconfig X / Y but main.conf has no key` (somebody else wrote the value; NEW).
   - File with the key: ends at the first complete try with `a000` / `f000` → PASS. A complete try that still says
-    `0008` does **not** end the tries: bluetoothd powers the adapter (`adapter.c:9379`) before it sends the keys
+    `0008` does **not** end the tries: bluetoothd powers the adapter (`adapter.c:9380 `load_drivers` → `plugins/policy.c:834-835``) before it sends the keys
     (`:9383`), and the suite goes on as soon as the adapter is powered. After 5 tries: FAIL `rebind i: adv
     sysconfig X / Y after 5 tries (want a000 / f000)`. NEW.
   - No complete try in 5 on either image: FAIL `rebind i: adv sysconfig unreadable`. NEW on any image
@@ -345,3 +345,29 @@ Wi-Fi throughput on the node's AP before / after (§6).
 | r3 B-6: who removes the known-failures entries | a later harness PR, not the pin PR |
 | r3 A-5, A-7, A-9 / B-7..B-10: citations, clean stop, debugfs, RX windows, AP band | §1, §2, §4, §5, §6 |
 | r3 A-8: T2 rules | ≥ 4.9 s counts only for failed attempts; minimum 95 attempts per node |
+
+## 11. Freeze notes (round-4 MINORs; binding for the implementation, they override §8 where they differ)
+
+- **No `0x08|0x0036` branch.** T1a reads `0x08|0x0006` blocks only; there is no real extended capture to build it
+  from, and "no `0x0006` block = FAIL" already fails safe if a kernel ever switches. The hand-written fixture is
+  dropped.
+- **T1a Command Complete.** For each block: the next `> HCI Event: Command Complete` whose opcode is
+  `0x08|0x0006`. None before the capture ends = FAIL. With several blocks the line reports the first one that
+  fails, and N counts all of them. A file without the key but blocks at 100 / 150 = FAIL `… but main.conf has no
+  key`.
+- **Where T1a is called.** In the three `dep-*` restart arms the capture exists only when the arm was given the
+  btmon path; the call sits inside that branch, before `rm -f "$BMF"`. The harness PR shows that the suites pass
+  that path (so the check cannot be skipped in the regular run).
+- **One key test.** A single helper with the anchored `grep -Eq` of §8 is used by both judges.
+- **T1b.** PASS line: `rebind i: adv sysconfig a000 / f000`. A try that has both `Value` lines is complete even
+  if bluetoothctl dies afterwards. Tries are fixed at 5 (worst case about 350–450 s over 10 rebinds, inside the
+  host's 720 s limit; `dv/bt-uart-305.sh:82`). The judge takes its inputs (main.conf path, readout text) as
+  arguments so the offline tests need no node.
+- **Old-image lines carry the image version** (`… : image without the interval [<version>]`), so a KNOWN on a node
+  that should have been upgraded is visible to whoever reads the output.
+- **Harness PR reports** the `DET … unreadable=` totals from both nodes (the rate for this command is not known:
+  E39's figures are for other mgmt commands), and fixes the stale comment at `scripts/dv/prov-provd-254.sh:44`.
+- **Offline tests add**: a capture with two blocks (one wrong → FAIL naming it); the fixed old-image lines run
+  through `kf_classify` with the new entries → known, the other FAIL lines → new.
+- **T2 outcomes.** #329 line 256 (connect time) is ticked by the median rule on both nodes. A failed rule leaves
+  its line open with the numbers. Fewer than 95 attempts on a node = the run is not valid and is repeated.
