@@ -141,15 +141,29 @@ as_case "key: unreadable, then 0008 to the end -> the value seen, not 'unreadabl
 o=$(lib 'pidof() { return 1; }; adv_sys_read() { echo CALLED; }; adv_sys_check "'"$T/key.conf"'" || no "rebind 3: $AS_MSG"; echo "tries=$AS_TRIES"')
 [ "$o" = "FAIL rebind 3: adv sysconfig: bluetoothd not running"$'\n'"tries=0" ] && ok "adv sysconfig: no bluetoothd -> FAIL without calling bluetoothctl" || bad "adv sysconfig no bluetoothd: [$o]"
 # the wiring: cmd_rebind judges it for a rebind that came up, and not in a --flip run
-grep -A2 'if \[ "\$RB_UP" = 1 \] && \[ \$flip = 0 \]; then' "$REPO/scripts/node/bt-uart-305.sh" | grep -q 'adv_sys_check && pass "rebind \$i: \$AS_MSG" || no "rebind \$i: \$AS_MSG"' && ok "adv sysconfig: cmd_rebind calls the judge (RB_UP = 1, not --flip)" || bad "adv sysconfig: cmd_rebind does not call adv_sys_check"
+grep -A2 'if \[ "\$RB_UP" = 1 \] && \[ \$flip = 0 \]; then' "$REPO/scripts/node/bt-uart-305.sh" | grep -qx '[[:space:]]*adv_sys_check && pass "rebind \$i: \$AS_MSG" || no "rebind \$i: \$AS_MSG"' && ok "adv sysconfig: cmd_rebind calls the judge (RB_UP = 1, not --flip)" || bad "adv sysconfig: cmd_rebind does not call adv_sys_check"
+grep -A3 'if \[ "\$RB_UP" = 1 \] && \[ \$flip = 0 \]; then' "$REPO/scripts/node/bt-uart-305.sh" | grep -qx '[[:space:]]*echo "DET rebind \$i: adv sysconfig tries=\$AS_TRIES unreadable=\$AS_UNR"' && ok "adv sysconfig: cmd_rebind prints the tries / unreadable counts" || bad "adv sysconfig: cmd_rebind lost its DET line"
+grep -qx "adv_sys_read() { lim 4 sh -c ': | bluetoothctl mgmt.read-sysconfig' 2>&1; }" "$REPO/scripts/node/ble-lib-254.sh" && ok "adv sysconfig: the readout runs under a 4 s limit" || bad "adv sysconfig: adv_sys_read lost its limit"
 # known-failures (#329): only the fixed old-image line is KNOWN
 . "$REPO/scripts/dv/known-failures.sh"; KFL=$REPO/scripts/validation-known-failures.txt
 kfc() { printf '%s\n' "$1" > "$T/kf.log"; KF_NO_GH=1 kf_classify bt-uart-rebind-305 "$T/kf.log" "$KFL" "${2:-2026-12-20}"; }
 c=$(kfc "$(for i in 1 2 10; do echo "${AS_OLD/rebind 3/rebind $i}"; done)"); case "$c" in "known #329"*) ok "known-failures: the old-image line of every rebind -> known #329" ;; *) bad "known-failures rebind: [$c]" ;; esac
+c=$(kfc "${AS_OLD%% \[*} []"); case "$c" in new*) ok "known-failures: the old-image line with no version -> NEW" ;; *) bad "known-failures empty version: [$c]" ;; esac
 c=$(kfc "$AS_OLD" 2026-12-21); case "$c" in "new (the entry for #329 2026-12-20 has expired"*) ok "known-failures: the day after the expiry -> NEW" ;; *) bad "known-failures expiry: [$c]" ;; esac
 for l in "adv sysconfig unreadable" "adv sysconfig 0008 / 0008 after 5 tries (want a000 / f000)" "adv sysconfig a000 / f000 but main.conf has no key" "adv sysconfig: bluetoothd not running"; do
 	c=$(kfc "FAIL rebind 3: $l"); case "$c" in new*) ok "known-failures: [$l] -> NEW" ;; *) bad "known-failures should be NEW: [$l] -> [$c]" ;; esac; done
 c=$(kfc "$AS_OLD"$'\n'"FAIL rebind 4: adv sysconfig unreadable"); case "$c" in "new (never-known"*) ok "known-failures: one unreadable rebind among old-image lines -> NEW" ;; *) bad "known-failures mixed: [$c]" ;; esac
+# a run that stopped short is never only known lines (review D MAJOR-1)
+det() { local i; for i in $(seq 1 "$1"); do echo "DET rebind $i: unbind=12ms unbind_writes=[0x03] bind_writes=[0xcf,0x03,0x8b,0xcf] probe_up=1 up_s=2 kmsg_err=0"; echo "${AS_OLD/rebind 3/rebind $i}"; echo "DET rebind $i: adv sysconfig tries=1 unreadable=0"; done; }
+o=$(bt305_rebind_done "$(det 10)" 10); [ $? = 0 ] && [ -z "$o" ] && ok "rebind done: 10 of 10 reported -> no extra line" || bad "rebind done, full run: [$o]"
+cut3=$(det 3); o=$(bt305_rebind_done "$cut3" 10); r=$?
+[ $r = 1 ] && [ "$o" = "FAIL rebind: the node command did not finish (3 of 10 rebinds reported)" ] && ok "rebind done: cut after 3 -> its own FAIL line" || bad "rebind done, cut run: rc=$r [$o]"
+c=$(kfc "$cut3"); case "$c" in "known #329"*) ok "known-failures: the cut run's node lines alone would be known (the control)" ;; *) bad "known-failures cut control: [$c]" ;; esac
+c=$(kfc "$cut3"$'\n'"$o"); case "$c" in new*) ok "known-failures: the cut run with its FAIL line -> NEW" ;; *) bad "known-failures cut run: [$c]" ;; esac
+o=$(bt305_rebind_done "$(det 2)"$'\n'"NOTE rebind 3: still down — the harness reboots this node" 10); [ $? = 0 ] && [ -z "$o" ] && ok "rebind done: the node script stopped itself (still down) -> no extra line" || bad "rebind done, still down: [$o]"
+o=$(bt305_rebind_done "FAIL pre-305 image: test not applicable to this kernel" 10); [ $? = 0 ] && [ -z "$o" ] && ok "rebind done: never started and said why -> no extra line" || bad "rebind done, gate: [$o]"
+o=$(bt305_rebind_done "" 10); [ $? = 1 ] && [ "$o" = "FAIL rebind: the node command did not finish (0 of 10 rebinds reported)" ] && ok "rebind done: no output at all -> FAIL" || bad "rebind done, empty: [$o]"
+grep -q 'bt305_rebind_done "\$o" 10 || rc=1' "$REPO/scripts/dv/bt-uart-305.sh" && ok "rebind done: chk_bt_uart_rebind_305 calls it" || bad "rebind done: chk_bt_uart_rebind_305 does not call bt305_rebind_done"
 
 echo "test-dv-bt-uart-305: $n checks, fails=$fails"
 [ "$fails" = 0 ]

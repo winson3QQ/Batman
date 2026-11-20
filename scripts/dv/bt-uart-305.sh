@@ -78,8 +78,19 @@ bt305_leased() {
 chk_bt_uart_flow_305() { local n rc=0 run; [ $# -gt 0 ] || { echo "FAIL no bcm2711 node to check"; return 1; }
 	for n in "$@"; do echo "== $n"; run=$(bt305_run_id); bt305_stage "$n" "$run" || { rc=1; continue; }
 		bt305_n "$n" "$run" 120 flow ${BT305_FLIP_ARG:-} || rc=1; bt305_drop "$n" "$run"; done; return $rc; }
-chk_bt_uart_rebind_305() { local n rc=0; [ $# -gt 0 ] || { echo "FAIL no bcm2711 node to check"; return 1; }
-	for n in "$@"; do echo "== $n"; bt305_leased "$n" 600 rebind 10 ${BT305_FLIP_ARG:-} || rc=1; done; return $rc; }
+# bt305_rebind_done <output> <k>: a run that stopped short (ssh cut, node rebooted) says so in a FAIL line of its own:
+# without it the FAIL lines left could all be known ones (#329). "still down" = the node script stopped itself and
+# said why; no rebind reported + a FAIL line = it never started and said why (gate, staging).
+bt305_rebind_done() {
+	local c; c=$(grep -c '^DET rebind [0-9]*: unbind=' <<< "$1")
+	grep -q "^DET rebind $2: unbind=" <<< "$1" && return 0
+	grep -q 'still down' <<< "$1" && return 0
+	[ "$c" = 0 ] && grep -q '^FAIL' <<< "$1" && return 0
+	echo "FAIL rebind: the node command did not finish ($c of $2 rebinds reported)"; return 1
+}
+chk_bt_uart_rebind_305() { local n o rc=0; [ $# -gt 0 ] || { echo "FAIL no bcm2711 node to check"; return 1; }
+	for n in "$@"; do echo "== $n"; o=$(bt305_leased "$n" 600 rebind 10 ${BT305_FLIP_ARG:-}) || rc=1; echo "$o"
+		bt305_rebind_done "$o" 10 || rc=1; done; return $rc; }
 bchk_bt_uart_load_305() { local n rc=0; [ $# -gt 0 ] || { echo "FAIL no bcm2711 node to load"; return 1; }
 	for n in "$@"; do echo "== $n"; bt305_leased "$n" "$((BT305_LOAD_SECS + 900))" load "$BT305_LOAD_SECS" ${BT305_FLIP_ARG:-} || rc=1; done; return $rc; }
 bchk_bt_uart_close_305() { local n=${1:?node} rc=0 run

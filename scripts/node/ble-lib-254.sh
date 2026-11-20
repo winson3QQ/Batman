@@ -397,7 +397,8 @@ adv_int_ver() { sed -n 's/^BATMAN_VERSION=//p' "${ADV_INT_BUILD:-/etc/batman-bui
 # Every HCI LE Set Advertising Parameters command (found by its opcode, 0x08|0x0006: btmon shortens the name) must say
 # 100 / 150 ms and ADV_IND (the kernel forces 100 / 150 ms on a non-connectable advertisement whatever is configured,
 # hci_sync.c:1908), and its Command Complete (found by the event code, 0x0e: with -T btmon shortens that name too) must say Success. Only lines of "< HCI Command" records are read: the
-# MGMT records print the same labels. No capture or no such command = FAIL (nothing was checked).
+# MGMT records print the same labels. No capture or no such command = FAIL (nothing was checked). The extended command
+# (0x08|0x0036) is not read: this controller is never sent it (docs/design/329-adv-interval.md §11).
 adv_int_check() {
 	local _k=0
 	[ -s "$1" ] || { echo "FAIL adv interval: no btmon capture to read"; return 1; }
