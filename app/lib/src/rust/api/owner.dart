@@ -629,6 +629,9 @@ class StatusView {
   /// the ⚠️ line
   final String warning;
 
+  /// 329-takeover.md §1.3: the node's note (joined but CRIT), never together with [warning]; "" = none
+  final String note;
+
   /// status key 1, -1 when unknown (the membership line: `status_membership_line`)
   final PlatformInt64 nodeState;
 
@@ -661,6 +664,7 @@ class StatusView {
     required this.sentence,
     required this.lagNote,
     required this.warning,
+    required this.note,
     required this.nodeState,
     required this.netId,
     required this.version,
@@ -679,6 +683,7 @@ class StatusView {
       sentence.hashCode ^
       lagNote.hashCode ^
       warning.hashCode ^
+      note.hashCode ^
       nodeState.hashCode ^
       netId.hashCode ^
       version.hashCode ^
@@ -699,6 +704,7 @@ class StatusView {
           sentence == other.sentence &&
           lagNote == other.lagNote &&
           warning == other.warning &&
+          note == other.note &&
           nodeState == other.nodeState &&
           netId == other.netId &&
           version == other.version &&

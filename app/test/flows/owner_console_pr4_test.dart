@@ -52,7 +52,7 @@ StatusView page(String sentence) => StatusView(
     row: 'r',
     sentence: sentence,
     lagNote: '',
-    warning: '',
+    warning: '', note: '',
     nodeState: 1,
     netId: '',
     version: '',

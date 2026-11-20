@@ -27,12 +27,12 @@
 
 // Section: imports
 
-use crate::api::replay::*;
-use crate::api::owner::*;
-use crate::api::claim::*;
-use crate::api::swupdate::*;
 use crate::api::member::*;
-use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;
+use crate::api::rekey::*;
+use crate::api::replay::*;
+use crate::api::swupdate::*;
+use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};
 
@@ -2319,6 +2319,7 @@ let mut var_row = <String>::sse_decode(deserializer);
 let mut var_sentence = <String>::sse_decode(deserializer);
 let mut var_lagNote = <String>::sse_decode(deserializer);
 let mut var_warning = <String>::sse_decode(deserializer);
+let mut var_note = <String>::sse_decode(deserializer);
 let mut var_nodeState = <i64>::sse_decode(deserializer);
 let mut var_netId = <String>::sse_decode(deserializer);
 let mut var_version = <String>::sse_decode(deserializer);
@@ -2328,7 +2329,7 @@ let mut var_rateNote = <String>::sse_decode(deserializer);
 let mut var_unfinished = <String>::sse_decode(deserializer);
 let mut var_unfinishedUnderVerdict = <bool>::sse_decode(deserializer);
 let mut var_canLeave = <bool>::sse_decode(deserializer);
-return crate::api::owner::StatusView{color: var_color, row: var_row, sentence: var_sentence, lag_note: var_lagNote, warning: var_warning, node_state: var_nodeState, net_id: var_netId, version: var_version, tech: var_tech, fresh: var_fresh, rate_note: var_rateNote, unfinished: var_unfinished, unfinished_under_verdict: var_unfinishedUnderVerdict, can_leave: var_canLeave};}
+return crate::api::owner::StatusView{color: var_color, row: var_row, sentence: var_sentence, lag_note: var_lagNote, warning: var_warning, note: var_note, node_state: var_nodeState, net_id: var_netId, version: var_version, tech: var_tech, fresh: var_fresh, rate_note: var_rateNote, unfinished: var_unfinished, unfinished_under_verdict: var_unfinishedUnderVerdict, can_leave: var_canLeave};}
                 }
                 
                 impl SseDecode for crate::api::claim::StepKind {
@@ -3248,6 +3249,7 @@ self.row.into_into_dart().into_dart(),
 self.sentence.into_into_dart().into_dart(),
 self.lag_note.into_into_dart().into_dart(),
 self.warning.into_into_dart().into_dart(),
+self.note.into_into_dart().into_dart(),
 self.node_state.into_into_dart().into_dart(),
 self.net_id.into_into_dart().into_dart(),
 self.version.into_into_dart().into_dart(),
@@ -3998,6 +4000,7 @@ crate::api::replay::ReplayNext::Recovered => { 5 }
 <String>::sse_encode(self.sentence, serializer);
 <String>::sse_encode(self.lag_note, serializer);
 <String>::sse_encode(self.warning, serializer);
+<String>::sse_encode(self.note, serializer);
 <i64>::sse_encode(self.node_state, serializer);
 <String>::sse_encode(self.net_id, serializer);
 <String>::sse_encode(self.version, serializer);
@@ -4154,12 +4157,12 @@ crate::api::rekey::UpdateState::AlreadyImported => { 2 }
 
 // Section: imports
 
-use crate::api::replay::*;
-use crate::api::owner::*;
-use crate::api::claim::*;
-use crate::api::swupdate::*;
 use crate::api::member::*;
-use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;
+use crate::api::rekey::*;
+use crate::api::replay::*;
+use crate::api::swupdate::*;
+use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
 
@@ -4266,12 +4269,12 @@ flutter_rust_bridge::frb_generated_boilerplate_io!();
 
 // Section: imports
 
-use crate::api::replay::*;
-use crate::api::owner::*;
-use crate::api::claim::*;
-use crate::api::swupdate::*;
 use crate::api::member::*;
-use crate::api::rekey::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
+use crate::api::owner::*;
+use crate::api::rekey::*;
+use crate::api::replay::*;
+use crate::api::swupdate::*;
+use crate::api::claim::*;use flutter_rust_bridge::{Handler, IntoIntoDart};
 use flutter_rust_bridge::for_generated::{Lockable, transform_result_dco, Lifetimeable};
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, WriteBytesExt, ReadBytesExt};use super::*;
                 use flutter_rust_bridge::for_generated::wasm_bindgen;

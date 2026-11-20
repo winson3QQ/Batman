@@ -39,7 +39,7 @@ StatusView view(String row, String color) => StatusView(
     row: row,
     sentence: '',
     lagNote: '',
-    warning: '',
+    warning: '', note: '',
     nodeState: 2,
     netId: '',
     version: '',

@@ -412,7 +412,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
             for (final n in infos)
               Builder(builder: (_) {
                 final (look, line, meta) = nodeRowWords(n, firstRounds: a.link.core.firstRounds(n.id));
-                return NodeRow(look: look, name: n.name, line: line, meta: meta, onTap: () => _open(n.id));
+                return NodeRow(look: look, name: n.name, line: line, meta: meta, hint: nodeRowHint(n), onTap: () => _open(n.id));
               }),
           ]),
         ],

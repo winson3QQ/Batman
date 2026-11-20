@@ -97,7 +97,7 @@ void main() {
     // D6 (10.5): version, flavor, the key abilities with the software-only warning, each node's technical lines
     '10.5_diagnostics': P6((a, f, ui) {
       a.link.core.states[id]!.extra = StatusView(
-          color: 'green', row: '3', sentence: 'x', lagNote: '', warning: '', nodeState: 2, netId: '', version: '',
+          color: 'green', row: '3', sentence: 'x', lagNote: '', warning: '', note: '', nodeState: 2, netId: '', version: '',
           tech: const ['軟體版本 1.4.12', 'image openmanet-24.10 bcm2711', 'mesh bm-0123456789ab', '回覆\u001e代碼 7\u001f'],
           fresh: true, rateNote: '', unfinished: '', unfinishedUnderVerdict: false, canLeave: false);
       return DiagPage(app: a, keys: soft());

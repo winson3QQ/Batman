@@ -11,7 +11,7 @@ touched (no file, flag, record, link rule or node resource), so §1–3 of the r
 
 | # | Item (#329 line) | Reproduced | Evidence |
 |---|---|---|---|
-| F1 | 229: home says 「02：節點回報異常（可能是手機 Wi-Fi 還沒設定）— 設好仍然如此請找維修人員」 while 02's row is green 「已連上隊伍網路」 | ✅ device | screenshot `a1-home1.png` 10:32; on 02 `halow-status`: `HEALTH [CRIT] NOT WORKING — on-air blocked by keyguard — set the mesh/AP key`, `wireless.default_radio0.disabled='1'`, join `JOINED … plinks=1 batman=1`, `reason_code:1`. So the only cause here is the phone Wi-Fi (AP) key not set. |
+| F1 | 229: home says 「02：節點回報異常（可能是手機 Wi-Fi 還沒設定）— 設好仍然如此請找維修人員」 while 02's row is green 「已連上隊伍網路」 | ✅ device | screenshot `a1-home1.png` 10:32; on 02 `halow-status`: `HEALTH [CRIT] NOT WORKING — on-air blocked by keyguard — set the mesh/AP key`, `wireless.default_radio0.disabled='1'`, join `JOINED … plinks=1 batman=1`, `reason_code:1`. So the only cause here is the phone Wi-Fi (AP) key not set. | Since 329-takeover.md §1.3 this sentence is the node's note: home shows only the row's 「有一則提醒」 and the hero's reminder line; the node page shows the sentence.
 | F2 | same: status cannot tell this cause from another CRIT | ✅ source | node sends key 5 (reason code) only when not JOINED (`feed/batman-prov/src/node/status.go:201-207`); key 2 is the level only. `statuspage.rs:314-336` therefore guesses. |
 | F3 | 233: the status area changes height after the read; the rows below move | ✅ device | `a1-wake1.png` (before the read): 「我的節點」 at y≈735, 「新增節點」 at y≈1490; `a1-home1.png` (after): y≈1070 and y≈1815 (900-px-wide image). `StatusHero` (`widgets.dart:94-141`) has no minimum height; time row and button appear after the read. |
 | F4 | 232: a login that connected but got no answer says 「60 秒內沒有找到這台節點」 | ⚠️ source + old device log (not re-triggered today: needs a silent node = a node action) | `_lfAttempt` returns `Res.noResponse` for link-not-up, no msg2, refused, exception (`node_link.dart:546-589`); `LoginFor.tick` ends everything as `notFound` (`core.dart:914-919`); `loginLine` prints one text (`net_run.dart:50-56`). Device log in #329 line 232: `noResponse` with `connected=…ms`. A unit test on the rig reproduces it (to be written first, as the negative control). |
@@ -155,7 +155,7 @@ Guards against counting too much (pass today; each has a mutation that makes it 
 The whole suite is run and reported in the PR (the home size matrices in `layout_test` / `retest_p_layout_test`
 meet C4).
 
-Device (S20, `install -r`): C1 text on home (02 is in the F1 state). C4: home cannot show 「一切正常」 while 02 is in
+Device (S20, `install -r`): C1 text on home (02 is in the F1 state). C4: home cannot show 「一切正常」 while 02 is in (Superseded by 329-takeover.md §1.3: home shows 「可以使用」 with a reminder while 02 is in the F1 state.)
 the F1 state → unit test only, device check on the on-site list. C2 / C3 / C5 are not triggered on the device (a
 silent node, an OTA, sending SSH keys): unit tests only.
 

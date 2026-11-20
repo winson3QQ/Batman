@@ -5437,23 +5437,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   StatusView dco_decode_status_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 14)
-      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    if (arr.length != 15)
+      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
     return StatusView(
       color: dco_decode_String(arr[0]),
       row: dco_decode_String(arr[1]),
       sentence: dco_decode_String(arr[2]),
       lagNote: dco_decode_String(arr[3]),
       warning: dco_decode_String(arr[4]),
-      nodeState: dco_decode_i_64(arr[5]),
-      netId: dco_decode_String(arr[6]),
-      version: dco_decode_String(arr[7]),
-      tech: dco_decode_list_String(arr[8]),
-      fresh: dco_decode_bool(arr[9]),
-      rateNote: dco_decode_String(arr[10]),
-      unfinished: dco_decode_String(arr[11]),
-      unfinishedUnderVerdict: dco_decode_bool(arr[12]),
-      canLeave: dco_decode_bool(arr[13]),
+      note: dco_decode_String(arr[5]),
+      nodeState: dco_decode_i_64(arr[6]),
+      netId: dco_decode_String(arr[7]),
+      version: dco_decode_String(arr[8]),
+      tech: dco_decode_list_String(arr[9]),
+      fresh: dco_decode_bool(arr[10]),
+      rateNote: dco_decode_String(arr[11]),
+      unfinished: dco_decode_String(arr[12]),
+      unfinishedUnderVerdict: dco_decode_bool(arr[13]),
+      canLeave: dco_decode_bool(arr[14]),
     );
   }
 
@@ -6695,6 +6696,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_sentence = sse_decode_String(deserializer);
     var var_lagNote = sse_decode_String(deserializer);
     var var_warning = sse_decode_String(deserializer);
+    var var_note = sse_decode_String(deserializer);
     var var_nodeState = sse_decode_i_64(deserializer);
     var var_netId = sse_decode_String(deserializer);
     var var_version = sse_decode_String(deserializer);
@@ -6710,6 +6712,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       sentence: var_sentence,
       lagNote: var_lagNote,
       warning: var_warning,
+      note: var_note,
       nodeState: var_nodeState,
       netId: var_netId,
       version: var_version,
@@ -7863,6 +7866,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.sentence, serializer);
     sse_encode_String(self.lagNote, serializer);
     sse_encode_String(self.warning, serializer);
+    sse_encode_String(self.note, serializer);
     sse_encode_i_64(self.nodeState, serializer);
     sse_encode_String(self.netId, serializer);
     sse_encode_String(self.version, serializer);

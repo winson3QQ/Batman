@@ -60,7 +60,7 @@ StatusView sv(String color, {int nodeState = 2}) => StatusView(
     row: '3',
     sentence: 'x',
     lagNote: '',
-    warning: '',
+    warning: '', note: '',
     nodeState: nodeState,
     netId: '',
     version: '',
@@ -251,7 +251,7 @@ void main() {
       ..view = 'green'
       ..readAt = a.link.now()
       ..extra = StatusView(
-          color: 'green', row: '3', sentence: marker, lagNote: marker, warning: '', nodeState: 2, netId: marker,
+          color: 'green', row: '3', sentence: marker, lagNote: marker, warning: '', note: '', nodeState: 2, netId: marker,
           version: marker, tech: const [marker], fresh: true, rateNote: '', unfinished: '', unfinishedUnderVerdict: false,
           canLeave: false)
       ..last = Concl.read;

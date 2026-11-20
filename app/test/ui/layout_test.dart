@@ -44,14 +44,14 @@ const id = '0000000000000c4f2a7d2c';
 /// rust/batman-proto/src/statuspage.rs S9C, word for word (a red node in a network that has not linked to the others).
 const kRedS9C = '還沒連上其他隊員 — 請確認隊員的節點已開機、在附近；等一分鐘再按「重新整理」，仍然如此請重新開機；仍然如此請找維修人員';
 
-StatusView sv(String color, {int nodeState = 2, bool canLeave = false}) => StatusView(
+StatusView sv(String color, {int nodeState = 2, bool canLeave = false, String note = ''}) => StatusView(
     color: color,
     row: '3',
     // #329 PR 7 (p1p2-check node_page_red): a red node in a network says what Rust says (statuspage.rs S9C: the reason
     // and its next step), not an invented 「沒有連上隊伍網路」 without one
     sentence: color == 'green' ? '已連上隊伍網路' : (nodeState == 1 ? '沒有連上隊伍網路' : kRedS9C),
     lagNote: '',
-    warning: '',
+    warning: '', note: note,
     nodeState: nodeState,
     netId: 'ab12',
     version: '1.5.14',
@@ -92,6 +92,9 @@ AppLink app(StatusView? view) {
   }
   return a;
 }
+
+/// 329-takeover: the note's text (statuspage.rs NOTE_JOINED_CRIT).
+const kNote = '節點回報異常，可能是手機 Wi-Fi 還沒設定 — 還沒設定的話，請到這台節點的「手機 Wi-Fi」設定；已設好仍然如此請找維修人員';
 
 final retired = RegExp(r'網主|末四碼|管理者(?!金鑰)|成員|(?<![A-Za-z_])SAS(?![A-Za-z_])|StrongBox|ownerEnc|#\d');
 
@@ -150,6 +153,12 @@ void main() {
   const code = 'A2010203040506070809A0B0C0D0E0F0A2010203040506070809A0B0C0D0E0F0';
   final pages = <String, Widget Function(UiState ui)>{
     'home, all fine': (ui) => HomePage(app: app(sv('green')), ui: ui, devTrust: true, keys: keys()),
+    // 329-takeover H7: the reminder variant with the row's small line, under the longest nickname (24 characters)
+    'home, a node with a note, a long name': (ui) {
+      ui.nodes[id] = const UiNode(nick: '山腰第二補給點前進指揮所備用中繼節點甲乙丙丁');
+      return HomePage(app: app(sv('green', note: kNote)), ui: ui, devTrust: true, keys: keys());
+    },
+    'node page with a note': (ui) => NodePage(app: app(sv('green', note: kNote)), id: id, ui: ui),
     'home, not in a network': (ui) => HomePage(app: app(sv('red', nodeState: 1)), ui: ui, devTrust: true, keys: keys()),
     'home, not read yet': (ui) => HomePage(app: app(null), ui: ui, devTrust: false, keys: keys()),
     'home, a to-do banner': (ui) {

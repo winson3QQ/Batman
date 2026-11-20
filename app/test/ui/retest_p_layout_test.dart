@@ -51,7 +51,7 @@ StatusView sv(String color, {int nodeState = 2, bool canLeave = false, bool long
     row: '3',
     sentence: long ? longSentence : (color == 'green' ? '已連上隊伍網路' : '沒有連上隊伍網路'),
     lagNote: long ? longLag : '',
-    warning: long ? longWarning : '',
+    warning: long ? longWarning : '', note: '',
     nodeState: nodeState,
     netId: long ? 'ab12cd34ef56ab12cd34ef56ab12cd34' : 'ab12',
     version: long ? '1.5.14-wsl.26+g4f2a7d2c0123456789' : '1.5.14',

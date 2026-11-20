@@ -87,7 +87,7 @@ class KS extends Session {
         row: row,
         sentence: 's',
         lagNote: '',
-        warning: '',
+        warning: '', note: '',
         nodeState: 2,
         netId: netId,
         version: '',
