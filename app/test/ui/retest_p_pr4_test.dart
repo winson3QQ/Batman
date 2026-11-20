@@ -75,7 +75,7 @@ void main() {
     final a = app();
     final gate = Completer<void>();
     final d = OpDeps(
-      acquire: (n) async {
+      acquire: (n, {forNode, gone}) async {
         await gate.future; // the lease comes after the page is gone
         return f.d.acquire(n);
       },

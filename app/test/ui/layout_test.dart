@@ -97,7 +97,7 @@ final retired = RegExp(r'網主|末四碼|管理者(?!金鑰)|成員|(?<![A-Za-z
 
 /// #329 PR 4: a session that is always taken (no login is tried in a layout test)
 final busy = OpDeps(
-    acquire: (_) async => null,
+    acquire: (_, {forNode, gone}) async => null,
     busyName: () => '建立網路',
     login: (_, _) => throw StateError('no login'),
     console: (_, _) => throw StateError('no console'),

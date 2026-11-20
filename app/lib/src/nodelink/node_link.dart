@@ -277,6 +277,20 @@ class NodeLink implements LeaseListener {
   Attempt? _attempt;
   GateLink? _link;
   Completer<void>? _cancel;
+  // 329-takeover.md §1.1: the attempt its node's page took over from the cancelled round (only ever compared with
+  // [_attempt]); the running attempt's own end; the one acquire call waiting for that end
+  Attempt? _det;
+  Completer<void>? _ended;
+  _Waiter? _waiter;
+
+  /// §1.1 (b): the longest an acquire waits for the attempt in flight (the attempt's own connect-to-msg2 budget).
+  static const takeoverWait = Duration(seconds: 8);
+
+  /// The name of the operation waiting for the attempt in flight (the busy line of a call refused meanwhile).
+  String? get waitingName => _waiter?.name;
+
+  /// §1.1: the page of [a]'s node is open in the foreground, the radio is usable and the record is there.
+  bool _wanted(Attempt a) => _onPage(a.id) && core.blocked == null && core.states.containsKey(a.id);
   Cancel? _timer;
   bool _disposed = false;
   List<Rec> _recs = const [];
@@ -306,7 +320,11 @@ class NodeLink implements LeaseListener {
       hints.clear();
       _changed.add(null);
     }
+    final a = _attempt;
     core.setPage(now(), page, node: node);
+    // 329-takeover.md §1.1 (a): the attempt in flight to the node whose page opens is taken over, not cancelled: the
+    // core no longer runs it, its connect has started, and this page wants it
+    if (a != null && identical(_attempt, a) && !identical(core.running, a) && _link != null && _wanted(a)) _det = a;
     _pump(); // 329-link-per-node.md §3.2: a page change closes no kept link
   }
 
@@ -349,7 +367,12 @@ class NodeLink implements LeaseListener {
 
   /// §4.4 拿到之前: cancel the round, wait until its link is gone (at most 5 s), then the lease. Null = another
   /// operation holds it (the caller shows 「另一個操作還在進行：<名稱>」 with [LeaseRegistry.current]).
-  Future<Lease?> acquire(String name, LeaseKind kind) async {
+  ///
+  /// 329-takeover.md §1.1 (b): with [forNode] the node whose page is open and an attempt to it past the start of
+  /// its connect, the call first waits for that attempt's end (at most [takeoverWait]), so its session is parked
+  /// and the caller's login is given the kept link. One call waits at a time; [gone] = the caller's page is closed
+  /// (it then gets null and takes nothing). Without [forNode]: no wait, as before.
+  Future<Lease?> acquire(String name, LeaseKind kind, {String? forNode, bool Function()? gone}) async {
     // #329 PR 3 §2.1 (P7): the last release's record read ends first (at most 5 s), so the N9 window of a record
     // written under it is set before the next lease
     final r = _releasing;
@@ -357,6 +380,22 @@ class NodeLink implements LeaseListener {
       await r.timeout(const Duration(seconds: 5), onTimeout: () {});
     }
     if (reg.current != null) return null;
+    final a = _attempt;
+    final ended = _ended;
+    if (forNode != null && a != null && ended != null && a.id == forNode && _link != null && _wanted(a)) {
+      final w = _waiter;
+      if (w != null && !w.gone()) return null; // the caller prints busy with [waitingName]
+      final me = _waiter = _Waiter(name, gone ?? () => false); // a gone waiter is replaced: it returns null on wake
+      final late = Completer<void>();
+      final stop = after(takeoverWait, () => late.isCompleted ? null : late.complete());
+      await Future.any<void>([ended.future, late.future]);
+      stop();
+      if (!identical(_waiter, me)) return null; // replaced, or disposed
+      _waiter = null;
+      // a closed page's call does not cancel the round or take a lease
+      if (_disposed || me.gone()) return null;
+      if (reg.current != null) return null;
+    }
     core.acquireLease(now());
     // #329 UX plan §4.2: a kept link that is reading goes (the flow logs in from the start); a parked one stays for
     // a session lease's loginFor and goes for a raw lease (an older page uses the radio itself)
@@ -897,7 +936,8 @@ class NodeLink implements LeaseListener {
     _noteTwoPrime();
     // the core cancelled or cut the attempt in progress: drop its link now (a round only reads, §4.3.3-8)
     final a = _attempt;
-    if (a != null && !identical(core.running, a)) _abort();
+    // 329-takeover.md §1.1 (a): except the attempt its node's page took over, while that page still wants it
+    if (a != null && !identical(core.running, a) && !(identical(_det, a) && _wanted(a))) _abort();
     _readWake?.call();
     _readWake = null;
     if (core.roundActive) {
@@ -994,74 +1034,102 @@ class NodeLink implements LeaseListener {
   Future<void> _run(Attempt a) async {
     _attempt = a;
     final cancel = _cancel = Completer<void>();
-    // 329-link-per-node.md §3.3: room for this link first; the round may have dropped the attempt in that wait
-    await _makeRoom(cancel.future);
-    if (!identical(_attempt, a) || cancel.isCompleted || _disposed) return;
-    // §4.3.3-3: one 8 s budget from the start of the connect to msg2, on the injected clock
-    final due = Completer<void>();
-    final stopDue = after(msg2, () => due.isCompleted ? null : due.complete());
-    final t0 = now();
-    var tUp = -1;
-    GateLink? mine;
-    Outcome o;
+    // 329-takeover.md §1.1: this attempt's own end, for an acquire that waits for it; completed once, here or by
+    // [_abort]; a late end of an aborted attempt never touches the next one's
+    final ended = _ended = Completer<void>();
+    void end() {
+      if (!ended.isCompleted) ended.complete();
+      if (identical(_ended, ended)) _ended = null;
+    }
+
     try {
-      final link = mine = _link = gate.connect(reg.nodeLinkToken, a.addr, timeout: msg2);
-      final up = await Future.any<bool>([
-        // design 329-ble-settle.md §2.1: the first link event, not the first `true`: a failure ends the attempt now
-        link.state.first.then((s) => s, onError: (Object _) => false),
-        due.future.then((_) => false),
-        cancel.future.then((_) => false),
-      ]);
-      tUp = up ? now() - t0 : -1;
-      if (!up || cancel.isCompleted) {
+      // 329-link-per-node.md §3.3: room for this link first; the round may have dropped the attempt in that wait
+      await _makeRoom(cancel.future);
+      if (!identical(_attempt, a) || cancel.isCompleted || _disposed) return;
+      // §4.3.3-3: one 8 s budget from the start of the connect to msg2, on the injected clock
+      final due = Completer<void>();
+      final stopDue = after(msg2, () => due.isCompleted ? null : due.complete());
+      final t0 = now();
+      var tUp = -1;
+      GateLink? mine;
+      Outcome o;
+      try {
+        final link = mine = _link = gate.connect(reg.nodeLinkToken, a.addr, timeout: msg2);
+        final up = await Future.any<bool>([
+          // design 329-ble-settle.md §2.1: the first link event, not the first `true`: a failure ends the attempt now
+          link.state.first.then((s) => s, onError: (Object _) => false),
+          due.future.then((_) => false),
+          cancel.future.then((_) => false),
+        ]);
+        tUp = up ? now() - t0 : -1;
+        if (!up || cancel.isCompleted) {
+          o = const Outcome(Res.noResponse);
+        } else {
+          o = await prober.probe(link, a.id, due: due.future, cancelled: cancel.future);
+        }
+      } on Refused {
         o = const Outcome(Res.noResponse);
-      } else {
-        o = await prober.probe(link, a.id, due: due.future, cancelled: cancel.future);
+      } catch (e) {
+        o = const Outcome(Res.noResponse); // one attempt's exception ends that attempt only (§4.3.3-4, F50)
+        trace?.call(mask('attempt $a: ${e.runtimeType} $e'));
       }
-    } on Refused {
-      o = const Outcome(Res.noResponse);
-    } catch (e) {
-      o = const Outcome(Res.noResponse); // one attempt's exception ends that attempt only (§4.3.3-4, F50)
-      trace?.call(mask('attempt $a: ${e.runtimeType} $e'));
-    }
-    stopDue();
-    trace?.call(mask('attempt $a connected=${tUp}ms result=${o.res.name} after ${now() - t0}ms'));
-    // #329 UX plan §4.1: a read that returns its open session ([Outcome.keep]) keeps its link too: from here it is
-    // parked or destroyed, never left
-    final kp = o.keep;
-    final keep = kp is LoginHandoff ? kp : null;
-    // close this attempt's own link only: a late end never closes the next attempt's (review pr1 A-m1 / B-m1)
-    if (keep == null) await mine?.close();
-    if (identical(_link, mine)) _link = null;
-    if (!identical(_attempt, a)) {
-      await keep?.destroy();
-      return; // aborted: the core no longer waits for it
-    }
-    _attempt = null;
-    _cancel = null;
-    // one clock value for the core's readAt and the team section's (#329 PR 6 §14: a second now() would differ)
-    final t = now();
-    final accepted = core.result(t, a, o);
-    // the wall time of a read; a 2' is a read too (its own time, not the last body's: PR 2 review r2 D-m6)
-    // (review pr6 A-4: only a read the core took; a dropped one leaves no time behind, e.g. for a record gone)
-    // #329 PR 6 D5(c): the team section of this read, only when the core took the read (not a cancelled round, not
-    // a record gone, not an error-code answer), with the very readAt / readWall just written for it
-    if (accepted) _noteRead(a.id, o, t);
-    if (keep != null) {
-      if (!accepted || core.blocked != null || !core.fg || _kept.containsKey(keep.id) || _kept.length >= keptMax) {
-        keep.destroy().then((_) => _pump()); // a late result, the record went; or no place for it any more
-      } else {
-        unawaited(_park(keep)); // not parked (the link is not up): destroyed there
+      stopDue();
+      trace?.call(mask('attempt $a connected=${tUp}ms result=${o.res.name} after ${now() - t0}ms'));
+      // #329 UX plan §4.1: a read that returns its open session ([Outcome.keep]) keeps its link too: from here it is
+      // parked or destroyed, never left
+      final kp = o.keep;
+      final keep = kp is LoginHandoff ? kp : null;
+      // close this attempt's own link only: a late end never closes the next attempt's (review pr1 A-m1 / B-m1)
+      if (keep == null) await mine?.close();
+      if (identical(_link, mine)) _link = null;
+      if (!identical(_attempt, a)) {
+        await keep?.destroy();
+        return; // aborted: the core no longer waits for it
       }
+      _attempt = null;
+      _cancel = null;
+      final det = identical(_det, a);
+      if (det) _det = null;
+      // one clock value for the core's readAt and the team section's (#329 PR 6 §14: a second now() would differ)
+      final t = now();
+      // 329-takeover.md §1.1 (a): the core does not know a detached attempt; its answer enters the round that is
+      // active now as a read without an attempt (a body or an error code; anything else is not recorded)
+      final accepted = det
+          ? (o.res == Res.body || o.res == Res.errorCode) && core.keptRead(t, a.id, a.addr, o)
+          : core.result(t, a, o);
+      // the wall time of a read; a 2' is a read too (its own time, not the last body's: PR 2 review r2 D-m6)
+      // (review pr6 A-4: only a read the core took; a dropped one leaves no time behind, e.g. for a record gone)
+      // #329 PR 6 D5(c): the team section of this read, only when the core took the read (not a cancelled round, not
+      // a record gone, not an error-code answer), with the very readAt / readWall just written for it
+      if (accepted) _noteRead(a.id, o, t);
+      if (keep != null) {
+        if (!accepted ||
+            (det && !_wanted(a)) ||
+            core.blocked != null ||
+            !core.fg ||
+            _kept.containsKey(keep.id) ||
+            _kept.length >= keptMax) {
+          keep.destroy().then((_) => _pump()); // a late result, the record went; or no place for it any more
+        } else {
+          unawaited(_park(keep)); // not parked (the link is not up): destroyed there
+        }
+      }
+      end(); // a waiting acquire resumes after this synchronous tail (a completer's listeners are microtasks)
+      _pump();
+    } finally {
+      end(); // the early returns and an exception
     }
-    _pump();
   }
 
   void _abort() {
     _attempt = null;
+    _det = null;
     final c = _cancel;
     _cancel = null;
     if (c != null && !c.isCompleted) c.complete();
+    final e = _ended;
+    _ended = null;
+    if (e != null && !e.isCompleted) e.complete();
     final l = _link;
     _link = null;
     // the next attempt waits for this link to be gone; then plan again
@@ -1084,6 +1152,7 @@ class NodeLink implements LeaseListener {
 
   Future<void> dispose() async {
     _disposed = true;
+    _waiter = null; // a waiting acquire wakes (the abort below) and returns null
     _close(_resolve);
     _resolve = null;
     _lfPoke();
@@ -1112,4 +1181,11 @@ class _Kept {
   StreamSubscription<bool>? sub;
   Completer<void>? cancel;
   int readEnd = 0;
+}
+
+/// 329-takeover.md §1.1 (b): the acquire call that waits for the attempt in flight.
+class _Waiter {
+  _Waiter(this.name, this.gone);
+  final String name;
+  final bool Function() gone;
 }

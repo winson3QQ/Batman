@@ -292,6 +292,7 @@ fn t4_version_and_warning_line() {
     assert_eq!(sp::version_line(Some(&V::Map(vec![]))), "");
     assert_eq!(sp::version_line(None), "");
     let w = |x: St| verdict(&x).warning;
+    let n = |x: St| verdict(&x).note;
     let ok = St::joined();
     assert_eq!(w(St { throttled: "0x50005", ..ok.clone() }), Some(sp::WARN_POWER));
     assert_eq!(w(St { throttled: "0x50000", ..ok.clone() }), None);
@@ -300,11 +301,17 @@ fn t4_version_and_warning_line() {
     assert_eq!(w(St { temp: "80", ..ok.clone() }), Some(sp::WARN_HOT));
     assert_eq!(w(St { temp: "", ..ok.clone() }), None);
     assert_eq!(w(St { temp: "80", throttled: "0x1", ..ok.clone() }), Some(sp::WARN_POWER), "the first line that holds");
-    // JOINED + plinks 1 + k2 2 -> the neutral sentence (a legacy member's AP may be set)
-    let neutral = w(St { k2: Some(2), ..ok.clone() }).unwrap();
+    // JOINED + plinks 1 + k2 2 -> the neutral sentence (a legacy member's AP may be set), as the node's note, not a
+    // warning (329-takeover.md §1.3); a warning that holds wins and no note goes with it
+    assert_eq!(w(St { k2: Some(2), ..ok.clone() }), None, "329-takeover R1: not home's warning");
+    assert_eq!(w(St { k2: Some(2), throttled: "0x1", ..ok.clone() }), Some(sp::WARN_POWER));
+    assert_eq!(n(St { k2: Some(2), throttled: "0x1", ..ok.clone() }), None, "one line per node");
+    assert_eq!(n(ok.clone()), None);
+    let neutral = n(St { k2: Some(2), ..ok.clone() }).unwrap();
     assert_eq!(neutral, "節點回報異常，可能是手機 Wi-Fi 還沒設定 — 還沒設定的話，請到這台節點的「手機 Wi-Fi」設定；已設好仍然如此請找維修人員");
     assert_ne!(neutral, "這台給手機連的 Wi-Fi 可能還沒設定 — 可在「手機 Wi-Fi」設定；設好仍然如此請找維修人員", "v6's JOINED sentence");
     assert_eq!(w(St { k2: Some(2), ..ok.clone() }.plinks(0)), None, "JOINED with plinks 0: CRIT is the normal state");
+    assert_eq!(n(St { k2: Some(2), ..ok.clone() }.plinks(0)), None);
     // a member's code 1 -> the AP line, which says setting it reveals the real cause
     let ap = w(St::code(1)).unwrap();
     assert!(ap.contains("設好後這頁才看得到連不上的真正原因") && ap.contains("「手機 Wi-Fi」"), "{ap}");
@@ -387,7 +394,7 @@ fn t5_real_status_of_04() {
     let v = cbor::decode(&cbor::encode(&v)).unwrap();
     let got = sp::link_verdict(Answer::Body(&v));
     assert_eq!((got.row, got.color), (Row::Linked, Color::Green), "JOINED, plinks 1, SNR 49");
-    assert_eq!(got.warning, Some(sp::WARN_JOINED_CRIT), "CRIT from keyguard while joined: the neutral line");
+    assert_eq!((got.warning, got.note), (None, Some(sp::NOTE_JOINED_CRIT)), "CRIT from keyguard while joined: the neutral note");
     assert_eq!(got.lag_note, Some(sp::LAG_NOTE));
     let tech = sp::tech_lines(Answer::Body(&v));
     for want in ["健康等級（key 2）：2（CRIT）", "batman 鄰居數（key 3，含過期）：1", "上游映像（image）：OpenMANET 1.8.0", "SNR：49 dB", "直接連到的站台數 P（plinks）：1", "頻道：40", "國家：US", "開機時間（uptime_s）：6 分 42 秒", "溫度（temp_c）：56", "throttled：0x0"] {

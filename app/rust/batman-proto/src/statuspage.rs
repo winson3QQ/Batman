@@ -116,13 +116,16 @@ pub struct Verdict {
     pub lag_note: Option<&'static str>,
     /// §2-2: the first ⚠️ line that holds
     pub warning: Option<&'static str>,
+    /// 329-takeover.md §1.3: a note of the node, shown on its own page (and as a small line on home), never as home's
+    /// warning; set exactly when no warning holds and the node is joined but reports CRIT
+    pub note: Option<&'static str>,
 }
 
 pub const LAG_NOTE: &str = "隊員剛離開或關機時，這裡最多約 4 分鐘後才會改變";
 pub const WARN_POWER: &str = "電源電壓不足 — 請檢查電池／電源線";
 pub const WARN_HOT: &str = "節點過熱 — 請移到陰涼處";
 pub const WARN_AP: &str = "這台給手機連的 Wi-Fi 還沒設定（或被關閉）— 可在「手機 Wi-Fi」設定，設好後這頁才看得到連不上的真正原因；設好仍然如此請找維修人員";
-pub const WARN_JOINED_CRIT: &str = "節點回報異常，可能是手機 Wi-Fi 還沒設定 — 還沒設定的話，請到這台節點的「手機 Wi-Fi」設定；已設好仍然如此請找維修人員";
+pub const NOTE_JOINED_CRIT: &str = "節點回報異常，可能是手機 Wi-Fi 還沒設定 — 還沒設定的話，請到這台節點的「手機 Wi-Fi」設定；已設好仍然如此請找維修人員";
 
 const S1: &str = "這台節點看不到連線狀態（軟體太舊，或節點的設定紀錄讀不到）— 請找維修人員";
 const S2: &str = "狀態未知 — 請按「重新整理」；一直如此請重新開機或找維修人員";
@@ -329,10 +332,13 @@ fn warning(p: &Parsed) -> Option<&'static str> {
     if p.k1 == 2 && p.code == Some(1) {
         return Some(WARN_AP);
     }
-    if p.code.is_none() && p.plinks >= 1 && p.k2 == Some(2) {
-        return Some(WARN_JOINED_CRIT);
-    }
     None
+}
+
+/// 329-takeover.md §1.3: joined (plinks >= 1) but CRIT, when no ⚠️ line holds: the node's note (the line that was the
+/// last warning before; its text unchanged).
+fn note(p: &Parsed) -> Option<&'static str> {
+    (warning(p).is_none() && p.code.is_none() && p.plinks >= 1 && p.k2 == Some(2)).then_some(NOTE_JOINED_CRIT)
 }
 
 /// §3: the verdict of one status result.
@@ -356,6 +362,7 @@ pub fn link_verdict_for(a: Answer, join: JoinButton) -> Verdict {
         sentence: sentence(row, p.as_ref(), join),
         lag_note: matches!(row, Row::Linked | Row::LinkedWeak).then_some(LAG_NOTE),
         warning: p.as_ref().and_then(warning),
+        note: p.as_ref().and_then(note),
     }
 }
 

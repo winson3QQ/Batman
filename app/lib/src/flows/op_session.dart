@@ -17,6 +17,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import '../nodelink/handoff.dart' show LoginHandoff;
 import '../nodelink/lease.dart';
 import '../nodelink/node_link.dart' show LoginForEnd, LoginForResult;
+import '../rust/api/owner.dart' show SettingsView;
 import 'owner_console.dart';
 
 /// How an operation ended before or instead of its requests.
@@ -57,16 +58,18 @@ class OpReply {
 
 /// What the sessions need of the app (AppLink in the app, fakes in tests).
 class OpDeps {
-  const OpDeps({
+  OpDeps({
     required this.acquire,
     required this.busyName,
     required this.login,
     required this.console,
     required this.keepScreen,
-  });
+    SettingsMemo? memo,
+  }) : memo = memo ?? SettingsMemo();
 
-  /// NodeLink.acquire(name, session): null = another operation holds the lease.
-  final Future<Lease?> Function(String name) acquire;
+  /// NodeLink.acquire(name, session): null = another operation holds the lease. 329-takeover.md §1.1 (b): with
+  /// [forNode], NodeLink may first wait for the attempt in flight to that node; [gone] = the caller's page is closed.
+  final Future<Lease?> Function(String name, {String? forNode, bool Function()? gone}) acquire;
 
   /// The name of the operation holding the lease ('' = none).
   final String Function() busyName;
@@ -79,6 +82,25 @@ class OpDeps {
 
   /// keepScreenOn (a convenience: the flow does not depend on it).
   final Future<void> Function(bool on) keepScreen;
+
+  /// 329-takeover.md §1.2: the settings pages' last values read (the app's one object; a test passes its own).
+  final SettingsMemo memo;
+}
+
+/// 329-takeover.md §1.2: node id -> the last [SettingsView] a settings page read in this app run. Memory only; used
+/// for nothing but the two settings pages' labels (「確認中…」 / 「上次讀到」), never to fill a field or enable a send.
+class SettingsMemo {
+  final _m = <String, SettingsView>{};
+
+  SettingsView? operator [](String id) => _m[id];
+
+  /// After a read, or a set whose answer was read back (only a view that was read).
+  void put(String id, SettingsView v) {
+    if (v.read) _m[id] = v;
+  }
+
+  /// Right before a set request is sent: a set whose answer is lost leaves no entry.
+  void drop(String id) => _m.remove(id);
 }
 
 /// The requests of one operation: [c] is logged in; check [gone] before each further request.
@@ -91,8 +113,13 @@ class OpSession {
   /// longer there (checked after the login and before the requests).
   static Future<OpReply> once(OpDeps d, String id, String name, OpRequests requests, {required bool Function() gone}) async {
     if (gone()) return const OpReply(OpEnd.gone);
-    final lease = await d.acquire(name);
-    if (lease == null) return OpReply(OpEnd.busy, busyName: d.busyName());
+    // 329-takeover.md §1.1 (b): the page's own node; a call whose page closed meanwhile takes nothing
+    final lease = await d.acquire(name, forNode: id, gone: gone);
+    if (lease == null) return gone() ? const OpReply(OpEnd.gone) : OpReply(OpEnd.busy, busyName: d.busyName());
+    if (gone()) {
+      await lease.release();
+      return const OpReply(OpEnd.gone);
+    }
     Cancel? hold;
     OwnerConsole? c;
     unawaited(d.keepScreen(true));

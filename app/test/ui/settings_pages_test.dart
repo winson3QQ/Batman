@@ -2,6 +2,8 @@
 // Fx: owner_console_test's Rig per login). T-W1 the node's rules, T-W2 the field emptied only after the login, T-W3
 // 「結果不明」 + 重新讀取, T-W5 the passphrase in no log / reply and the field's flags, T-W6 the country menu's limits,
 // T-W7 the confirm dialog, T-W8 the lease released after each read.
+import 'dart:async';
+
 import 'package:batman_app/secure_screen.dart';
 import 'package:batman_app/src/nodelink/app_link.dart';
 import 'package:batman_app/src/nodelink/core.dart';
@@ -381,6 +383,163 @@ void main() {
       expect(find.textContaining('讀不到目前的國家。附近有像是這台節點的裝置，但沒有連上'), findsOneWidget);
       expect(find.textContaining('讀不到目前的國家（'), findsNothing);
       expect(find.textContaining('沒有找到這台節點'), findsNothing);
+    });
+  });
+
+  // 329-takeover.md §1.2 / §7 W1–W6: the last value read in this app run (SettingsMemo) as a label only.
+  group('329-takeover: the last value read', () {
+    SettingsView view({String ap = 'old-ap', String cc = 'US'}) =>
+        SettingsView(read: true, name: 'BCM2711-6c89', country: cc, channel: 42, bwMhz: 2, apSsid: ap);
+
+    /// The Wi-Fi page with [memo] put first; the page's read waits for [slow] when given.
+    Future<Fx> wifi(WidgetTester t, {SettingsView? memo, Completer<void>? slow, LoginForEnd end = LoginForEnd.ok}) async {
+      await allowSecure(t);
+      final f = Fx(rust)
+        ..slowLogin = slow
+        ..loginEnd = end;
+      if (memo != null) f.d.memo.put(id, memo);
+      await t.pumpWidget(host(WifiPage(app: app(), ui: UiState(MemStore()), id: id, deps: f.d)));
+      await t.pump();
+      return f;
+    }
+
+    testWidgets('W1: a memo -> 「<名稱>（確認中…）」 at once, then the read value', (t) async {
+      final slow = Completer<void>();
+      final f = await wifi(t, memo: view(), slow: slow);
+      expect(find.text('old-ap（確認中…）'), findsOneWidget);
+      expect(find.text('讀取中…'), findsNothing);
+      expect(field(t, 'wifi-ssid').controller!.text, isEmpty, reason: 'the field is not filled from the memo');
+      slow.complete();
+      await settle(t, f);
+      expect(find.text('old-ap（確認中…）'), findsNothing);
+      expect(field(t, 'wifi-ssid').controller!.text, 'node-ap');
+      expect(f.d.memo[id]!.apSsid, 'node-ap', reason: 'W4: put after a read');
+    });
+
+    testWidgets('W2 / W5: a memo and a failed first read -> 「上次讀到」; the field empty, 送出 disabled', (t) async {
+      final f = await wifi(t, memo: view(), end: LoginForEnd.notFound);
+      await settle(t, f);
+      expect(find.text('上次讀到：old-ap'), findsOneWidget);
+      expect(find.text('讀不到'), findsNothing);
+      expect(field(t, 'wifi-ssid').controller!.text, isEmpty);
+      await t.enterText(find.byKey(const Key('wifi-pass')), secret);
+      await t.pump();
+      expect(sendEnabled(t), isFalse);
+    });
+
+    testWidgets('W5: a memo and a read that returns another name -> the field has the read name', (t) async {
+      final f = await wifi(t, memo: view());
+      await settle(t, f);
+      expect(field(t, 'wifi-ssid').controller!.text, 'node-ap');
+      expect(find.text('上次讀到：old-ap'), findsNothing);
+    });
+
+    for (final (what, memo) in [('no memo', null), ('an empty name in the memo', view(ap: ''))]) {
+      testWidgets('W6: $what -> 「讀取中…」, then 「讀不到」 as before', (t) async {
+        final slow = Completer<void>();
+        final f = await wifi(t, memo: memo, slow: slow);
+        expect(find.text('讀取中…'), findsOneWidget);
+        f.loginEnd = LoginForEnd.notFound;
+        slow.complete();
+        await settle(t, f);
+        expect(find.text('讀不到'), findsOneWidget);
+        expect(find.textContaining('上次讀到'), findsNothing);
+      });
+    }
+
+    group('W4: the memo after a set', () {
+      Future<Fx> sent(WidgetTester t, void Function(Fx f) before) async {
+        final f = await wifi(t);
+        await settle(t, f);
+        expect(f.d.memo[id]!.apSsid, 'node-ap');
+        await t.enterText(find.byKey(const Key('wifi-ssid')), 'new-ap');
+        await t.enterText(find.byKey(const Key('wifi-pass')), secret);
+        await t.pump();
+        before(f);
+        await t.tap(find.widgetWithText(FilledButton, '送出'));
+        await settle(t, f);
+        return f;
+      }
+
+      testWidgets('a confirmed set -> put (the answer read back)', (t) async {
+        // another value in the memo first: the set's answer (P4Session: node-ap) must replace it
+        final f = await sent(t, (f) => f.d.memo.put(id, view(ap: 'x')));
+        expect(find.textContaining('已更新'), findsOneWidget);
+        expect(f.d.memo[id]!.apSsid, 'node-ap');
+      });
+      testWidgets('a failed login -> kept', (t) async {
+        final f = await sent(t, (f) => f.loginEnd = LoginForEnd.notFound);
+        expect(f.d.memo[id]!.apSsid, 'node-ap');
+      });
+      testWidgets('the page refuses (notSent) -> kept', (t) async {
+        final slow = Completer<void>();
+        final f = await sent(t, (f) => f.slowLogin = slow);
+        field(t, 'wifi-pass').controller!.text = 'short'; // changed under the login: the page's own check refuses
+        slow.complete();
+        await settle(t, f);
+        expect(find.textContaining('沒有送出'), findsOneWidget);
+        expect(f.d.memo[id]!.apSsid, 'node-ap');
+      });
+      testWidgets('the answer lost -> gone', (t) async {
+        final f = await sent(t, (f) => f.rigs[1].radio.silent = true);
+        f.rigs[1].radio.drop();
+        await settle(t, f);
+        expect(find.textContaining('結果不明'), findsOneWidget);
+        expect(f.d.memo[id], isNull);
+      });
+    });
+
+    /// The country page, a fresh read of a node not in a network, [memo] put first.
+    Future<Fx> country(WidgetTester t, {SettingsView? memo, Completer<void>? slow, LoginForEnd end = LoginForEnd.ok}) async {
+      final f = Fx(rust)
+        ..slowLogin = slow
+        ..loginEnd = end;
+      if (memo != null) f.d.memo.put(id, memo);
+      (f.rigs[0].session as P4Session).now = view(ap: 'node-ap', cc: 'TW'); // the page's read: a node set to TW
+      final a = app();
+      a.link.core.states[id]!
+        ..kind = Kind.read
+        ..view = 'yellow'
+        ..readAt = a.link.now()
+        ..extra = sv('yellow', nodeState: 1)
+        ..last = Concl.read;
+      await t.pumpWidget(host(CountryPage(app: a, ui: UiState(MemStore()), id: id, deps: f.d)));
+      await t.pump();
+      return f;
+    }
+
+    String now(WidgetTester t) => t.widget<BatRow>(find.byKey(const Key('country-now'))).right!;
+
+    testWidgets('W3: the country from the memo while the read runs, through the menu\'s names', (t) async {
+      final slow = Completer<void>();
+      final f = await country(t, memo: view(), slow: slow);
+      expect(now(t), '美國 US（台灣使用這個頻段）（確認中…）');
+      slow.complete();
+      await settle(t, f);
+      expect(now(t), 'TW（不在可選清單）', reason: 'the read value (P4Session answers TW)');
+      expect(f.d.memo[id]!.country, 'TW');
+    });
+
+    testWidgets('W3: a memo, a failed read, not in a network -> 「上次讀到」; the menu disabled, nothing checked', (t) async {
+      final f = await country(t, memo: view(), end: LoginForEnd.notFound);
+      await settle(t, f);
+      expect(now(t), '上次讀到：美國 US（台灣使用這個頻段）');
+      expect(t.widget<BatRow>(find.byKey(const Key('country-US'))).enabled, isFalse);
+      expect(t.widget<BatRow>(find.byKey(const Key('country-US'))).icon, Icons.radio_button_unchecked);
+      expect(find.textContaining('先讀到目前的國家。'), findsOneWidget);
+    });
+
+    testWidgets('W4: a confirmed country set -> put', (t) async {
+      final f = await country(t);
+      await settle(t, f);
+      expect(f.d.memo[id]!.country, 'TW');
+      (f.rigs[1].session as P4Session).now = view();
+      await t.tap(find.byKey(const Key('country-US')));
+      await t.pumpAndSettle();
+      await t.tap(find.widgetWithText(FilledButton, '改'));
+      await settle(t, f);
+      expect(find.text('已更新。'), findsOneWidget);
+      expect(f.d.memo[id]!.country, 'US');
     });
   });
 }

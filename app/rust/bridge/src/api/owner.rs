@@ -459,6 +459,8 @@ pub struct StatusView {
     pub lag_note: String,
     /// the ⚠️ line
     pub warning: String,
+    /// 329-takeover.md §1.3: the node's note (joined but CRIT), never together with [warning]; "" = none
+    pub note: String,
     /// status key 1, -1 when unknown (the membership line: `status_membership_line`)
     pub node_state: i64,
     /// info key 10 (lowercase hex): the network the node is in; the app maps it to a local record's name
@@ -2577,6 +2579,7 @@ pub(crate) fn status_view_of(st: Option<&Result<Value, u64>>, info: Option<&Valu
         sentence: v.sentence,
         lag_note: v.lag_note.unwrap_or("").into(),
         warning: v.warning.unwrap_or("").into(),
+        note: v.note.unwrap_or("").into(),
         node_state: statuspage::node_state(a).and_then(|n| i64::try_from(n).ok()).unwrap_or(-1),
         net_id: info.and_then(|i| i.get(10)).and_then(Value::as_bytes).filter(|b| b.len() == 16).map(nodecert::hex_lower).unwrap_or_default(),
         version: statuspage::version_line(info),
@@ -2789,7 +2792,7 @@ mod member_tests {
         // S20 fix 1: the admin phone's button
         let v = status_view_of(Some(&Ok(st.clone())), Some(&info), true, false, statuspage::JoinButton::of(true, false));
         assert_eq!(v.sentence, "這台還沒加入隊伍網路 — 請按「加入網路」");
-        assert_eq!((v.lag_note.as_str(), v.warning.as_str(), v.rate_note.as_str()), ("", "", ""));
+        assert_eq!((v.lag_note.as_str(), v.warning.as_str(), v.note.as_str(), v.rate_note.as_str()), ("", "", "", ""));
         assert!(!v.sentence.contains("SEARCHING") && !v.sentence.contains("OpenMANET"), "the main screen has no node English");
         assert!(v.tech.iter().any(|l| l.contains("SEARCHING")) && v.tech.iter().any(|l| l.contains("OpenMANET 1.8.0")));
         assert_eq!(v.net_id, "ab".repeat(16));
