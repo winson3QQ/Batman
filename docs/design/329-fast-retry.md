@@ -1,10 +1,17 @@
 # #329: a connect that fails fast is tried once more in the same attempt
 
-Status: design **v4.2** (2026-11-21). Branch `fix/329-fast-retry`. Checklist line of #329: 「快速失敗立刻重試一次」 (app side).
+Status: design **v4.3** (2026-11-21), as implemented. Branch `fix/329-fast-retry`. Checklist line of #329: 「快速失敗立刻重試一次」 (app side).
 Reviews: `329-reviews/review-fastretry{,2,3,4}-{A,B}.md` (v1: both REJECT; v2, v3: APPROVE-WITH-CHANGES with a MAJOR
-open; v4 / v4.1: both APPROVE-WITH-CHANGES, MINORs only, folded in v4.1 / v4.2).
+open; v4 / v4.1: both APPROVE-WITH-CHANGES, MINORs only, folded in v4.1 / v4.2); code review of b9f210b:
+`329-reviews/code-fastretry-{A,B}.md` (both APPROVE-WITH-CHANGES, the same MAJOR in the parser; folded in v4.3).
 
 ## 0. Changes
+
+- v4.2 → v4.3 (code review): the §7 stale-event rule let the first failure's own `fail=` lines excuse a stale down
+  (now only a `fail=` logged after the second connect does; the parser has a self-test with a negative control); a
+  skipped or refused retry is traced; `done` is read from the completers; the failure class is not logged (§4 / §6
+  corrected); Kotlin (4) sees two DISCONNECTED; the tests are in `fast_retry_test.dart`; control (2) "settle = 0" is
+  replaced by "guard (b) removed" (the fake models patch 3, so it has no stale event of its own).
 
 - v4.1 → v4.2: round 4 A (APPROVE-WITH-CHANGES, 4 MINOR): a volatile `failed` flag for (a) (m1), a prober that makes a
   GATT call for (b)'s Dart control (m2), the Kotlin tests count only the updates after `disconnectDevice` (m3), the
@@ -129,7 +136,8 @@ Kotlin tests (`DeviceConnectorTest`, new inner class `NoStaleDisconnectTest`, re
 after (timer branch; real timer and `Thread.sleep(500)` as `delayedDisposeKeepsNewerEntry`) -> no `DISCONNECTED`
 update; (2) failure, `Thread.sleep(>= 250)` (the code uses `System.currentTimeMillis`), then `disconnectDevice` (immediate
 branch) -> none; (3) a connected connector (`just(conn).concatWith(never())`) -> the update is sent (today); (4)
-cancelled while connecting (`never()`, immediate branch) -> sent (today); (5) connected, then dropped (an error after
+cancelled while connecting (`never()`, immediate branch) -> sent (today: two, the synthesized one and the state one
+when `disposeSubscriptions` first touches the lazy `connectionStatusUpdates`, both upstream); (5) connected, then dropped (an error after
 the connection), then `disconnectDevice` -> none. `connectionUpdateBehaviorSubject` is static and replays its last
 value: each test subscribes after its setup or skips the replayed value (round 4 B R4-m3). Tests (1), (2), (5) count
 only the updates after `disconnectDevice` is called: the failure itself always sends a state DISCONNECTED through
@@ -138,7 +146,7 @@ DISCONNECTED in that span (round 4 A m3). The class is added to `PLUGIN_MUST` as
 (`app/tools/kotlin-unit-tests.sh:28`) so a missing class FAILs. Negative control (manual, output in the PR; the CI
 controls test only the judge): the skip removed -> (1) and (2) fail.
 
-Dart tests (`connect_fail_test.dart`): a stale code-less `false` on `linkStates` only, after step 4 and before the
+Dart tests (`fast_retry_test.dart`): a stale code-less `false` on `linkStates` only, after step 4 and before the
 second link's first event (a hook in `FailRadio.connect` before the second connect's `true`) -> the retry reads a
 body; negative control: guard (b) removed -> `connected>=0 ... noResponse`. The prober of this test makes one GATT
 call first (`requestMtu`), so a link marked down fails it (round 4 A m2: `FakeProber` / `LoginProber` make none);
@@ -209,8 +217,8 @@ happened.
 - **`BleGate.codelessDowns`**: written only by the gate's `linkStates` listener; read by NodeLink for the trace only, never
   for a decision. ⚠️ (review B m5)
   RxAndroidBle is not vendored: that reconnecting right after the error raises no `BleAlreadyConnectedException`
-  and the old connector is gone is checked on the device (§7: any retry failure's class / status is logged, without
-  the message, which holds the address).
+  and the old connector is gone is checked on the device through the outcome only (a retry failure shows as the
+  gate's `fail=` code, `fail=?` without a number; the failure class is not logged, v4.3).
 
 No file, flag, message or stored state is added.
 
@@ -245,15 +253,15 @@ The retry goes to the same address the scheduler chose, within the same 8 s budg
 rules (certificate, login) are unchanged. A hostile nearby device that answers with fast failures gets at most two
 connects per attempt inside the same 8 s; the scheduler's caps are unchanged. The availability risk is a leaked link
 (review B M2), covered by the invariant in §4 and its tests. The new trace line carries the masked address (last 2)
-and id (last 4) only; the failure class / status on a retry failure is logged without the message. No secret.
+and id (last 4) only; no failure message is logged (it holds the full address). No secret.
 
 ## 7. Verification
 
-- Unit (fake backend and clock, `connect_fail_test.dart`): T1–T6 above, for `_run` and `_lfAttempt` where both apply.
+- Unit (fake backend and clock, `fast_retry_test.dart`): T1–T6 above, for `_run` and `_lfAttempt` where both apply.
   The fake decides per connect call (round 2 A m5: `FailRadio.failAt` fails every connect to an address; T1 needs
   "the first connect fails, the next one comes up").
   Plus a unit test where a stale code-less `false` reaches `linkStates` only, after step 4: the trace shows it in
-  `downs=` (the device signature is computable). Negative controls: (1) no retry branch → T1 fails at both call sites; (2) `settle` = 0 → T1 fails (stale false);
+  `downs=` (the device signature is computable). Negative controls: (1) no retry branch → T1 fails at both call sites; (2) guard (b) removed → the stale-down test fails;
   (3) `mine` / `link` not moved to the second link → the `gate.links == 0` checks fail; (4) `_link` nulled in the
   window → T6 fails.
 - Plugin: the Kotlin tests of §2.1 (in `PLUGIN_MUST`) in the CI Kotlin step; the manual negative control in the PR.
@@ -267,8 +275,9 @@ and id (last 4) only; the failure class / status on a retry failure is logged wi
     has 400 ≤ N ≤ 600;
   - ≥ 8 of the first 10 retries read a body (baseline: 15/16 read 8 s later);
   - the stale-event signature, either shape, FAILs the run (round 2 B R2-M2): a code-less down in `downs=` later than
-    the `second connect +N` time with no `fail=` gate line for that address within ±1 s of it (`fail=?` counts as a
-    code; round 3 B R3-m3) — whether the retry ended with `connected=-1` or with `connected≥0 … noResponse`;
+    the `second connect +N` time with no `fail=` gate line for that address logged after the second connect and
+    within ±1 s of the down (`fail=?` counts as a code; round 3 B R3-m3; v4.3: the first failure's own `fail=` lines
+    never excuse it) — whether the retry ended with `connected=-1` or with `connected≥0 … noResponse`;
   - report per retry: the failure code, `second connect +N`, `downs=`, the retry's result and connect time, the time from
     the first failure to the read;
   - (the "other attempts unchanged" item of v2 is dropped: not decidable; round 2 A m4.)

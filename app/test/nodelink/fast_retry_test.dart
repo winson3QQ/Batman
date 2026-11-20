@@ -191,6 +191,7 @@ void main() {
     expect(r.radio.connectTimes, hasLength(1), reason: r.log.join('\n'));
     expect(r.count('connecting once more'), 0);
     expect(r.line('connected=-1ms'), isNot(contains('retried')));
+    expect((r.gate.links, r.gate.active), (0, 0));
   });
 
   test('T4: leaving the page (the round cancelled) in the 400 ms wait: no second connect', () async {
@@ -202,8 +203,22 @@ void main() {
     r.nl.setPage(Page.other);
     await r.clock.run(1500);
     expect(r.radio.connectTimes, hasLength(1), reason: r.log.join('\n'));
-    expect(r.count('second connect'), 0);
+    expect(r.count('second connect +'), 0);
+    expect(r.line('no second connect'), isNotEmpty, reason: 'a skipped retry says so (code review A m4 / B m1)');
     expect((r.gate.links, r.gate.active), (0, 0));
+  });
+
+  test('T4: leaving the page during the second connect: that second link is closed (§4)', () async {
+    final r = Rig();
+    r.radio.plan.addAll([600, null]);
+    r.radio.upAfter = 1500; // the second link is still connecting when the page goes
+    await r.start();
+    await r.clock.run(1300); // second connect at ~1100
+    expect(r.radio.connectTimes, hasLength(2), reason: r.log.join('\n'));
+    r.nl.setPage(Page.other);
+    await r.clock.run(2000);
+    expect((r.gate.links, r.gate.active), (0, 0), reason: r.log.join('\n'));
+    expect(r.radio.connectTimes, hasLength(2));
   });
 
   test('T4: dispose in the 400 ms wait: no second connect', () async {
@@ -214,6 +229,7 @@ void main() {
     await r.nl.dispose();
     await r.clock.run(1500);
     expect(r.radio.connectTimes, hasLength(1), reason: r.log.join('\n'));
+    expect((r.gate.links, r.gate.active), (0, 0));
   });
 
   test('T5: Bluetooth off in the 400 ms wait: no second connect; read again once it is on', () async {
@@ -246,7 +262,8 @@ void main() {
     lease.release();
     await r.clock.run(1500);
     expect(r.radio.connectTimes, hasLength(1), reason: r.log.join('\n'));
-    expect(r.count('second connect'), 0);
+    expect(r.count('second connect +'), 0);
+    expect((r.gate.links, r.gate.active), (0, 0));
   });
 
   test('T6: the node page opens in the 400 ms wait: the attempt is taken over, the retry goes on and its read counts',
@@ -262,6 +279,28 @@ void main() {
     expect(r.radio.connectTimes[1] - r.radio.connectTimes[0], inInclusiveRange(1000, 1100),
         reason: 'the same attempt\'s retry, not a new attempt: ${r.log.join('\n')}');
     expect(r.nl.core.states['Y1']!.kind, Kind.read, reason: r.log.join('\n'));
+    expect((r.gate.links, r.gate.active), (0, 0));
+  });
+
+  test('§2.1 (b) (_lfAttempt): a late code-less down on the login retry\'s link before it is up does not end it',
+      () async {
+    final r = Rig(page: Page.other);
+    r.radio
+      ..plan.addAll([600, null])
+      ..staleAt = 1;
+    await r.nl.start(Page.other);
+    final lease = (await r.nl.acquire('建立網路', LeaseKind.session))!;
+    LoginForResult? res;
+    unawaited(r.nl.loginFor(lease, 'Y1').then((x) => res = x));
+    await r.clock.run(200);
+    r.radio.scanCtl.add(addr);
+    await r.clock.run(2500);
+    expect(res?.end, LoginForEnd.ok, reason: r.log.join('\n'));
+    final h = res!.handoff!;
+    expect(h.link.up, isTrue, reason: 'the handed-over link is not marked down by the stale event');
+    await h.close();
+    expect((r.gate.links, r.gate.active), (0, 0));
+    lease.release();
   });
 
   test('§2.1 (b): someone else\'s late code-less down on the retry\'s link before it is up does not end the read',

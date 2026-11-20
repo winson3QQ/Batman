@@ -619,7 +619,7 @@ class NodeLink implements LeaseListener {
     Outcome o;
     var retried = false;
     try {
-      final c = await _connect(lease.token, a, due.future, cancel.future, 'loginFor',
+      final c = await _connect(lease.token, a, due, cancel, 'loginFor',
           still: () => identical(reg.current, lease) && lease.valid && !_disposed, onLink: (l) => link = l);
       retried = c.retried;
       o = (!c.up || cancel.isCompleted)
@@ -1063,7 +1063,7 @@ class NodeLink implements LeaseListener {
       try {
         // §2: `mine` / `_link` always point at the attempt's current link (the second one after a retry), so the end
         // below and [_abort] close it; never null in the retry window (329-fast-retry.md §4)
-        final k = c = await _connect(reg.nodeLinkToken, a, due.future, cancel.future, 'attempt',
+        final k = c = await _connect(reg.nodeLinkToken, a, due, cancel, 'attempt',
             still: () => identical(_attempt, a) && !_disposed, onLink: (l) => mine = _link = l);
         tUp = k.up ? now() - k.t : -1;
         if (!k.up || cancel.isCompleted) {
@@ -1133,11 +1133,12 @@ class NodeLink implements LeaseListener {
   /// fails (not [due], not [cancel]) within [fastMax] is closed, and after [settle] — when [still] holds and neither
   /// [due] nor [cancel] came — connected once more, inside the same budget. Never a third connect. [onLink] gets every
   /// link the moment it is made (the caller closes the last one). A [Refused] from the gate goes to the caller.
-  Future<_Connected> _connect(Token? token, Attempt a, Future<void> due, Future<void> cancel, String what,
+  Future<_Connected> _connect(Token? token, Attempt a, Completer<void> dueC, Completer<void> cancelC, String what,
       {required bool Function() still, required void Function(GateLink) onLink}) async {
-    var done = false; // due or cancel came
-    unawaited(due.then((_) => done = true));
-    unawaited(cancel.then((_) => done = true));
+    final due = dueC.future, cancel = cancelC.future;
+    // read when needed, not from a listener: a cancel that completes after the wait but before this resumes is seen
+    // (code review A m3)
+    bool done() => dueC.isCompleted || cancelC.isCompleted;
     Future<int> first(GateLink l) => Future.any<int>([
           // design 329-ble-settle.md §2.1: the first link event, not the first `true`: a failure ends the attempt now
           l.state.first.then((s) => s ? 1 : 0, onError: (Object _) => 0),
@@ -1148,8 +1149,8 @@ class NodeLink implements LeaseListener {
     var link = gate.connect(token, a.addr, timeout: msg2);
     onLink(link);
     var e = await first(link);
-    if (e != 0 || done || now() - t0 >= fastMax.inMilliseconds) {
-      return _Connected(link, e == 1 && !done, t0, false, 0);
+    if (e != 0 || done() || now() - t0 >= fastMax.inMilliseconds) {
+      return _Connected(link, e == 1 && !done(), t0, false, 0);
     }
     final failedAt = now();
     trace?.call(mask('$what $a link failed after ${failedAt - t0}ms, connecting once more'));
@@ -1159,13 +1160,22 @@ class NodeLink implements LeaseListener {
     await Future.any<void>([waited.future, due, cancel]);
     stop();
     // §2 step 3 -> 4: the checks and the connect in one synchronous step
-    if (done || !still()) return _Connected(link, false, t0, false, failedAt);
-    link = gate.connect(token, a.addr, timeout: msg2);
+    // (code review A m4 / B m1: a retry that does not happen says why, so the device parser sees every one)
+    if (done() || !still()) {
+      trace?.call(mask('$what $a no second connect: ${done() ? 'budget or cancel' : 'attempt gone'}'));
+      return _Connected(link, false, t0, false, failedAt);
+    }
+    try {
+      link = gate.connect(token, a.addr, timeout: msg2);
+    } on Refused {
+      trace?.call(mask('$what $a second connect refused'));
+      rethrow;
+    }
     onLink(link);
     final t1 = now();
     trace?.call(mask('$what $a second connect +${t1 - failedAt}ms'));
     e = await first(link);
-    return _Connected(link, e == 1 && !done, t1, true, failedAt);
+    return _Connected(link, e == 1 && !done(), t1, true, failedAt);
   }
 
   void _abort() {
