@@ -203,6 +203,14 @@ class NodeLinkCore {
   bool firstRounds(String id) => fullRoundsEnded < firstRoundsCap && (states[id]?.roundsEnded ?? 2) < 2;
 
   bool get roundIsEarly => _round?.early ?? false;
+
+  /// 329-link-per-node.md §3.4: the nodes NodeLink has a kept link to (written only by NodeLink, after every change
+  /// of that set). A round books no attempt for them and does not wait for one: their read is [keptRead].
+  Set<String> _keptIds = const {};
+  void setKept(Set<String> ids) => _keptIds = ids;
+
+  /// §3.4: the active round's targets (empty without a round). Read-only.
+  Set<String> get roundTargets => _round?.targets ?? const {};
   Attempt? get running => _round?.running;
 
   Set<String> get _pageTargets => switch (page) {
@@ -464,6 +472,7 @@ class NodeLinkCore {
   List<String> _candidates(_Round r, String id, {required bool lookOk}) {
     final t = r.t[id]!;
     if (t.body || t.why != null) return const [];
+    if (_keptIds.contains(id)) return const [];
     final k = _knownAddr(r, id);
     if (k != null) return _canTry(r, k, id) ? [k] : const [];
     final order = [...r.seen.where((a) => !r.noRespLast.contains(a)), ...r.seen.where(r.noRespLast.contains)];
@@ -598,12 +607,14 @@ class NodeLinkCore {
     switch (o.res) {
       case Res.body:
         isY[addr] = id;
+        lastSeen[addr] = now; // §3.4: the memo of a held node ages from its last read, as one seen in a scan
         notY[addr]?.remove(id);
         t.body = true;
         s.extra = o.extra;
         _read(s, now, o.view);
       case Res.errorCode:
         isY[addr] = id;
+        lastSeen[addr] = now;
         t.err = true;
         s.errExtra = o.extra;
       default:

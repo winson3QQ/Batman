@@ -1,6 +1,8 @@
 // #329 UX plan v5.1 (docs/design/329-ux-speed-plan.md) §6: T1–T17, T19, T20 (T18 does not exist; T21 is in
-// test/ui/more_pages_test.dart). The combined rig: one NodeLink, one gate, one lease registry, one radio, the real
-// SessionProber / HandoffProber over a fake Rust session, OwnerConsole + OpSession.
+// test/ui/more_pages_test.dart). 329-link-per-node.md §3.2 changed one rule of that plan: a kept link is no longer
+// closed when its node's page is left; the tests of that rule are marked "(v5.1: closed)" and now expect it to stay.
+// The tests of the new design (L1–L19) are in link_per_node_test.dart. The combined rig: one NodeLink, one gate, one
+// lease registry, one radio, the real SessionProber / HandoffProber over a fake Rust session, OwnerConsole + OpSession.
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -116,20 +118,28 @@ class KRust extends FakeRust {
   }
 }
 
-/// Every address is a node that answers frame n with n + 1; [hold] delays (ms on the fake clock) or silences (-1) the
-/// answer to a frame code, once per entry.
+/// Every address is a node that answers frame n with n + 1 on its own link; [hold] delays (ms on the fake clock) or
+/// silences (-1) the answer to a frame code, once per entry. [tx] / [conn] / [drop] / [end] / [linkDown] without an
+/// address are those of the address connected last ([addr]).
 class KRadio implements BleBackend {
   KRadio(this.clock);
   final Clock clock;
   final scanCtl = StreamController<String>.broadcast();
-  final tx = StreamController<List<int>>.broadcast(sync: true);
+  final txs = <String, StreamController<List<int>>>{};
+  final conns = <String, StreamController<bool>>{};
+  final linked = <String>{}; // the addresses with a link now
+  final order = <String>[]; // every connect's address
   final _st = StreamController<(String, bool, int?)>.broadcast(sync: true);
   int scans = 0, connects = 0, open = 0, maxOpen = 0;
   final written = <int>[];
   final hold = <int, List<int>>{};
-  StreamController<bool>? conn;
   String addr = '';
   int goneMs = 0; // the stack reports a closed link gone this long (fake clock) after the disconnect
+  int subCancelMs = 0; // the unsubscribe of tx returns after this long (fake clock), as a platform call does
+
+  StreamController<List<int>> txOf(String a) => txs[a] ??= StreamController<List<int>>.broadcast(sync: true);
+  StreamController<List<int>> get tx => txOf(addr);
+  StreamController<bool>? get conn => conns[addr];
 
   @override
   Stream<(String, Uint8List?)> scan() {
@@ -141,9 +151,11 @@ class KRadio implements BleBackend {
   Stream<bool> connect(String address, Duration timeout) {
     connects++;
     addr = address;
+    order.add(address);
     late StreamController<bool> c;
-    c = conn = StreamController<bool>(onCancel: () {
+    c = conns[address] = StreamController<bool>(onCancel: () {
       if (open > 0) open--;
+      if (identical(conns[address], c)) linked.remove(address);
       if (goneMs > 0) {
         clock.after(Duration(milliseconds: goneMs), () => _st.add((address, false, null)));
       } else {
@@ -151,7 +163,9 @@ class KRadio implements BleBackend {
       }
     });
     scheduleMicrotask(() {
+      if (!c.hasListener) return; // cancelled before it came up: never open (review 272e0e2 C-2)
       open++;
+      linked.add(address);
       if (open > maxOpen) maxOpen = open;
       c.add(true);
     });
@@ -159,12 +173,12 @@ class KRadio implements BleBackend {
   }
 
   /// The link's state stream says false / ends.
-  void drop() => conn?.add(false);
-  void end() => conn?.close();
+  void drop([String? a]) => conns[a ?? addr]?.add(false);
+  void end([String? a]) => conns[a ?? addr]?.close();
 
   /// The stack's own disconnect line only (`linkStates`): the gate marks the link down at once, and no state event
   /// reaches a listener of the link.
-  void linkDown() => _st.add((addr, false, null));
+  void linkDown([String? a]) => _st.add((a ?? addr, false, null));
 
   @override
   Stream<(String, bool, int?)> get linkStates => _st.stream;
@@ -173,7 +187,22 @@ class KRadio implements BleBackend {
   @override
   Future<List<int>> read(String address, Char c) async => [0];
   @override
-  Stream<List<int>> subscribe(String address, Char c) => tx.stream;
+  Stream<List<int>> subscribe(String address, Char c) {
+    final src = txOf(address).stream;
+    if (subCancelMs == 0) return src;
+    StreamSubscription<List<int>>? s;
+    late StreamController<List<int>> out;
+    out = StreamController<List<int>>(
+        sync: true,
+        onListen: () => s = src.listen(out.add),
+        onCancel: () {
+          s?.cancel();
+          final d = Completer<void>();
+          clock.after(Duration(milliseconds: subCancelMs), d.complete);
+          return d.future;
+        });
+    return out.stream;
+  }
   @override
   Future<void> write(String address, Char c, List<int> value) async {
     final f = value[0];
@@ -181,10 +210,11 @@ class KRadio implements BleBackend {
     final h = hold[f];
     final d = (h == null || h.isEmpty) ? 0 : h.removeAt(0);
     if (d < 0) return;
+    final to = txOf(address);
     if (d == 0) {
-      scheduleMicrotask(() => tx.add([f + 1]));
+      scheduleMicrotask(() => to.add([f + 1]));
     } else {
-      clock.after(Duration(milliseconds: d), () => tx.add([f + 1]));
+      clock.after(Duration(milliseconds: d), () => to.add([f + 1]));
     }
   }
 }
@@ -298,6 +328,7 @@ class KRig {
   bool boomNow = false, boomWall = false; // NodeLink's next now() / wall() throws (once)
   Completer<Uint8List?>? openHold;
   String advAddr = 'a1';
+  List<String>? advs; // the addresses that advertise (null: [advAddr] only)
   bool quiet = false; // the node does not advertise
   List<Rec> recs;
   late final LeaseRegistry reg;
@@ -351,10 +382,14 @@ class KRig {
     keepScreen: (on) async {},
   );
 
-  /// Runs the fake clock; the node advertises whenever the phone has no link to it.
+  /// Runs the fake clock; a node advertises whenever the phone has no link to it.
   Future<void> run(int ms, {bool adv = true}) async {
     for (var t = 0; t < ms; t += 100) {
-      if (adv && !quiet && radio.open == 0 && (clock.t ~/ 100) % 5 == 0) radio.scanCtl.add(advAddr);
+      if (adv && !quiet && (clock.t ~/ 100) % 5 == 0) {
+        for (final a in advs ?? [advAddr]) {
+          if (!radio.linked.contains(a)) radio.scanCtl.add(a);
+        }
+      }
       await clock.run(100);
     }
   }
@@ -409,7 +444,7 @@ class KRig {
   int get readAt => nl.core.states['Y1']!.readAt ?? -1;
 
   /// (links in the gate, NodeLink's kept state, the first session disposed)
-  (int, KeptState?, bool) get st => (gate.links, nl.keptState, s0.disposed);
+  (int, KeptState?, bool) get st => (gate.links, nl.keptState('Y1'), s0.disposed);
 }
 
 const gone = (0, null, true);
@@ -448,8 +483,8 @@ void main() {
     await rig.openPage();
     expect(rig.nl.core.states['Y1']!.kind, Kind.read, reason: rig.tr);
     expect(rig.gate.links, 1);
-    expect(rig.nl.keptState, KeptState.parked);
-    final k = rig.nl.kept!;
+    expect(rig.nl.keptState('Y1'), KeptState.parked);
+    final k = rig.nl.kept('Y1')!;
     expect(k.link.token, isNull);
     expect(() => k.link.write(Char.rx, [1]), throwsA(isA<Refused>()));
     expect(() => k.link.subscribe(Char.tx), throwsA(isA<Refused>()));
@@ -488,7 +523,7 @@ void main() {
   test('T3: on the node page with no kept link, two OpSession.once reads in a row -> 1 connect; parked after each',
       () async {
     final rig = await t1(readFinds: false);
-    expect((rig.radio.connects, rig.gate.links, rig.nl.keptState), (0, 0, null));
+    expect((rig.radio.connects, rig.gate.links, rig.nl.keptState('Y1')), (0, 0, null));
     final a = await rig.op((c, gone) => c.settings());
     expect(a.end, OpEnd.done, reason: '$a\n${rig.tr}');
     expect(rig.st, parked);
@@ -524,10 +559,10 @@ void main() {
     test('(b) a hung answer -> closed after 5 s and the round reads by a new connect inside its window', () async {
       final rig = await t1();
       rig.radio.hold[fStatus] = [-1];
-      await rig.wait(() => rig.nl.keptState == KeptState.reading, what: 'the 60 s read');
+      await rig.wait(() => rig.nl.keptState('Y1') == KeptState.reading, what: 'the 60 s read');
       final t0 = rig.clock.t;
       await rig.until(t0 + 4700);
-      expect(rig.nl.keptState, KeptState.reading, reason: rig.tr);
+      expect(rig.nl.keptState('Y1'), KeptState.reading, reason: rig.tr);
       expect(rig.s0.disposed, isFalse);
       await rig.until(t0 + 5300, adv: false);
       expect(rig.st, gone, reason: rig.tr);
@@ -550,8 +585,8 @@ void main() {
       expect(rig.st, gone, reason: rig.tr);
       await rig.until(t0 + 25000); // the round's window is 30 s
       expect((rig.radio.connects, rig.nSessions), (2, 2), reason: rig.tr);
-      expect((rig.gate.links, rig.nl.keptState), (1, KeptState.parked));
-      expect(identical(rig.nl.kept!.session, rig.sess(1)), isTrue);
+      expect((rig.gate.links, rig.nl.keptState('Y1')), (1, KeptState.parked));
+      expect(identical(rig.nl.kept('Y1')!.session, rig.sess(1)), isTrue);
       expect(rig.readAt, greaterThan(t0));
     });
 
@@ -562,10 +597,10 @@ void main() {
       rig.netKnown = true;
       rig.radio.hold[fStatus] = [3500];
       rig.openHold = Completer<Uint8List?>(); // never ends: the step's own 2 s budget is real time, not the fake clock
-      await rig.wait(() => rig.nl.keptState == KeptState.reading, adv: false, what: 'the 60 s read');
+      await rig.wait(() => rig.nl.keptState('Y1') == KeptState.reading, adv: false, what: 'the 60 s read');
       final t0 = rig.clock.t;
       await rig.until(t0 + 4700, adv: false);
-      expect((rig.nl.keptState, rig.s0.views, rig.openHold), (KeptState.reading, 2, null), reason: rig.tr);
+      expect((rig.nl.keptState('Y1'), rig.s0.views, rig.openHold), (KeptState.reading, 2, null), reason: rig.tr);
       await rig.until(t0 + 5300, adv: false);
       expect(rig.st, gone, reason: rig.tr);
       expect(rig.readAt, at, reason: 'a read that returned after its limit was recorded');
@@ -580,7 +615,7 @@ void main() {
       await rig.run(300, adv: false);
       expect(rig.st, gone, reason: rig.tr);
       await rig.until(t0 + 25000);
-      expect((rig.radio.connects, rig.gate.links, rig.nl.keptState), (2, 1, KeptState.parked), reason: rig.tr);
+      expect((rig.radio.connects, rig.gate.links, rig.nl.keptState('Y1')), (2, 1, KeptState.parked), reason: rig.tr);
       expect(rig.readAt, greaterThan(t0));
     });
 
@@ -590,10 +625,10 @@ void main() {
       var t0 = -1;
       rig.radio.hold[fStatus] = [500]; // the 60 s read is seen in state reading
       final errs = await guarded(() async {
-        for (var i = 0; i < 700 && rig.nl.keptState != KeptState.reading; i++) {
+        for (var i = 0; i < 700 && rig.nl.keptState('Y1') != KeptState.reading; i++) {
           await rig.run(100, adv: false);
         }
-        if (rig.nl.keptState != KeptState.reading) return;
+        if (rig.nl.keptState('Y1') != KeptState.reading) return;
         t0 = rig.clock.t;
         rig.boomWall = true; // _noteRead's wall(), in the block that takes the answer
         await rig.run(1000, adv: false);
@@ -603,7 +638,7 @@ void main() {
       expect(rig.st, gone, reason: rig.tr);
       // the core had taken the body before the throw: this round is over, the next one reads by a new connect
       await rig.until(t0 + 70000);
-      expect((rig.radio.connects, rig.gate.links, rig.nl.keptState), (2, 1, KeptState.parked), reason: rig.tr);
+      expect((rig.radio.connects, rig.gate.links, rig.nl.keptState('Y1')), (2, 1, KeptState.parked), reason: rig.tr);
       expect(rig.readAt, greaterThan(t0 + 50000));
     });
 
@@ -626,7 +661,7 @@ void main() {
       rig.netKnown = true;
       final hold = rig.openHold = Completer<Uint8List?>();
       // the read has its page (statusView was called) and waits in the hint / team step
-      await rig.wait(() => rig.nl.keptState == KeptState.reading && rig.s0.views == 2, adv: false, what: 'the read');
+      await rig.wait(() => rig.nl.keptState('Y1') == KeptState.reading && rig.s0.views == 2, adv: false, what: 'the read');
       expect(rig.openHold, isNull, reason: 'the read is not waiting in openNet');
       rig.nl.radio(bluetooth: false);
       rig.nl.radio(bluetooth: true); // a new round, and the node is its target again
@@ -640,36 +675,39 @@ void main() {
     });
   });
 
-  group('T5 parked: T1, then the page / app / record / radio goes -> 0 links, session disposed', () {
+  group('T5 parked, the page goes (v5.1: closed) -> the link stays parked (329-link-per-node.md §3.2)', () {
     test('setPage(home)', () async {
       final rig = await t1();
       rig.nl.setPage(Page.home);
       await rig.run(300, adv: false);
-      expect(rig.st, gone);
-      expect(rig.radio.maxOpen, 1);
+      expect(rig.st, parked);
+      expect((rig.radio.connects, rig.radio.maxOpen), (1, 1));
     });
     test('setPage(other)', () async {
       final rig = await t1();
       rig.nl.setPage(Page.other);
       await rig.run(300, adv: false);
-      expect(rig.st, gone);
+      expect(rig.st, parked);
     });
     test('setPage(node, other id)', () async {
       final rig = await t1();
       rig.nl.setPage(Page.node, node: 'Y2');
       await rig.run(300, adv: false);
-      expect(rig.st, gone);
+      expect(rig.st, parked);
     });
-    test('setPage(home) then at once setPage(node, id): the new read connects and is kept', () async {
+    test('setPage(home) then at once setPage(node, id): the same link, no new connect', () async {
       final rig = await t1();
       rig.nl.setPage(Page.home);
       rig.nl.setPage(Page.node, node: 'Y1');
-      await rig.run(3000);
-      expect(rig.s0.disposed, isTrue);
-      expect((rig.radio.connects, rig.radio.maxOpen, rig.gate.links, rig.nl.keptState), (2, 1, 1, KeptState.parked),
+      await rig.run(3000, adv: false);
+      expect(rig.s0.disposed, isFalse);
+      expect((rig.radio.connects, rig.radio.maxOpen, rig.gate.links, rig.nl.keptState('Y1')), (1, 1, 1, KeptState.parked),
           reason: rig.tr);
-      expect(identical(rig.nl.kept!.session, rig.sess(1)), isTrue);
+      expect(identical(rig.nl.kept('Y1')!.session, rig.s0), isTrue);
     });
+  });
+
+  group('T5 parked: T1, then the app / record / radio goes -> 0 links, session disposed', () {
     test('background()', () async {
       final rig = await t1();
       rig.nl.background();
@@ -717,7 +755,7 @@ void main() {
       final rig = await t1();
       final at = rig.readAt;
       rig.radio.hold[fInfo] = [-1];
-      await rig.wait(() => rig.nl.keptState == KeptState.reading && rig.radio.written.last == fInfo,
+      await rig.wait(() => rig.nl.keptState('Y1') == KeptState.reading && rig.radio.written.last == fInfo,
           adv: false, what: 'the 60 s read asked for info');
       return (rig, at);
     }
@@ -729,11 +767,11 @@ void main() {
       expect(rig.st, gone, reason: rig.tr);
       expect(rig.readAt, at);
     });
-    test('setPage(home)', () async {
+    test('setPage(home) (v5.1: closed) -> the read goes on', () async {
       final (rig, at) = await reading();
       rig.nl.setPage(Page.home);
       await rig.run(300, adv: false);
-      expect(rig.st, gone, reason: rig.tr);
+      expect(rig.st, (1, KeptState.reading, false), reason: rig.tr);
       expect(rig.readAt, at);
     });
     test('link down', () async {
@@ -794,7 +832,7 @@ void main() {
     var closed = false;
     unawaited(h.close(reusable: true).then((_) => closed = true));
     await rig.run(500, adv: false);
-    expect((closed, rig.gate.links, rig.nl.keptState), (false, 1, null), reason: rig.tr);
+    expect((closed, rig.gate.links, rig.nl.keptState('Y1')), (false, 1, null), reason: rig.tr);
     await rig.run(1000, adv: false);
     expect((closed, rig.st), (true, gone), reason: rig.tr);
     await l.release();
@@ -823,7 +861,7 @@ void main() {
       test(how, () async {
         final rig = await t1();
         final (l, h) = await rig.lend();
-        expect(rig.nl.keptState, KeptState.lent);
+        expect(rig.nl.keptState('Y1'), KeptState.lent);
         expect(rig.radio.connects, 1);
         if (how == 'released') {
           await l.release();
@@ -834,15 +872,15 @@ void main() {
         }
         expect(l.valid, isFalse);
         await rig.run(300, adv: false);
-        expect((rig.gate.links, rig.nl.keptState), (0, null), reason: rig.tr);
+        expect((rig.gate.links, rig.nl.keptState('Y1')), (0, null), reason: rig.tr);
         await rig.run(10000); // the round after the lease
-        expect((rig.radio.connects, rig.gate.links, rig.nl.keptState), (2, 1, KeptState.parked), reason: rig.tr);
-        final k = rig.nl.kept;
+        expect((rig.radio.connects, rig.gate.links, rig.nl.keptState('Y1')), (2, 1, KeptState.parked), reason: rig.tr);
+        final k = rig.nl.kept('Y1');
         expect(identical(k!.session, rig.sess(1)), isTrue);
         await h.close(reusable: true); // the old holder, late
         await rig.run(300, adv: false);
-        expect((rig.gate.links, rig.nl.keptState), (1, KeptState.parked));
-        expect(identical(rig.nl.kept, k), isTrue);
+        expect((rig.gate.links, rig.nl.keptState('Y1')), (1, KeptState.parked));
+        expect(identical(rig.nl.kept('Y1'), k), isTrue);
         expect((rig.s0.disposed, rig.sess(1).disposed), (true, false));
         expect(rig.radio.connects, 2);
       });
@@ -865,13 +903,14 @@ void main() {
       expect(l, isNotNull);
       expect(rig.st, gone);
     });
-    test('loginFor another id', () async {
+    test('loginFor another id (v5.1: the kept link closed first) -> it stays parked beside the new link', () async {
       final rig = await t1();
       rig.advAddr = 'a2';
       final a = await rig.op((c, gone) => c.settings(), id: 'Y2');
       expect(a.end, OpEnd.done, reason: '$a\n${rig.tr}');
-      expect(rig.s0.disposed, isTrue);
-      expect((rig.radio.connects, rig.radio.maxOpen), (2, 1));
+      expect(rig.s0.disposed, isFalse);
+      expect((rig.radio.connects, rig.radio.maxOpen), (2, 2));
+      expect((rig.nl.keptState('Y1'), rig.nl.keptState('Y2')), (KeptState.parked, KeptState.parked), reason: rig.tr);
       expect(rig.gate.refused, isEmpty);
     });
   });
@@ -881,7 +920,7 @@ void main() {
     final rig = await t1();
     final at = rig.readAt;
     rig.radio.hold[fInfo] = [-1];
-    await rig.wait(() => rig.nl.keptState == KeptState.reading && rig.radio.written.last == fInfo,
+    await rig.wait(() => rig.nl.keptState('Y1') == KeptState.reading && rig.radio.written.last == fInfo,
         adv: false, what: 'the 60 s read asked for info');
     final sw = Stopwatch()..start();
     final l = await rig.nl.acquire('操作', LeaseKind.session);
@@ -904,7 +943,7 @@ void main() {
     test('(a) on the node page, nothing wrong -> parked', () async {
       final rig = await t1();
       final (l, h) = await rig.lend();
-      expect(rig.nl.keptState, KeptState.lent);
+      expect(rig.nl.keptState('Y1'), KeptState.lent);
       await h.close(reusable: true);
       expect(rig.st, parked);
       await l.release();
@@ -921,10 +960,10 @@ void main() {
       expect(r.single.end, OpEnd.done, reason: '${r.single}\n${rig.tr}');
       expect(r.single.reply!.text, contains('info'));
       await rig.run(300, adv: false);
-      expect((rig.gate.links, rig.nl.keptState, allDisposed(rig)), (0, null, true), reason: rig.tr);
+      expect((rig.gate.links, rig.nl.keptState('Y1'), allDisposed(rig)), (0, null, true), reason: rig.tr);
     });
 
-    test('(c) Page.other, OpSession.once (settings) -> answered, 0 links', () async {
+    test('(c) Page.other, OpSession.once (settings) -> answered; (v5.1: 0 links) parked', () async {
       final rig = KRig(rust);
       await rig.nl.start(Page.other);
       await rig.run(2500, adv: false);
@@ -932,29 +971,48 @@ void main() {
       expect(a.end, OpEnd.done, reason: '$a\n${rig.tr}');
       expect(a.reply!.text, contains('settings'));
       await rig.run(300, adv: false);
-      expect((rig.gate.links, rig.nl.keptState, allDisposed(rig)), (0, null, true), reason: rig.tr);
+      expect((rig.gate.links, rig.nl.keptState('Y1'), allDisposed(rig)), (1, KeptState.parked, false), reason: rig.tr);
     });
 
-    test('(d) Page.home, one record, OpSession.once (info) -> answered, 0 links; the 60 s round reads by a new connect',
-        () async {
+    test('(d) Page.home, one record: (v5.1: not kept) the read is kept; OpSession.once (info) from home logs in by a '
+        'new connect and is parked; the 60 s round reads on that link', () async {
       final rig = KRig(rust, recs: [const Rec('Y1', 1)]);
       await rig.nl.start(Page.home);
       await rig.run(2500);
-      expect((rig.gate.links, rig.nl.keptState), (0, null), reason: 'a read on the home page is not kept');
+      expect((rig.gate.links, rig.nl.keptState('Y1'), rig.radio.connects), (1, KeptState.parked, 1), reason: rig.tr);
       final a = await rig.op((c, gone) => c.info());
       expect(a.end, OpEnd.done, reason: '$a\n${rig.tr}');
       expect(a.reply!.text, contains('info'));
       await rig.run(300, adv: false);
-      expect((rig.gate.links, rig.nl.keptState, allDisposed(rig)), (0, null, true), reason: rig.tr);
-      final c0 = rig.radio.connects;
+      expect(rig.s0.disposed, isTrue, reason: 'a login from the home page does not use the kept link');
+      expect((rig.gate.links, rig.nl.keptState('Y1'), rig.radio.connects, rig.radio.maxOpen), (1, KeptState.parked, 2, 1),
+          reason: rig.tr);
+      final at = rig.readAt;
       await rig.run(70000);
-      expect(rig.radio.connects, greaterThan(c0), reason: rig.tr);
-      expect((rig.gate.links, rig.nl.keptState, allDisposed(rig)), (0, null, true), reason: rig.tr);
+      expect(rig.readAt, greaterThan(at), reason: rig.tr);
+      expect((rig.gate.links, rig.nl.keptState('Y1'), rig.radio.connects), (1, KeptState.parked, 2), reason: rig.tr);
     });
 
     for (final (name, event) in <(String, void Function(KRig))>[
       ('(e) lent, then setPage(home)', (rig) => rig.nl.setPage(Page.home)),
       ('(e) lent, then setPage(node, other id)', (rig) => rig.nl.setPage(Page.node, node: 'Y2')),
+    ]) {
+      test('$name -> answered; (v5.1: 0 links) parked', () async {
+        final rig = await t1();
+        rig.radio.hold[fGet] = [2000];
+        final r = rig.fly((c, gone) => c.settings());
+        await rig.wait(() => rig.radio.written.last == fGet, adv: false, what: 'the request is out');
+        expect(rig.nl.keptState('Y1'), KeptState.lent);
+        event(rig);
+        await rig.wait(() => r.isNotEmpty, adv: false, what: 'the operation ended');
+        expect(r.single.end, OpEnd.done, reason: '${r.single}\n${rig.tr}');
+        await rig.run(300, adv: false);
+        expect(rig.st, parked, reason: rig.tr);
+        expect(rig.radio.connects, 1);
+      });
+    }
+
+    for (final (name, event) in <(String, void Function(KRig))>[
       ('(e) lent, then background()', (rig) => rig.nl.background()),
       ('(f) core.blocked set while lent', (rig) => rig.nl.radio(bluetooth: false)),
     ]) {
@@ -963,7 +1021,7 @@ void main() {
         rig.radio.hold[fGet] = [2000];
         final r = rig.fly((c, gone) => c.settings());
         await rig.wait(() => rig.radio.written.last == fGet, adv: false, what: 'the request is out');
-        expect(rig.nl.keptState, KeptState.lent);
+        expect(rig.nl.keptState('Y1'), KeptState.lent);
         event(rig);
         await rig.wait(() => r.isNotEmpty, adv: false, what: 'the operation ended');
         expect(r.single.end, OpEnd.done, reason: '${r.single}\n${rig.tr}');
@@ -1020,8 +1078,8 @@ void main() {
     expect(rig.st, gone, reason: rig.tr);
     await l.release();
     await rig.run(10000);
-    expect((rig.radio.connects, rig.gate.links, rig.nl.keptState), (2, 1, KeptState.parked), reason: rig.tr);
-    expect(identical(rig.nl.kept!.session, rig.sess(1)), isTrue);
+    expect((rig.radio.connects, rig.gate.links, rig.nl.keptState('Y1')), (2, 1, KeptState.parked), reason: rig.tr);
+    expect(identical(rig.nl.kept('Y1')!.session, rig.sess(1)), isTrue);
   });
 
   group('T15: T1, then a failed precondition, loginFor -> precondition, 0 links, no request sent', () {
@@ -1062,7 +1120,7 @@ void main() {
       rig.radio.hold[fGet] = [2000];
       final r = rig.fly((c, gone) => c.settings());
       await rig.wait(() => rig.radio.written.last == fGet, adv: false, what: 'the request is out');
-      expect(rig.nl.keptState, KeptState.lent);
+      expect(rig.nl.keptState('Y1'), KeptState.lent);
       return (rig, r);
     }
 
@@ -1082,12 +1140,12 @@ void main() {
       await rig.run(300, adv: false);
       expect(rig.st, gone);
     });
-    test('(b) setPage(home)', () async {
+    test('(b) setPage(home) (v5.1: then 0 links) -> then parked', () async {
       final (rig, r) = await out();
       rig.nl.setPage(Page.home);
       await answered(rig, r);
       await rig.run(300, adv: false);
-      expect(rig.st, gone);
+      expect(rig.st, parked);
     });
     test('(c) dispose(), not awaited before the request is answered', () async {
       final (rig, r) = await out();
@@ -1229,8 +1287,8 @@ void main() {
       final rig = await t1();
       rig.radio.linkDown();
       await rig.run(200, adv: false);
-      expect(rig.nl.keptState, KeptState.parked, reason: 'no state event: NodeLink has not heard of it');
-      expect(rig.nl.kept!.link.up, isFalse);
+      expect(rig.nl.keptState('Y1'), KeptState.parked, reason: 'no state event: NodeLink has not heard of it');
+      expect(rig.nl.kept('Y1')!.link.up, isFalse);
       final a = await rig.op((c, gone) => c.settings());
       expect(a.end, OpEnd.done, reason: '$a\n${rig.tr}');
       expect(a.reply!.text, contains('settings'));

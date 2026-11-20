@@ -1,6 +1,6 @@
 // #329 design §4.3: NodeLink drives the scheduler core (core.dart) with the real radio. It owns the timer, the one
-// scan of a round and the one link of an attempt (both through BleGate with the registry's NodeLink token, which
-// exists only while no lease is held); the login + status read of an attempt is a Prober (the OwnerSession one is
+// scan of a round, the one link of an attempt and the links it keeps open to its own nodes (329-link-per-node.md;
+// all through BleGate with the registry's NodeLink token, which exists only while no lease is held); the login + status read of an attempt is a Prober (the OwnerSession one is
 // prober.dart; tests use fakes). Pages and the app lifecycle tell it what is on screen; the lease registry tells it
 // when an operation holds Bluetooth.
 import 'dart:async';
@@ -53,7 +53,7 @@ abstract class KeptReader {
   Future<Outcome> read(LoginHandoff h, {required Future<void> cancelled});
 }
 
-/// The states of the kept link (#329 UX plan §4): parked = token null, NodeLink listens; reading = NodeLink's token,
+/// The states of a kept link (#329 UX plan §4): parked = token null, NodeLink listens; reading = NodeLink's token,
 /// one status read; lent = a lease's token, from `loginFor` returning it until its holder closes it.
 enum KeptState { parked, reading, lent }
 
@@ -104,7 +104,16 @@ class NodeLink implements LeaseListener {
   }) : wall = wall ?? DateTime.now {
     reg.listeners.add(this);
     final Object p = prober;
-    if (p is KeptReader) p.keepFor = (id) => _kept == null && _onPage(id);
+    // 329-link-per-node.md §3.2: a read keeps its link when this node has none, its record is here, nothing blocks
+    // the radio, the app is in the foreground and there is room
+    if (p is KeptReader) {
+      p.keepFor = (id) =>
+          !_kept.containsKey(id) &&
+          core.states.containsKey(id) &&
+          core.blocked == null &&
+          core.fg &&
+          _kept.length < keptMax;
+    }
   }
 
   final NodeLinkCore core;
@@ -294,14 +303,12 @@ class NodeLink implements LeaseListener {
       _changed.add(null);
     }
     core.setPage(now(), page, node: node);
-    final k = _kept;
-    if (k != null && !(page == Page.node && node == k.id)) _closeKept(); // §4.5: kept only on its node's page
-    _pump();
+    _pump(); // 329-link-per-node.md §3.2: a page change closes no kept link
   }
 
   void background() {
     core.background(now());
-    _closeKept(); // §4.5: kept only in the foreground
+    _closeIdle(); // §4.5: kept only in the foreground
     _pump();
   }
 
@@ -330,7 +337,7 @@ class NodeLink implements LeaseListener {
 
   void radio({bool? bluetooth, bool? permission, bool? keyOk}) {
     core.setRadio(now(), bluetooth: bluetooth, permission: permission, keyOk: keyOk);
-    if (core.blocked != null) _closeKept(); // §4.5
+    if (core.blocked != null) _closeIdle(); // §4.5
     _lfCut(); // a login under a lease ends as precondition at once (core.setRadio), its attempt with it
     _lfPoke();
     _pump();
@@ -349,7 +356,15 @@ class NodeLink implements LeaseListener {
     core.acquireLease(now());
     // #329 UX plan §4.2: a kept link that is reading goes (the flow logs in from the start); a parked one stays for
     // a session lease's loginFor and goes for a raw lease (an older page uses the radio itself)
-    if (_ks == KeptState.reading || (_ks == KeptState.parked && kind == LeaseKind.raw)) _closeKept();
+    final closes = <Future<void>>[];
+    for (final e in _kept.entries.toList()) {
+      final st = e.value.st;
+      if (st == KeptState.reading || (st == KeptState.parked && kind == LeaseKind.raw)) closes.add(_closeKept(e.key));
+    }
+    // the round's attempt ends before the wait: it would connect again once these links are gone (review 272e0e2 C-1)
+    _abort();
+    // the lease is given with these links gone and their sessions disposed (bounded as the wait in _dropAll)
+    await Future.wait(closes).timeout(const Duration(seconds: 5), onTimeout: () => const []);
     await _dropAll();
     final mine = reg.nodeLinkToken; // NodeLink's own token (no lease is held here), until the lease replaces it
     final l = reg.acquire(name, kind);
@@ -414,27 +429,28 @@ class NodeLink implements LeaseListener {
       if (!ok) radio(keyOk: false);
     }
     if (!mine()) {
-      _closeKept();
+      _closeKept(id);
       return const LoginForResult(LoginForEnd.noLease);
     }
     if (core.blocked != null) {
-      _closeKept(); // #329 UX plan §4.2: a check failed
+      _closeIdle(); // #329 UX plan §4.2: a check failed
       return const LoginForResult(LoginForEnd.precondition);
     }
-    // #329 UX plan §4.2: after the checks every login runs, the kept link of this node is lent; one of another node
-    // is closed first
-    final kept = _kept;
-    if (kept != null && _ks == KeptState.parked) {
-      if (kept.id == id) {
+    // #329 UX plan §4.2: after the checks every login runs, the kept link of this node is lent when its page is
+    // open; from any other page it is closed and the login takes the existing path. The links kept to other nodes
+    // stay (329-link-per-node.md §3.2)
+    final kept = _kept[id];
+    if (kept != null && kept.st == KeptState.parked) {
+      if (_onPage(id)) {
         try {
-          gate.pass(kept.link, lease.token);
+          gate.pass(kept.h.link, lease.token);
           trace?.call(mask('loginFor $id -> ok (kept link)'));
-          return LoginForResult(LoginForEnd.ok, _lend(kept, lease));
+          return LoginForResult(LoginForEnd.ok, _lend(kept.h, lease));
         } on Refused {
-          await _closeKept(); // not up: the existing path
+          await _closeKept(id); // not up: the existing path
         }
       } else {
-        await _closeKept();
+        await _closeKept(id);
       }
     }
     final early = <String, String?>{}; // address -> its last hint, in the order first seen
@@ -462,7 +478,7 @@ class NodeLink implements LeaseListener {
       l.tick(now());
       if (l.done) break;
       if (_lfScan == null && !_lfScanStarting && _lfScanWait == null) unawaited(_lfStartScan(lease, seen));
-      final a = gate.links == 0 ? l.next(now()) : null;
+      final a = gate.active == 0 ? l.next(now()) : null;
       if (a != null) {
         final o = await _lfAttempt(p, lease, l, a);
         l.result(now(), a, o);
@@ -476,7 +492,7 @@ class NodeLink implements LeaseListener {
       final w = l.wakeAt(now());
       // a link still closing is waited for in short steps; otherwise the next deadline or an event (an address, the
       // radio, the lease)
-      final ms = gate.links > 0 ? 100 : (w == null ? null : w - now());
+      final ms = gate.active > 0 ? 100 : (w == null ? null : w - now());
       await _lfSleep(ms);
     }
     trace?.call(mask('loginFor $id -> ${l.end!.name}'));
@@ -529,13 +545,20 @@ class NodeLink implements LeaseListener {
 
   Future<Outcome> _lfAttempt(Prober p, Lease lease, LoginFor l, Attempt a) async {
     final cancel = _lfCancel = Completer<void>();
-    final due = Completer<void>();
-    final stopDue = after(msg2, () => due.isCompleted ? null : due.complete());
     // the 60 s cut the running attempt too (code-1 A-m6)
     final left = l.start + LoginFor.budget - now();
     final stopBudget = after(Duration(milliseconds: left < 0 ? 0 : left), () {
       if (!cancel.isCompleted) cancel.complete();
     });
+    // 329-link-per-node.md §3.3: room for this link first; the login may be over after that wait
+    await _makeRoom(cancel.future);
+    if (cancel.isCompleted || !identical(reg.current, lease) || !lease.valid || _disposed) {
+      stopBudget();
+      if (identical(_lfCancel, cancel)) _lfCancel = null;
+      return const Outcome(Res.noResponse);
+    }
+    final due = Completer<void>();
+    final stopDue = after(msg2, () => due.isCompleted ? null : due.complete());
     final t0 = now();
     GateLink? link;
     Outcome o;
@@ -580,47 +603,60 @@ class NodeLink implements LeaseListener {
     await s?.stop();
   }
 
-  // ---- the kept link (#329 UX plan §4) ---------------------------------------------------------------------------
+  // ---- the kept links (#329 UX plan §4; one per node: 329-link-per-node.md §3) -----------------------------------
 
-  /// §4.4: one status read on the kept link (its two requests and the hint / team step) has this long.
+  /// §4.4: one status read on a kept link (its two requests and the hint / team step) has this long.
   static const keptReadMax = Duration(seconds: 5);
 
-  LoginHandoff? _kept;
-  KeptState? _ks;
-  Lease? _keptLease; // the lease a lent link was lent under
-  StreamSubscription<bool>? _keptSub; // the link's state: from the first park until it is lent or closed
-  Completer<void>? _keptCancel; // cancels the read of state reading
+  /// 329-link-per-node.md §3.3: NodeLink's own links (parked, reading, lent, connecting, closing) are never more.
+  static const keptMax = 2;
+
+  /// §3.2-4: a kept link is read again no sooner than this after its last read ended or it was parked.
+  static const readGap = 1100;
+
+  /// Node id -> its kept link. One writer: NodeLink ([_park], [_lend], [_forget]); the core gets the ids after every
+  /// change ([_syncKept]).
+  final Map<String, _Kept> _kept = {};
+  Cancel? _readWake; // the timer of the next kept read's [readGap]
 
   @visibleForTesting
-  LoginHandoff? get kept => _kept;
+  LoginHandoff? kept(String id) => _kept[id]?.h;
   @visibleForTesting
-  KeptState? get keptState => _ks;
+  KeptState? keptState(String id) => _kept[id]?.st;
+  @visibleForTesting
+  int get keptCount => _kept.length;
 
-  /// A link is parked only in the foreground on its node's page.
+  void _syncKept() => core.setKept(_kept.keys.toSet());
+
+  /// A flow's login is given the kept link of [id] only when that node's page is open in the foreground.
   bool _onPage(String id) => core.fg && core.page == Page.node && core.pageNode == id;
 
-  /// §4.1 Park, one synchronous step: [h] becomes the kept link, parked (null). Not null = not parked and NodeLink
-  /// holds no reference (a frame the inbox was holding closed it, or the gate refused a link that is not up): the
-  /// future of that close, which ends when the link is gone (§4.3: what the holder's `close()` waits for).
+  /// §4.1 Park, one synchronous step: [h] becomes its node's kept link, parked (null). Not null = not parked and
+  /// NodeLink holds no reference (a frame the inbox was holding closed it, or the gate refused a link that is not
+  /// up): the future of that close, which ends when the link is gone (§4.3: what the holder's `close()` waits for).
   Future<void>? _park(LoginHandoff h) {
-    _kept = h;
-    _ks = KeptState.parked;
-    _keptLease = null;
+    final id = h.id;
+    final e = _kept[id] ??= _Kept(h);
+    e.h = h;
+    e.st = KeptState.parked;
+    e.lease = null;
+    e.readEnd = now();
+    _syncKept();
     Future<void>? closing;
     void gone() {
-      if (identical(_kept?.link, h.link) && _ks != KeptState.lent) closing = _closeKept();
+      if (identical(_kept[id], e) && identical(e.h.link, h.link) && e.st != KeptState.lent) closing = _closeKept(id);
     }
 
-    _keptSub ??= h.link.state.listen((up) {
+    e.sub ??= h.link.state.listen((up) {
       if (!up) gone();
     }, onError: (Object _) => gone(), onDone: gone);
     // nothing is expected on a parked link: a frame or a subscription error closes it (never parsed)
     h.inbox.handle((_) => gone(), (_) => gone());
-    if (!identical(_kept, h)) return closing ?? h.destroy().then(_pumpAfterClose);
+    if (!identical(_kept[id], e) || !identical(e.h, h)) return closing ?? h.destroy().then(_pumpAfterClose);
     try {
       gate.pass(h.link, null);
     } on Refused {
-      _forget();
+      _forget(id);
       return h.destroy().then(_pumpAfterClose);
     }
     return null;
@@ -636,98 +672,138 @@ class NodeLink implements LeaseListener {
     }
   }
 
-  /// Drop the reference: the kept link is nobody's here from now on. A read on it is cancelled.
-  void _forget() {
-    _kept = null;
-    _ks = null;
-    _keptLease = null;
-    _keptSub?.cancel();
-    _keptSub = null;
-    final c = _keptCancel;
-    _keptCancel = null;
+  /// Drop the reference: [id]'s kept link is nobody's here from now on. A read on it is cancelled.
+  void _forget(String id) {
+    final e = _kept.remove(id);
+    if (e == null) return;
+    e.sub?.cancel();
+    e.sub = null;
+    final c = e.cancel;
+    e.cancel = null;
     if (c != null && !c.isCompleted) c.complete();
+    _syncKept();
   }
 
   /// §4.5 close: a parked or reading kept link is forgotten at once and destroyed (read cancelled, session disposed,
   /// link closed); then plan again. A lent link is its holder's: nothing.
-  Future<void> _closeKept() {
-    final h = _kept;
-    if (h == null || _ks == KeptState.lent) return Future.value();
-    _forget();
-    return h.destroy().then(_pumpAfterClose);
+  Future<void> _closeKept(String id) {
+    final e = _kept[id];
+    if (e == null || e.st == KeptState.lent) return Future.value();
+    _forget(id);
+    // the gate counts the link as closing from here on: destroy() unsubscribes first, and until that returned the
+    // link would still be open and parked, which nothing waits for (review 009d592 A-1 / B-1)
+    unawaited(e.h.link.close().catchError((Object _) {}));
+    return e.h.destroy().then(_pumpAfterClose);
+  }
+
+  /// §4.5: every kept link that is not lent is closed (the background, a blocked radio).
+  void _closeIdle() {
+    for (final id in _kept.keys.toList()) {
+      _closeKept(id);
+    }
+  }
+
+  /// 329-link-per-node.md §3.3, where NodeLink is about to connect: with [keptMax] links kept the first parked one
+  /// is closed; then wait until no link is in use or closing (the gate counts a closing link for at most 5 s).
+  /// Ends early when [cancelled] completes; the caller checks its attempt again after this.
+  Future<void> _makeRoom(Future<void> cancelled) async {
+    var cut = false;
+    unawaited(cancelled.then((_) => cut = true));
+    if (_kept.length >= keptMax) {
+      for (final e in _kept.entries.toList()) {
+        if (e.value.st == KeptState.parked) {
+          _closeKept(e.key); // its link counts as closing from here on: the wait below sees it
+          break;
+        }
+      }
+    }
+    for (var i = 0; i < 60 && gate.active > 0 && !cut && !_disposed; i++) {
+      final c = Completer<void>();
+      void done([void _]) => c.isCompleted ? null : c.complete();
+      final stop = after(const Duration(milliseconds: 100), done);
+      unawaited(cancelled.then(done));
+      await c.future;
+      stop();
+    }
   }
 
   /// §4.2: the handoff a flow gets: a new object over [h]'s link and session with NodeLink's hook; state lent.
   /// NodeLink listens to nothing while it is lent.
   LoginHandoff _lend(LoginHandoff h, Lease lease) {
-    _keptSub?.cancel();
-    _keptSub = null;
+    final e = _kept[h.id] ??= _Kept(h);
+    e.sub?.cancel();
+    e.sub = null;
     h.inbox.handle(null, null);
     final n = h.again(hook: _giveBack);
-    _kept = n;
-    _ks = KeptState.lent;
-    _keptLease = lease;
+    e.h = n;
+    e.st = KeptState.lent;
+    e.lease = lease;
+    _syncKept();
     return n;
   }
 
   /// §4.3 the hook: the holder closed [h]. Parked again only when the session only read, [h] is still the link lent
-  /// here, nothing blocks the radio and its node's page is open in the foreground; anything else destroys it.
+  /// here, nothing blocks the radio and the app is in the foreground; anything else destroys it.
   Future<void> _giveBack(LoginHandoff h, {required bool reusable}) {
-    if (identical(_kept, h) && _ks == KeptState.lent) {
-      if (reusable && core.blocked == null && _onPage(h.id)) {
+    final e = _kept[h.id];
+    if (e != null && identical(e.h, h) && e.st == KeptState.lent) {
+      if (reusable && core.blocked == null && core.fg) {
         return _park(h.again()) ?? Future.value();
       }
-      _forget();
+      _forget(h.id);
     }
     return h.again().destroy().then(_pumpAfterClose);
   }
 
-  /// §4.4: one status read on the parked link, for the active round.
-  void _keptRead(LoginHandoff k) {
+  /// §4.4: one status read on the parked link [e], for the active round.
+  void _keptRead(_Kept e) {
+    final k = e.h;
+    final id = k.id;
     final Object p = prober;
     final t = reg.nodeLinkToken;
     if (p is! KeptReader || t == null) {
-      _closeKept();
+      _closeKept(id);
       return;
     }
     try {
       gate.pass(k.link, t);
     } on Refused {
-      _closeKept(); // not up
+      _closeKept(id); // not up
       return;
     }
-    _ks = KeptState.reading;
-    final cancel = _keptCancel = Completer<void>();
+    e.st = KeptState.reading;
+    final cancel = e.cancel = Completer<void>();
     var late = false;
     final stop = after(keptReadMax, () {
       late = true;
       if (!cancel.isCompleted) cancel.complete();
     });
+    bool mine() => identical(_kept[id], e) && identical(e.h, k) && e.st == KeptState.reading;
     p.read(k, cancelled: cancel.future).then((o) {
       stop();
-      // closed meanwhile (a page change, the background, link down, a lease): the outcome is dropped, even a body
-      if (!identical(_kept, k) || _ks != KeptState.reading) return;
-      _keptCancel = null;
+      // closed meanwhile (the background, link down, a lease): the outcome is dropped, even a body
+      if (!mine()) return;
+      e.cancel = null;
       if (late || (o.res != Res.body && o.res != Res.errorCode)) {
-        _closeKept(); // the round goes on by a new connect
+        _closeKept(id); // the round goes on by a new connect
         _pump();
         return;
       }
       try {
         final t = now();
-        if (core.keptRead(t, k.id, k.link.address, o)) _noteRead(k.id, o, t);
+        if (core.keptRead(t, id, k.link.address, o)) _noteRead(id, o, t);
         _park(k);
         _pump();
       } catch (_) {
         // as a reader that fails: the link is not left in state reading (the error itself goes on to the zone)
-        if (identical(_kept, k)) _closeKept();
+        if (identical(_kept[id], e)) _closeKept(id);
         rethrow;
       }
     }, onError: (Object _) {
       // a reader that fails (KeptReader.read never should): the link is not left in state reading
       stop();
-      if (!identical(_kept, k) || _ks != KeptState.reading) return;
-      _closeKept();
+      if (!mine()) return;
+      _closeKept(id);
       _pump();
     });
   }
@@ -740,10 +816,11 @@ class NodeLink implements LeaseListener {
     if (team is TeamSeen) teams[id] = TeamRead(team.netId, team.view, t, w);
   }
 
-  /// §4.5: the kept link's record is gone (checked after each new record list).
+  /// §4.5: a kept link's record is gone (checked after each new record list).
   void _keptRecordCheck() {
-    final k = _kept;
-    if (k != null && !core.states.containsKey(k.id)) _closeKept();
+    for (final id in _kept.keys.toList()) {
+      if (!core.states.containsKey(id)) _closeKept(id);
+    }
   }
 
   // ---- lease registry --------------------------------------------------------------------------------------------
@@ -766,7 +843,9 @@ class NodeLink implements LeaseListener {
     if (c != null && !c.isCompleted) c.complete();
     _lfPoke();
     // #329 UX plan §4.5: the lease a link was lent under is gone (the gate has closed that link: it listens first)
-    if (_ks == KeptState.lent && identical(_keptLease, l)) _forget();
+    for (final e in _kept.entries.toList()) {
+      if (e.value.st == KeptState.lent && identical(e.value.lease, l)) _forget(e.key);
+    }
     final before = _recs;
     _releasing = readRecords().then<List<Rec>?>((r) => r, onError: (Object _) => null).then((recs) {
       if (_disposed) return;
@@ -812,15 +891,34 @@ class NodeLink implements LeaseListener {
     // the core cancelled or cut the attempt in progress: drop its link now (a round only reads, §4.3.3-8)
     final a = _attempt;
     if (a != null && !identical(core.running, a)) _abort();
-    // #329 UX plan §4.4: the round's read of the kept link's node is one status read on that link; no scan and no
-    // connect while NodeLink has a kept link parked or reading
-    final k = _kept;
-    if (k != null && _ks == KeptState.parked && core.roundActive && core.keptNeeds(k.id)) _keptRead(k);
-    final held = _kept != null && _ks != KeptState.lent;
-    if (core.roundActive && !held) {
-      if (_scan == null && !_scanStarting && _scanWait == null) _startScan();
-      // the next attempt starts only once the last link is gone (review pr1 B-m1)
-      if (_attempt == null && _scan != null && gate.links == 0) {
+    _readWake?.call();
+    _readWake = null;
+    if (core.roundActive) {
+      // #329 UX plan §4.4 / 329-link-per-node.md §3.2-4: the round's read of a node with a kept link is one status
+      // read on that link: one at a time, while no link is in use, [readGap] after its last one
+      var needs = false; // a parked link the round still has to read: no attempt before it
+      int? due;
+      for (final e in _kept.values.toList()) {
+        if (e.st != KeptState.parked || !core.keptNeeds(e.h.id)) continue;
+        needs = true;
+        if (_attempt != null || gate.active > 0) continue;
+        final at = e.readEnd + readGap;
+        if (at <= t) {
+          _keptRead(e);
+        } else if (due == null || at < due) {
+          due = at;
+        }
+      }
+      if (due != null && _attempt == null && gate.active == 0) {
+        _readWake = after(Duration(milliseconds: due - t), _pump);
+      }
+      // §3.4: a scan only when a target of the round has no kept link; it then runs until the round ends
+      if (_scan == null && !_scanStarting && _scanWait == null && core.roundTargets.any((id) => !_kept.containsKey(id))) {
+        _startScan();
+      }
+      // the next attempt starts only once no link is in use or closing (review pr1 B-m1) and every parked link of
+      // the round was read
+      if (_attempt == null && _scan != null && gate.active == 0 && !needs) {
         final next = core.next(t);
         if (next != null) _run(next);
       }
@@ -889,6 +987,9 @@ class NodeLink implements LeaseListener {
   Future<void> _run(Attempt a) async {
     _attempt = a;
     final cancel = _cancel = Completer<void>();
+    // 329-link-per-node.md §3.3: room for this link first; the round may have dropped the attempt in that wait
+    await _makeRoom(cancel.future);
+    if (!identical(_attempt, a) || cancel.isCompleted || _disposed) return;
     // §4.3.3-3: one 8 s budget from the start of the connect to msg2, on the injected clock
     final due = Completer<void>();
     final stopDue = after(msg2, () => due.isCompleted ? null : due.complete());
@@ -940,8 +1041,8 @@ class NodeLink implements LeaseListener {
     // a record gone, not an error-code answer), with the very readAt / readWall just written for it
     if (accepted) _noteRead(a.id, o, t);
     if (keep != null) {
-      if (!accepted) {
-        keep.destroy().then((_) => _pump()); // a late result, the record went
+      if (!accepted || core.blocked != null || !core.fg || _kept.containsKey(keep.id) || _kept.length >= keptMax) {
+        keep.destroy().then((_) => _pump()); // a late result, the record went; or no place for it any more
       } else {
         unawaited(_park(keep)); // not parked (the link is not up): destroyed there
       }
@@ -968,8 +1069,8 @@ class NodeLink implements LeaseListener {
     _scan = null;
     await s?.stop();
     // §4.2 斷線完成: the gate counts a link until the stack says it is gone, or 5 s
-    // (#329 UX plan §4.6: a parked kept link stays and is not waited for)
-    for (var i = 0; i < 50 && gate.links > (_ks == KeptState.parked ? 1 : 0); i++) {
+    // (#329 UX plan §4.6: the parked kept links stay and are not waited for)
+    for (var i = 0; i < 50 && gate.active > 0; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
   }
@@ -983,9 +1084,25 @@ class NodeLink implements LeaseListener {
     if (c != null && !c.isCompleted) c.complete();
     reg.listeners.remove(this);
     _timer?.call();
+    _readWake?.call();
     // #329 UX plan §4.5: a lent link is its holder's (forgotten: never parked on return); any other is closed
-    _ks == KeptState.lent ? _forget() : _closeKept();
+    for (final e in _kept.entries.toList()) {
+      e.value.st == KeptState.lent ? _forget(e.key) : _closeKept(e.key);
+    }
     await _dropAll();
     await _changed.close();
   }
+}
+
+/// One kept link (329-link-per-node.md §3.2): the handoff, its state, the lease it is lent under, NodeLink's
+/// subscription to the link's state (from the first park until it is lent or closed), what cancels a read in
+/// progress, and when it was last parked.
+class _Kept {
+  _Kept(this.h);
+  LoginHandoff h;
+  KeptState st = KeptState.parked;
+  Lease? lease;
+  StreamSubscription<bool>? sub;
+  Completer<void>? cancel;
+  int readEnd = 0;
 }

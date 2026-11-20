@@ -1,4 +1,5 @@
-// #329 design §4.2 BleGate: the app's only Bluetooth entry. One scan and one link at most, each only for the
+// #329 design §4.2 BleGate: the app's only Bluetooth entry. One scan at most, and one link in use at most (links
+// NodeLink keeps parked may stay open beside it: 329-link-per-node.md §3.1), each only for the
 // registry's current token; a revoked token's scan and link are closed here (not by their holder); at most 4 scan
 // starts in any 30 s (A10: the 6th within ~15 s is refused by Android, M-1 E); "disconnected" = the connection state
 // stream says so, or 5 s. The radio sits behind BleBackend so the gate is testable without a phone.
@@ -118,8 +119,11 @@ class GateLink {
     return gate.backend.write(address, c, value);
   }
 
-  /// Drop the link and wait until the stack reports it gone, or 5 s (§4.2).
-  Future<void> close() async {
+  /// Drop the link and wait until the stack reports it gone, or 5 s (§4.2). A second call waits for the same end.
+  Future<void> close() => _closing ??= _close();
+  Future<void>? _closing;
+
+  Future<void> _close() async {
     if (!_open) return;
     _open = false;
     _parked?.call();
@@ -186,6 +190,10 @@ class BleGate implements LeaseListener {
   int get scans => _scans.length;
   int get links => _links.length;
 
+  /// 329-link-per-node.md §3.1: the links that are not (open and parked): one connecting, one held by a lease or by
+  /// NodeLink for a read, and every link still closing. 0 = nobody uses the radio for a link.
+  int get active => _links.where((l) => !(l._open && l._token == null)).length;
+
   /// Scan starts within the last 30 s (NodeLink's and the older pages').
   int get recentScanStarts {
     final t = now();
@@ -251,12 +259,17 @@ class BleGate implements LeaseListener {
     return _scanStarts.first + scanWindow.inMilliseconds - t;
   }
 
-  /// Open the one link.
+  /// Open a link. Refused while another link is in use or closing ([active]) and for an address that has a link
+  /// (parked ones included).
   GateLink connect(Token? t, String address, {Duration timeout = const Duration(seconds: 15)}) {
     _gate(t, 'connect');
-    if (_links.isNotEmpty) {
+    if (active > 0) {
       _refuse('connect: a link is already open');
       throw Refused('a link is already open');
+    }
+    if (_links.any((l) => l.address == address)) {
+      _refuse('connect: this address has a link');
+      throw Refused('this address has a link');
     }
     final l = GateLink._(this, t!, address); // _gate refused a null token
     _links.add(l);
