@@ -41,8 +41,9 @@
 #                of company 0xFFFF, every registration has its own identifier, and each HCI advertising-data command
 #                carries Flags + the UUID list + the registered identifier (advid-judge-329.sh). An image without
 #                the field gets the one fixed FAIL line.
-#   adv-data     (by hand; in no suite) judge `adv-data` alone: what 04 registers after a provd restart, 31 B with the
-#                identifier or 21 B without, as its own `adv field` line says.
+#   adv-data     judge `adv-data` alone, by hand (boot-provd runs the same judge): what 04 registers after a provd
+#                restart, 31 B with the identifier or 21 B without, as its own `adv field` line says, and the
+#                advertising interval the controller is given (#329: 100 / 150 ms).
 # By hand, design §10 step 3 (never set by a suite): ADVID_PUSH=<dir> binds the prov_test batman-provhelper /
 # batman-provd / batman-provd-test.init of <dir> (checked against <dir>/SHA256SUMS) over 04's right after the lease, on
 # a listed image only; ADVID_OFF=1 then sets provd's ADV_ID_OFF=1; ADVID_HOLD=<s> (adv-data) keeps the pushed binaries

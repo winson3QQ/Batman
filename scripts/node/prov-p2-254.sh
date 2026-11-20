@@ -120,6 +120,8 @@ listens() { command -v netstat >/dev/null 2>&1 || return 2; _o=$(netstat -lx 2>/
 # btmon capture for the power arms: start <btmon> -> $BM pid; stop -> the capture in $BMF
 bm_start() { [ -x "$1" ] || { no "no btmon at [$1]"; return 1; }; BMF=$(mktemp "$H/p2bm.XXXXXX") || return 1; "$1" -T > "$BMF" 2>&1 & BM=$!; sleep 2; }
 bm_stop() { [ -n "${BM:-}" ] && kill -INT "$BM" 2>/dev/null; sleep 1; BM=; }
+# #329: the advertising interval of the registration in $BMF (adv_int_check, ble-lib-254.sh)
+adv_int_arm() { _r=$(adv_int_check "$BMF"); case "$_r" in PASS\ *) ok "${_r#PASS }" ;; *) no "${_r#FAIL }" ;; esac; }
 # enable_before_add: in the capture, after the LAST "Powered: Enabled", an "Advertising: Enabled" that comes before
 # the first MGMT Add Advertising / Add Extended Advertising Data (0x003e / 0x0055) = the kernel advertised on its own
 enable_before_add() {
@@ -314,6 +316,7 @@ dep-bluetoothd|dep-bluetoothd-kill|dep-dbus)
 		ad=$(adv_last_block)
 		if [ -n "$ad" ]; then adv_len_check "$ad" "advertising data after the restart"
 		elif [ "$(plc 'provd: adv registered')" -gt "$r" ]; then no "btmon: provd registered again but the capture has no MGMT Add Extended Advertising Data (0x0055)"; fi
+		adv_int_arm
 		rm -f "$BMF"
 	fi
 	trap - EXIT; trap - HUP INT TERM
@@ -343,6 +346,7 @@ adv-data)
 		echo "$ad" | grep -qiE 'Name' && no "advertising data carries a name: $(echo "$ad" | grep -iE 'Name' | head -1)" || ok "no Local Name in the advertising data"
 		echo "$ad" | grep -q 'Scan response length: 0' && ok "no scan response data" || no "scan response: [$(echo "$ad" | grep -o 'Scan response length: [0-9]*')] (want 0)"
 	fi
+	adv_int_arm
 	rm -f "$BMF"; trap - EXIT; trap - HUP INT TERM
 	;;
 power-provdkill)
@@ -391,6 +395,7 @@ dep-power|power-bondable)
 	case "$e" in add-first|none) ok "btmon: no 'Advertising: Enabled' after power-on before provd's own Add Advertising ($e)" ;;
 		enable-first) no "btmon: the kernel enabled advertising at power-on before provd registered (the old instance: p2 §21 L84/L85)" ;;
 		*) no "btmon capture has no power-on ($e; $(wc -l < "$BMF") lines)" ;; esac
+	[ "$a" = dep-power ] && adv_int_arm		# power-bondable: provd must not have registered, nothing to read
 	rm -f "$BMF"
 	if [ "$a" = power-bondable ]; then
 		r=$(plc 'provd: adv registered'); t0=$(cs); bluetoothctl mgmt.bondable off >/dev/null 2>&1

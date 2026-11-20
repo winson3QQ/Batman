@@ -106,5 +106,45 @@ v() { rc=0; bt305_verdict "$@" >/dev/null; echo $rc; }
 [ "$(v T3b $'FLIP close waited 30140 ms without P2' 'flip-invalid' '^FLIP close waited')" = 0 ] && ok "verdict T3b: waited -> VALID" || bad "verdict T3b valid"
 [ "$(v T3b $'FAIL flip-invalid: without P2 the close took only 120 ms' 'flip-invalid' '^FLIP close waited')" = 1 ] && ok "verdict T3b: flip-invalid -> INVALID" || bad "verdict T3b invalid"
 
+# ---- #329 advertising interval after a rebind: adv_sys_check (docs/design/329-adv-interval.md §8 T1b, §11) -----------
+# sysconfig-04-wsl32.txt is a real readout (04, wsl.32: 0008 / 0008); the a000 / f000 one is that readout edited by hand
+AS=$REPO/tests/fixtures/advint-329/sysconfig-04-wsl32.txt; ASV='1.5.14-wsl.32+4c0078c.fw45def04.bench'
+printf '[General]\n#MinAdvertisementInterval = 0x00A0\n' > "$T/nokey.conf"; printf '[LE]\nMinAdvertisementInterval = 0x00A0\n' > "$T/key.conf"
+echo "BATMAN_VERSION=$ASV" > "$T/abb"; mkdir -p "$T/as"
+sed 's/\(Type: 0x000a.*Value: \)0008/\1a000/; s/\(Type: 0x000b.*Value: \)0008/\1f000/' "$AS" > "$T/as/good"
+cp "$AS" "$T/as/old"; sed -n '1,/Type: 0x000a/p' "$AS" > "$T/as/cut"; : > "$T/as/empty"
+echo "FAIL timeout after 4s: sh -c : | bluetoothctl mgmt.read-sysconfig" > "$T/as/timeout"
+{ sed -n '1,/Type: 0x000b/p' "$T/as/good"; echo "Segmentation fault"; } > "$T/as/died"
+# as_case <name> <main.conf> <readout of try 1..5, by name> <want: the lines printed>
+as_case() { local name=$1 conf=$2 want=$4 i=0 r o; rm -f "$T"/as/try.*
+	for r in $3; do i=$((i + 1)); cp "$T/as/$r" "$T/as/try.$i"; done
+	o=$(ADV_INT_BUILD="$T/abb" lib 'pidof() { return 0; }; sleep() { :; }; adv_sys_read() { cat "'"$T"'/as/try.$AS_TRIES" 2>/dev/null; }
+		adv_sys_check "'"$conf"'" && pass "rebind 3: $AS_MSG" || no "rebind 3: $AS_MSG"; echo "DET rebind 3: adv sysconfig tries=$AS_TRIES unreadable=$AS_UNR"')
+	[ "$o" = "$want" ] && ok "adv sysconfig: $name" || bad "adv sysconfig: $name: [$o]"; }
+AS_OLD="FAIL rebind 3: adv sysconfig 0008 / 0008 (want a000 / f000): image without the interval [$ASV]"
+as_case "real wsl.32 readout, no key -> the fixed old-image line" "$T/nokey.conf" "old" "$AS_OLD"$'\n'"DET rebind 3: adv sysconfig tries=1 unreadable=0"
+as_case "a000 / f000 with the key -> PASS on the first try (edited)" "$T/key.conf" "good" "PASS rebind 3: adv sysconfig a000 / f000"$'\n'"DET rebind 3: adv sysconfig tries=1 unreadable=0"
+as_case "key: 0008 twice, then a000 / f000 -> PASS, tries=3" "$T/key.conf" "old old good" "PASS rebind 3: adv sysconfig a000 / f000"$'\n'"DET rebind 3: adv sysconfig tries=3 unreadable=0"
+as_case "key: a timed-out read, then good -> PASS, unreadable=1, the timeout line is not printed" "$T/key.conf" "timeout good" "PASS rebind 3: adv sysconfig a000 / f000"$'\n'"DET rebind 3: adv sysconfig tries=2 unreadable=1"
+as_case "key: bluetoothctl died after both lines -> still a complete readout" "$T/key.conf" "died" "PASS rebind 3: adv sysconfig a000 / f000"$'\n'"DET rebind 3: adv sysconfig tries=1 unreadable=0"
+as_case "key: cut short every time -> unreadable" "$T/key.conf" "cut cut cut cut cut" "FAIL rebind 3: adv sysconfig unreadable"$'\n'"DET rebind 3: adv sysconfig tries=5 unreadable=5"
+as_case "no key: nothing readable in 5 tries -> unreadable" "$T/nokey.conf" "empty cut timeout empty" "FAIL rebind 3: adv sysconfig unreadable"$'\n'"DET rebind 3: adv sysconfig tries=5 unreadable=5"
+as_case "no key: an empty read, then 0008 -> the fixed old-image line, tries=2" "$T/nokey.conf" "empty old" "$AS_OLD"$'\n'"DET rebind 3: adv sysconfig tries=2 unreadable=1"
+as_case "no key but a000 / f000 -> its own FAIL line" "$T/nokey.conf" "good" "FAIL rebind 3: adv sysconfig a000 / f000 but main.conf has no key"$'\n'"DET rebind 3: adv sysconfig tries=1 unreadable=0"
+as_case "key: 0008 five times -> FAIL after 5 tries" "$T/key.conf" "old old old old old" "FAIL rebind 3: adv sysconfig 0008 / 0008 after 5 tries (want a000 / f000)"$'\n'"DET rebind 3: adv sysconfig tries=5 unreadable=0"
+as_case "key: unreadable, then 0008 to the end -> the value seen, not 'unreadable'" "$T/key.conf" "empty old old cut old" "FAIL rebind 3: adv sysconfig 0008 / 0008 after 5 tries (want a000 / f000)"$'\n'"DET rebind 3: adv sysconfig tries=5 unreadable=2"
+o=$(lib 'pidof() { return 1; }; adv_sys_read() { echo CALLED; }; adv_sys_check "'"$T/key.conf"'" || no "rebind 3: $AS_MSG"; echo "tries=$AS_TRIES"')
+[ "$o" = "FAIL rebind 3: adv sysconfig: bluetoothd not running"$'\n'"tries=0" ] && ok "adv sysconfig: no bluetoothd -> FAIL without calling bluetoothctl" || bad "adv sysconfig no bluetoothd: [$o]"
+# the wiring: cmd_rebind judges it for a rebind that came up, and not in a --flip run
+grep -A2 'if \[ "\$RB_UP" = 1 \] && \[ \$flip = 0 \]; then' "$REPO/scripts/node/bt-uart-305.sh" | grep -q 'adv_sys_check && pass "rebind \$i: \$AS_MSG" || no "rebind \$i: \$AS_MSG"' && ok "adv sysconfig: cmd_rebind calls the judge (RB_UP = 1, not --flip)" || bad "adv sysconfig: cmd_rebind does not call adv_sys_check"
+# known-failures (#329): only the fixed old-image line is KNOWN
+. "$REPO/scripts/dv/known-failures.sh"; KFL=$REPO/scripts/validation-known-failures.txt
+kfc() { printf '%s\n' "$1" > "$T/kf.log"; KF_NO_GH=1 kf_classify bt-uart-rebind-305 "$T/kf.log" "$KFL" "${2:-2026-12-20}"; }
+c=$(kfc "$(for i in 1 2 10; do echo "${AS_OLD/rebind 3/rebind $i}"; done)"); case "$c" in "known #329"*) ok "known-failures: the old-image line of every rebind -> known #329" ;; *) bad "known-failures rebind: [$c]" ;; esac
+c=$(kfc "$AS_OLD" 2026-12-21); case "$c" in "new (the entry for #329 2026-12-20 has expired"*) ok "known-failures: the day after the expiry -> NEW" ;; *) bad "known-failures expiry: [$c]" ;; esac
+for l in "adv sysconfig unreadable" "adv sysconfig 0008 / 0008 after 5 tries (want a000 / f000)" "adv sysconfig a000 / f000 but main.conf has no key" "adv sysconfig: bluetoothd not running"; do
+	c=$(kfc "FAIL rebind 3: $l"); case "$c" in new*) ok "known-failures: [$l] -> NEW" ;; *) bad "known-failures should be NEW: [$l] -> [$c]" ;; esac; done
+c=$(kfc "$AS_OLD"$'\n'"FAIL rebind 4: adv sysconfig unreadable"); case "$c" in "new (never-known"*) ok "known-failures: one unreadable rebind among old-image lines -> NEW" ;; *) bad "known-failures mixed: [$c]" ;; esac
+
 echo "test-dv-bt-uart-305: $n checks, fails=$fails"
 [ "$fails" = 0 ]
