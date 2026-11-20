@@ -80,8 +80,12 @@ typedef ResolverBuilder = Future<Resolver> Function(List<String> ids);
 enum LoginForEnd { ok, identity, refused, notFound, precondition, noLease }
 
 class LoginForResult {
-  const LoginForResult(this.end, [this.handoff]);
+  const LoginForResult(this.end, [this.handoff, this.found = false]);
   final LoginForEnd end;
+
+  /// Only with `notFound` (#329 honest-errors C2): a device that looked like this node was there, but no session
+  /// came of it (LoginFor.found). Not authenticated in every case (a 「像 Y」 hint): for the wording only.
+  final bool found;
 
   /// Only with `ok`: the logged-in session, now the caller's.
   final LoginHandoff? handoff;
@@ -496,13 +500,16 @@ class NodeLink implements LeaseListener {
       await _lfSleep(ms);
     }
     trace?.call(mask('loginFor $id -> ${l.end!.name}'));
-    return LoginForResult(switch (l.end!) {
-      LoginEnd.ok => LoginForEnd.notFound, // an ok without a hand-off cannot happen: never claim a login
-      LoginEnd.identity => LoginForEnd.identity,
-      LoginEnd.refused => LoginForEnd.refused,
-      LoginEnd.notFound => LoginForEnd.notFound,
-      LoginEnd.precondition => LoginForEnd.precondition,
-    });
+    return LoginForResult(
+        switch (l.end!) {
+          LoginEnd.ok => LoginForEnd.notFound, // an ok without a hand-off cannot happen: never claim a login
+          LoginEnd.identity => LoginForEnd.identity,
+          LoginEnd.refused => LoginForEnd.refused,
+          LoginEnd.notFound => LoginForEnd.notFound,
+          LoginEnd.precondition => LoginForEnd.precondition,
+        },
+        null,
+        l.end == LoginEnd.notFound && l.found);
   }
 
   Future<void> _lfSleep(int? ms) async {

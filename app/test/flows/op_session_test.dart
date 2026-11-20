@@ -38,6 +38,7 @@ class Fx {
   final screen = <bool>[];
   int logins = 0, consoles = 0;
   LoginForEnd loginEnd = LoginForEnd.ok;
+  bool loginFound = false; // #329 honest-errors C2
   bool busy = false;
   Completer<void>? slowLogin;
 
@@ -56,7 +57,7 @@ class Fx {
     login: (lease, id) async {
       final w = slowLogin;
       if (w != null) await w.future;
-      if (loginEnd != LoginForEnd.ok) return LoginForResult(loginEnd);
+      if (loginEnd != LoginForEnd.ok) return LoginForResult(loginEnd, null, loginFound);
       return LoginForResult(LoginForEnd.ok, rigs[logins++].h);
     },
     console: (lease, h) => rigs[consoles++].c,
@@ -109,6 +110,16 @@ void main() {
       final r = await f.run(() => OpSession.once(f.d, 'Y1', 'x', (c, gone) => c.settings(), gone: () => false));
       expect((r.end, r.login, f.consoles), (OpEnd.login, LoginForEnd.notFound, 0));
       expect(f.reg.current, isNull);
+      expect(r.found, false);
+    });
+
+    // #329 honest-errors C2. Negative control: OpSession.once dropping `found` -> FAIL.
+    test('a login that ends with the node near: the reply carries found', () async {
+      final f = Fx(rust)
+        ..loginEnd = LoginForEnd.notFound
+        ..loginFound = true;
+      final r = await f.run(() => OpSession.once(f.d, 'Y1', 'x', (c, gone) => c.settings(), gone: () => false));
+      expect((r.end, r.login, r.found, f.consoles), (OpEnd.login, LoginForEnd.notFound, true, 0));
     });
 
     test('T-P5: the page goes during the login -> nothing written, the session closed, the lease released', () async {
@@ -200,7 +211,18 @@ void main() {
       final f = Fx(rust)..loginEnd = LoginForEnd.notFound;
       final s = (await OpenSession.open(f.d, 'Y1', '軟體更新'))!;
       final why = await f.run(() => s.run<OpReply?>((c) async => null, failed: (w) => w));
-      expect((why?.end, why?.login), (OpEnd.login, LoginForEnd.notFound));
+      expect((why?.end, why?.login, why?.found), (OpEnd.login, LoginForEnd.notFound, false));
+      await s.pageGone();
+    });
+
+    // #329 honest-errors C2. Negative control: OpenSession.run dropping `found` -> FAIL.
+    test('a login that ends with the node near -> failed(login) carries found', () async {
+      final f = Fx(rust)
+        ..loginEnd = LoginForEnd.notFound
+        ..loginFound = true;
+      final s = (await OpenSession.open(f.d, 'Y1', '軟體更新'))!;
+      final why = await f.run(() => s.run<OpReply?>((c) async => null, failed: (w) => w));
+      expect((why?.end, why?.login, why?.found), (OpEnd.login, LoginForEnd.notFound, true));
       await s.pageGone();
     });
 

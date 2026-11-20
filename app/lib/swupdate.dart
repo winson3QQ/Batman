@@ -87,12 +87,22 @@ class SwHold {
 }
 
 /// #329 PR 7 (p1p2-check 9.x_reverted): the next step of an update that went back to the old version (swupd.rs
-/// T_REVERTED / T_REVERTED_18) — the node runs the version it had, and the same file is not tried again on its own.
-const swRevertedNext = '節點仍是原本的版本，可以照常使用。這個更新檔不要再重試，請找維修人員。';
+/// T_REVERTED / T_REVERTED_18) — the node runs the version it had. #329 honest-errors C3: the node's health check
+/// reverts for more than a bad file (most often no mesh after the reboot, batman-autocommit), and the same file can
+/// be sent again, so the line no longer says the file is bad.
+const swRevertedNext = '節點仍是原本的版本，可以照常使用。常見原因是重開後連不上其他節點：這台若已加入隊伍網路，請先確認其他節點開著、連得上。'
+    '可以再更新一次；再退回的話，這個更新檔不要再試，請找維修人員。';
+
+/// T_REVERTED_18: rebooted, no verdict from the health check (updwork.go reason 18).
+const swNoVerdictNext = '節點仍是原本的版本，可以照常使用。可以再更新一次；再不行請找維修人員。';
 
 /// The status area's next step (null = none).
-String? swNext(SwAction? a) =>
-    a != null && a.kind == SwKind.done && (a.text.contains('退回') || a.text.contains('回到原本的版本')) ? swRevertedNext : null;
+String? swNext(SwAction? a) {
+  if (a == null || a.kind != SwKind.done || a.text.startsWith('更新完成')) return null;
+  if (a.text.contains('退回')) return swRevertedNext;
+  if (a.text.contains('回到原本的版本')) return swNoVerdictNext;
+  return null;
+}
 
 /// The prepared state's sentence (plan §11 MINOR).
 const swPrepared = '已準備好，還沒套用';

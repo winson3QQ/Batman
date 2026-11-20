@@ -92,7 +92,8 @@ List<Widget> _gap(List<Widget> ws, double g) => [
 /// The status area: icon + word + one sentence + next step + read time + 重新整理. #329 PR 6 D7: [text] and [next] show
 /// their main parts (every line of [next] keeps its words); their technical parts go under one collapsed 技術資訊 row.
 class StatusHero extends StatelessWidget {
-  const StatusHero({super.key, required this.look, required this.text, this.next, this.time, this.onRefresh, this.extra});
+  const StatusHero(
+      {super.key, required this.look, required this.text, this.next, this.time, this.onRefresh, this.extra, this.steady = false});
   final Look look;
   final String text;
   final String? next;
@@ -100,10 +101,25 @@ class StatusHero extends StatelessWidget {
   final VoidCallback? onRefresh;
   final List<Widget>? extra;
 
+  /// #329 honest-errors C4 (home only): the sentence and the next step each keep the height of two lines, and the
+  /// time row its button's height, also when they are short or absent — the area does not change height between
+  /// 「正在找」, 「還沒讀到」 and 「一切正常」. Longer texts, [extra] and the tech fold still add height.
+  final bool steady;
+
   @override
   Widget build(BuildContext context) {
     final t = BatTheme.of(context);
     final ink = look.ink(t);
+    // two laid-out lines of the same style behind the text (not a computed height: the line height of a laid-out
+    // text is rounded, 2 x 25.6 is 52)
+    Widget two(TextStyle st, Widget? w) => !steady
+        ? w!
+        : Stack(children: [
+            ExcludeSemantics(child: Text('\n', style: st.copyWith(color: const Color(0x00000000)))),
+            ?w,
+          ]);
+    final heroSt = TextStyle(fontSize: Fs.hero, fontWeight: FontWeight.w700, height: 1.35, color: ink);
+    final nextSt = TextStyle(fontSize: Fs.body, height: 1.6, color: ink);
     final tech = [techText(text), if (next != null) techText(next!)].where((s) => s.isNotEmpty).join('；');
     return Container(
       decoration: BoxDecoration(color: look.bg(t), borderRadius: BorderRadius.circular(16)),
@@ -117,15 +133,17 @@ class StatusHero extends StatelessWidget {
               Text(look.word,
                   style: TextStyle(fontSize: Fs.meta, fontWeight: FontWeight.w700, letterSpacing: 0.8, color: ink)),
               const SizedBox(height: 2),
-              Text(screenText(text), style: TextStyle(fontSize: Fs.hero, fontWeight: FontWeight.w700, height: 1.35, color: ink)),
+              two(heroSt, Text(screenText(text), style: heroSt)),
             ]),
           ),
         ]),
-        if (next != null) Text(screenText(next!), style: TextStyle(fontSize: Fs.body, height: 1.6, color: ink)),
+        if (next != null || steady)
+          two(nextSt, next == null ? null : Text(screenText(next!), style: nextSt)),
         if (tech.isNotEmpty) TechFold(tech, key: const Key('hero-tech')),
         ...?extra,
-        if (time != null || onRefresh != null)
+        if (time != null || onRefresh != null || steady)
           Row(children: [
+            if (steady) const SizedBox(height: 48), // the button's height, also without one (busy)
             Expanded(child: Text(time ?? '', style: TextStyle(fontSize: Fs.meta, color: ink))),
             if (onRefresh != null)
               TextButton.icon(

@@ -302,7 +302,7 @@ fn t4_version_and_warning_line() {
     assert_eq!(w(St { temp: "80", throttled: "0x1", ..ok.clone() }), Some(sp::WARN_POWER), "the first line that holds");
     // JOINED + plinks 1 + k2 2 -> the neutral sentence (a legacy member's AP may be set)
     let neutral = w(St { k2: Some(2), ..ok.clone() }).unwrap();
-    assert_eq!(neutral, "節點回報異常（可能是手機 Wi-Fi 還沒設定）— 設好仍然如此請找維修人員");
+    assert_eq!(neutral, "節點回報異常，可能是手機 Wi-Fi 還沒設定 — 還沒設定的話，請到這台節點的「手機 Wi-Fi」設定；已設好仍然如此請找維修人員");
     assert_ne!(neutral, "這台給手機連的 Wi-Fi 可能還沒設定 — 可在「手機 Wi-Fi」設定；設好仍然如此請找維修人員", "v6's JOINED sentence");
     assert_eq!(w(St { k2: Some(2), ..ok.clone() }.plinks(0)), None, "JOINED with plinks 0: CRIT is the normal state");
     // a member's code 1 -> the AP line, which says setting it reveals the real cause

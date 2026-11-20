@@ -138,6 +138,21 @@ void main() {
       expect(find.textContaining('沒有找到這台節點'), findsOneWidget);
     });
 
+    // #329 honest-errors C2. Negative control: opLine not passing `found` -> the old line, FAIL.
+    testWidgets('a login that ends with the node near: the page says so, not 「沒有找到」', (t) async {
+      final f = await openWifi(t);
+      f
+        ..loginEnd = LoginForEnd.notFound
+        ..loginFound = true;
+      await t.enterText(find.byKey(const Key('wifi-pass')), secret);
+      await t.pump();
+      await t.tap(find.widgetWithText(FilledButton, '送出'));
+      await settle(t, f);
+      expect(find.textContaining('附近有像是這台節點的裝置，但沒有連上'), findsOneWidget);
+      expect(find.textContaining('沒有找到這台節點'), findsNothing);
+      expect(field(t, 'wifi-pass').controller!.text, secret);
+    });
+
     testWidgets('T-W3: lost after the sent write -> 結果不明 and 重新讀取', (t) async {
       final f = await openWifi(t);
       f.rigs[1].radio.silent = true;
@@ -346,6 +361,26 @@ void main() {
       expect(rowEnabled(t, 'US'), isFalse);
       expect(find.textContaining('讀不到目前的國家'), findsOneWidget);
       expect(find.widgetWithText(OutlinedButton, '重新讀取'), findsOneWidget);
+      expect(find.textContaining('讀不到目前的國家（60 秒內沒有找到這台節點'), findsOneWidget, reason: 'the reason in brackets, as before');
+    });
+
+    // #329 honest-errors C2 (code review A-6): the found line has brackets of its own -> not inside another pair
+    testWidgets('the settings read ends with the node near: the line, not in brackets', (t) async {
+      final f = Fx(rust)
+        ..loginEnd = LoginForEnd.notFound
+        ..loginFound = true;
+      final a = app();
+      a.link.core.states[id]!
+        ..kind = Kind.read
+        ..view = 'yellow'
+        ..readAt = a.link.now()
+        ..extra = sv('yellow', nodeState: 1)
+        ..last = Concl.read;
+      await t.pumpWidget(host(CountryPage(app: a, ui: UiState(MemStore()), id: id, deps: f.d)));
+      await settle(t, f);
+      expect(find.textContaining('讀不到目前的國家。附近有像是這台節點的裝置，但沒有連上'), findsOneWidget);
+      expect(find.textContaining('讀不到目前的國家（'), findsNothing);
+      expect(find.textContaining('沒有找到這台節點'), findsNothing);
     });
   });
 }

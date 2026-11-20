@@ -433,6 +433,10 @@ void main() {
   });
 
   testWidgets('r3 E-m9: a node row opens the node page (Page.node); back -> Page.home', (t) async {
+    // #329 honest-errors C4: home's status area is taller; a phone-sized view (360 x 800 dp), not the 800 x 600 default
+    t.view.physicalSize = const Size(1080, 2400);
+    t.view.devicePixelRatio = 3;
+    addTearDown(t.view.reset);
     final a = app();
     a.link.core.states[id]!
       ..kind = Kind.read

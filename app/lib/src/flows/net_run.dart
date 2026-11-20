@@ -46,8 +46,13 @@ class FlowDeps {
   final bool Function() leaseValid;
 }
 
-/// The line for a login that found no session (§2.9: the reason's own words).
-String loginLine(LoginForEnd e) => switch (e) {
+/// #329 honest-errors C2: a device that looked like this node was there, but no session came of it.
+const loginFoundLine = '附近有像是這台節點的裝置，但沒有連上，或登入沒有完成。請靠近一點，稍等再試一次（可能另一支手機正在連它）；'
+    '一直如此，把手機的藍牙關掉再打開，還是不行請找維修人員。';
+
+/// The line for a login that found no session (§2.9: the reason's own words). [found] is read only with `notFound`.
+String loginLine(LoginForEnd e, {bool found = false}) => switch (e) {
+      LoginForEnd.notFound when found => loginFoundLine,
       LoginForEnd.notFound => '60 秒內沒有找到這台節點。請確認節點開著、靠近手機，再試一次。',
       LoginForEnd.identity => whyNext(Why.identity),
       LoginForEnd.refused => whyNext(Why.refused),
@@ -237,7 +242,7 @@ class NetRun extends ChangeNotifier {
     }
     if (res.end == LoginForEnd.precondition) stopped = deps.blocked() == Why.keys ? StopWhy.keys : StopWhy.blocked;
     if (res.end == LoginForEnd.noLease) stopped = StopWhy.leaseLost;
-    r.line = loginLine(res.end);
+    r.line = loginLine(res.end, found: res.found);
     return null;
   }
 
@@ -406,7 +411,7 @@ class CheckRun extends ChangeNotifier {
       return CheckEnd.blocked;
     }
     if (res.end != LoginForEnd.ok || h == null) {
-      lines.add(loginLine(res.end));
+      lines.add(loginLine(res.end, found: res.found));
       return res.end == LoginForEnd.precondition || res.end == LoginForEnd.noLease ? CheckEnd.blocked : CheckEnd.loginFailed;
     }
     final c = deps.console(h);

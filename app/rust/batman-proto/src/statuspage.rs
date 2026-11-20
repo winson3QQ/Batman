@@ -122,7 +122,7 @@ pub const LAG_NOTE: &str = "隊員剛離開或關機時，這裡最多約 4 分�
 pub const WARN_POWER: &str = "電源電壓不足 — 請檢查電池／電源線";
 pub const WARN_HOT: &str = "節點過熱 — 請移到陰涼處";
 pub const WARN_AP: &str = "這台給手機連的 Wi-Fi 還沒設定（或被關閉）— 可在「手機 Wi-Fi」設定，設好後這頁才看得到連不上的真正原因；設好仍然如此請找維修人員";
-pub const WARN_JOINED_CRIT: &str = "節點回報異常（可能是手機 Wi-Fi 還沒設定）— 設好仍然如此請找維修人員";
+pub const WARN_JOINED_CRIT: &str = "節點回報異常，可能是手機 Wi-Fi 還沒設定 — 還沒設定的話，請到這台節點的「手機 Wi-Fi」設定；已設好仍然如此請找維修人員";
 
 const S1: &str = "這台節點看不到連線狀態（軟體太舊，或節點的設定紀錄讀不到）— 請找維修人員";
 const S2: &str = "狀態未知 — 請按「重新整理」；一直如此請重新開機或找維修人員";
