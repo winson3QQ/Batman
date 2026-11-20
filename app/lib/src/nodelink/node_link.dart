@@ -67,9 +67,13 @@ typedef AdvResolve = String? Function(Uint8List mfr);
 /// An [AdvResolve] and what wipes the keys it holds ([close]; the app: Rust's AdvResolver). NodeLink closes a resolver
 /// when a newer one replaces it, when its build ended too late, and when it is disposed (code review A M-2 / B m-1).
 class Resolver {
-  const Resolver(this.resolve, [this.close]);
+  const Resolver(this.resolve, [this.close, this.opened]);
   final AdvResolve resolve;
   final void Function()? close;
+
+  /// How many of the records asked for opened (code review B MINOR-2: the trace says why a node gets no hint);
+  /// null when the builder does not say.
+  final int? opened;
 }
 
 /// Builds a [Resolver] from the records of the nodes [ids] (the app: `buildResolver` in app_link.dart).
@@ -167,7 +171,7 @@ class NodeLink implements LeaseListener {
         final old = _resolve;
         _resolve = r;
         _close(old);
-        trace?.call('adv resolver $n: ${ids.length} record(s), ${now() - t0} ms');
+        trace?.call('adv resolver $n: ${r.opened ?? '?'} of ${ids.length} record(s) opened, ${now() - t0} ms');
       } catch (e) {
         trace?.call('adv resolver $n failed (${e.runtimeType}): the last one stays'); // never the error's text
       }

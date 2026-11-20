@@ -108,6 +108,33 @@ void main() {
       expect(c.isY['B'], isNull);
     });
 
+    // code review A M-4: after the cap the look-around goes on with the other addresses, and Y's conclusion is the one
+    // of the same world without hints
+    Kind? roundEnd(bool hinted, List<String> tried) {
+      final c = memoOnOldAddress();
+      c.startup(0, Page.home);
+      c.onScan(3 * s, 'B', hint: hinted ? 'Y1' : null);
+      c.onScan(3 * s, 'C'); // no hint
+      for (var t = 3 * s; t <= 120 * s; t += 500) {
+        final a = c.next(t);
+        if (a != null) {
+          tried.add('${a.addr}@${t ~/ s}');
+          c.result(t + 2 * s, a, const Outcome(Res.noResponse));
+        }
+      }
+      return c.states['Y1']?.kind;
+    }
+
+    test('S5: after two silences on the 「像 Y」 address, the unhinted one is tried after the window; Y ends as without hints',
+        () {
+      final hinted = <String>[], plain = <String>[];
+      final k1 = roundEnd(true, hinted), k0 = roundEnd(false, plain);
+      expect(hinted, ['B@3', 'B@11', 'C@30'], reason: 'B twice at once, then C when the window opens, no third B');
+      expect(plain.toSet(), {'B@30', 'C@30'}, reason: 'the same world without hints: both after the window');
+      expect(k1, k0, reason: "Y's conclusion does not depend on the hint");
+      expect(k1, isNotNull);
+    });
+
     test('S6: a memo wins over the hint: an address that 「是 Z」 or 「不是 Y」 is no 「像 Y」 candidate', () {
       // B is known to be Y2
       var c = NodeLinkCore([const Rec('Y1', 1), const Rec('Y2', 2)])..isY['B'] = 'Y2';

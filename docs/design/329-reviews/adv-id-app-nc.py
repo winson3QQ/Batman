@@ -74,7 +74,9 @@ M = [
   ('R1: the first match is returned', OWN,
    "                if hit.is_some() {\n                    return None;\n                }\n                hit = Some(id);",
    "                if hit.is_none() {\n                    hit = Some(id);\n                }", ['cargo', 'test', '-q', 'adv_tests'], 'rust/bridge'),
-  ('R1/R2: keyed by the device id only', OWN, "batman_proto::kdf::adv_owner(key, id)));", "batman_proto::kdf::adv_owner(&[0u8; 32], id)));", ['cargo', 'test', '-q', 'adv_tests'], 'rust/bridge'),
+  # code review B MINOR-4: this mutant shows R1 only; R2's claim stands on the first, negative assertion of
+  # r2_after_a_reclaim_the_old_record_does_not_resolve (None before any positive line)
+  ('R1: keyed by the device id only', OWN, "batman_proto::kdf::adv_owner(key, id)));", "batman_proto::kdf::adv_owner(&[0u8; 32], id)));", ['cargo', 'test', '-q', 'adv_tests'], 'rust/bridge'),
   ('R1: a record with a short key 6 is taken', OWN, "            if key.len() == 32 {", "            if !key.is_empty() {", ['cargo', 'test', '-q', 'adv_tests'], 'rust/bridge'),
 ]
 
