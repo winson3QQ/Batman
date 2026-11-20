@@ -1,0 +1,8 @@
+#329 advertising interval (docs/design/329-adv-interval.md §8 T1).
+btmon-04-wsl32.txt     real: node 04 on 1.5.14-wsl.32, btmon (no -T) around a provd restart, 2026-11-20 (header lines
+                       and the registration; the rest of the capture is cut).
+btmon-04-wsl32-dated.txt real: the same from the suite's own arm (adv-data), which runs btmon -T: with the date in the
+                       header btmon shortens "Command Complete" to "Command Comp..". Same cut. Its date (2025-08-14) is the node's clock.
+btmon-edited-pass.txt  NOT real: the same lines with the two interval values edited by hand to 100 / 150 ms. No image
+                       with the interval existed when this was written; replaced by a real capture after T2.
+sysconfig-04-wsl32.txt real: `bluetoothctl mgmt.read-sysconfig` on 04, wsl.32 (lines 0x000a / 0x000b: 0008).

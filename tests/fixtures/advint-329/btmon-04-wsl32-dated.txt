@@ -1,0 +1,38 @@
+Bluetooth monitor ver 5.72
+btmon[24189]: = Note: Linux version 6.6.138 (aar..   2025-08-14 20:17:47.339781
+btmon[24189]: = Note: Bluetooth subsystem versio..   2025-08-14 20:17:47.339787
+= New Index: 88:A2:9E:.. (Primary,UART,hci0)  [hci0] 2025-08-14 20:17:47.339789
+= Open Index: 88:A2:9E:B5:6C:8B               [hci0] 2025-08-14 20:17:47.339789
+= Index Info: 88:A.. (Cypress Semiconductor)  [hci0] 2025-08-14 20:17:47.339790
+< HCI Command: LE.. (0x08|0x0008) plen 32  #3 [hci0] 2025-08-14 20:17:50.043479
+        Length: 31
+        128-bit Service UUIDs (complete): 1 entry
+          Vendor specific
+        Company: internal use (65535)
+          Data: 119f4c778d19
+        Flags: 0x04
+          BR/EDR Not Supported
+> HCI Event: Command Comp.. (0x0e) plen 4  #4 [hci0] 2025-08-14 20:17:50.045639
+      LE Set Advertising Data (0x08|0x0008) ncmd 1
+        Status: Success (0x00)
+< HCI Command: LE.. (0x08|0x0006) plen 15  #5 [hci0] 2025-08-14 20:17:50.045690
+        Min advertising interval: 1280.000 msec (0x0800)
+        Max advertising interval: 1280.000 msec (0x0800)
+        Type: Connectable undirected - ADV_IND (0x00)
+        Own address type: Random (0x01)
+        Direct address type: Public (0x00)
+        Direct address: 00:00:00:00:00:00 (OUI 00-00-00)
+        Channel map: 37, 38, 39 (0x07)
+        Filter policy: Allow Scan Request from Any, Allow Connect Request from Any (0x00)
+> HCI Event: Command Comp.. (0x0e) plen 4  #6 [hci0] 2025-08-14 20:17:50.047056
+      LE Set Advertising Parameters (0x08|0x0006) ncmd 1
+        Status: Success (0x00)
+< HCI Command: LE... (0x08|0x000a) plen 1  #7 [hci0] 2025-08-14 20:17:50.047089
+        Advertising: Enabled (0x01)
+> HCI Event: Command Comp.. (0x0e) plen 4  #8 [hci0] 2025-08-14 20:17:50.047904
+      LE Set Advertise Enable (0x08|0x000a) ncmd 1
+        Status: Success (0x00)
+@ MGMT Event: Com.. (0x0001) plen 4  {0x0001} [hci0] 2025-08-14 20:17:50.047927
+      Add Extended Advertising Data (0x0055) plen 1
+        Status: Success (0x00)
+        Instance: 1

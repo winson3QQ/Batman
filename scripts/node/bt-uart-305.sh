@@ -240,6 +240,11 @@ cmd_rebind() {
 		r=$(settings_ok) || no "rebind $i: $r"
 		[ "$e" = 0 ] || no "rebind $i: $e hci0 tx timeout / failed lines"
 		[ -e /sys/class/bluetooth/hci0 ] || no "rebind $i: hci0 is gone (index moved?)"
+		# #329: the new hdev starts at the kernel default (1280 ms); bluetoothd must have sent main.conf's interval again
+		if [ "$RB_UP" = 1 ] && [ $flip = 0 ]; then
+			adv_sys_check && pass "rebind $i: $AS_MSG" || no "rebind $i: $AS_MSG"
+			echo "DET rebind $i: adv sysconfig tries=$AS_TRIES unreadable=$AS_UNR"
+		fi
 		if [ "$RB_UP" != 1 ]; then rebind_once; [ "$RB_UP" = 1 ] && echo "NOTE rebind $i: recovered by a second rebind" || { echo "NOTE rebind $i: still down — the harness reboots this node"; break; }; fi
 	done
 	kmsg_stop; [ "$KM_OK" = 1 ] || no "kmsg capture incomplete"

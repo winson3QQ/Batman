@@ -288,5 +288,111 @@ logread() { cat "$W/ajlog"; }
 { lgl 22:44:15 "$AJF"; lgl 22:44:15 "${AJR}start"; lgl 23:00:20 "adv field id=0 why=off"; lgl 23:00:20 "${AJR}rpa_timeout"; } > "$W/ajlog"
 [ "$(adv_field)" = "id=0 why=off" ] && tok "adv_field: the last registration's line" || tbad "adv_field last: [$(adv_field)]"
 unset -f logread
+
+# ---------------------------------------------------------------- #329 advertising interval: adv_int_check
+# docs/design/329-adv-interval.md §8 T1a + §11. btmon-04-wsl32.txt is real (04, wsl.32: 1280 ms); btmon-edited-pass.txt
+# is that capture with the two values edited by hand — no image with the interval existed yet (tests/fixtures/advint-329/README).
+AI=$REPO/tests/fixtures/advint-329; AIV='1.5.14-wsl.32+4c0078c.fw45def04.bench'
+printf '[General]\n#MinAdvertisementInterval = 0x00A0\nFooMinAdvertisementInterval = 1\n' > "$W/nokey.conf"
+printf '[LE]\n  MinAdvertisementInterval = 0x00A0\nMaxAdvertisementInterval = 0x00F0\n' > "$W/key.conf"
+echo "BATMAN_VERSION=$AIV" > "$W/bb"
+aic() { ADV_INT_BUILD="$W/bb" sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; adv_int_check \"\$1\" \"\$2\"; echo rc=\$?" x "$1" "$2"; }
+ai_case() {	# <name> <capture> <main.conf> <rc> <the one line: fixed string>
+	local o; o=$(aic "$2" "$3")
+	if [ "$o" = "$5"$'\n'"rc=$4" ]; then tok "adv_int_check: $1"; else tbad "adv_int_check: $1: [$o]"; fi; }
+AI_OLD="FAIL adv interval 1280.000 / 1280.000 msec (want 100.000 / 150.000): image without the interval [$AIV]"
+AI_WANT='(want 100.000 / 150.000 msec, ADV_IND, Success)'
+ai_case "real wsl.32 capture, no key in main.conf -> the fixed old-image line" "$AI/btmon-04-wsl32.txt" "$W/nokey.conf" 1 "$AI_OLD"
+# what the arm really captures (btmon -T): "> HCI Event: Command Comp.." — the first version of the judge read that as
+# "no Command Complete" (found on 04, 2026-11-20)
+ai_case "real wsl.32 capture from the arm (btmon -T), no key -> the fixed old-image line" "$AI/btmon-04-wsl32-dated.txt" "$W/nokey.conf" 1 "$AI_OLD"
+ai_case "the same capture with the key -> another FAIL line" "$AI/btmon-04-wsl32.txt" "$W/key.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [1280.000 msec (0x0800)] max [1280.000 msec (0x0800)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has the key"
+ai_case "100 / 150 ms with the key -> PASS (edited fixture)" "$AI/btmon-edited-pass.txt" "$W/key.conf" 0 "PASS adv interval 100.000 / 150.000 msec, ADV_IND (1 block)"
+ai_case "100 / 150 ms without the key -> FAIL (who set it?)" "$AI/btmon-edited-pass.txt" "$W/nokey.conf" 1 "FAIL adv interval 100.000 / 150.000 msec (1 block) but main.conf has no key"
+# the MGMT records of the fixture carry the same labels with other values: the PASS above did not read them
+grep -A8 '^@ MGMT Command: Add Extende.. (0x0054)' "$AI/btmon-edited-pass.txt" | grep -q 'Min advertising interval: 0.000 msec' && tok "adv_int_check: the PASS fixture has an MGMT record with 'Min advertising interval: 0.000 msec' (not read)" || tbad "adv_int_check: the fixture lost its MGMT interval lines"
+sed 's/Type: Connectable undirected - ADV_IND (0x00)/Type: Non connectable undirected - ADV_NONCONN_IND (0x03)/' "$AI/btmon-edited-pass.txt" > "$W/ai-nonconn"
+ai_case "right interval on a non-connectable advertisement -> FAIL" "$W/ai-nonconn" "$W/key.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [100.000 msec (0x00a0)] max [150.000 msec (0x00f0)] type [Non connectable undirected - ADV_NONCONN_IND (0x03)] status [Success (0x00)] $AI_WANT; main.conf has the key"
+awk '/^< HCI Command: .*\(0x08\|0x0006\)/ {exit} {print}' "$AI/btmon-edited-pass.txt" > "$W/ai-noblock"
+grep -q 'Max advertising interval' "$W/ai-noblock" && tok "adv_int_check: the no-block fixture keeps the MGMT interval lines" || tbad "adv_int_check: the no-block fixture should keep the MGMT interval lines"
+ai_case "no 0x0006 command (MGMT interval lines only) -> FAIL" "$W/ai-noblock" "$W/key.conf" 1 "FAIL adv interval: no LE Set Advertising Parameters (0x08|0x0006) in the capture"
+awk 'f && /Status:/ {sub(/Success \(0x00\)/, "Invalid HCI Command Parameters (0x12)"); f = 0} /^> HCI Event: Command Complete/ {c = 1; next_is = 1} /\(0x08\|0x0006\) ncmd/ {f = 1} {print}' "$AI/btmon-edited-pass.txt" > "$W/ai-refused"
+ai_case "the controller refused the command -> FAIL with the status" "$W/ai-refused" "$W/key.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [100.000 msec (0x00a0)] max [150.000 msec (0x00f0)] type [Connectable undirected - ADV_IND (0x00)] status [Invalid HCI Command Parameters (0x12)] $AI_WANT; main.conf has the key"
+awk '/\(0x08\|0x0006\) ncmd/ {exit} {l[++n] = $0} END {for (i = 1; i < n; i++) print l[i]}' "$AI/btmon-edited-pass.txt" > "$W/ai-nocc"
+ai_case "the capture ends before the Command Complete -> FAIL" "$W/ai-nocc" "$W/key.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [100.000 msec (0x00a0)] max [150.000 msec (0x00f0)] type [Connectable undirected - ADV_IND (0x00)] status [no Command Complete] $AI_WANT; main.conf has the key"
+# one value right, the other not (edited): never PASS, never the old-image line
+sed 's/Max advertising interval: 150.000 msec (0x00f0)/Max advertising interval: 1280.000 msec (0x0800)/' "$AI/btmon-edited-pass.txt" > "$W/ai-minonly"
+sed 's/Min advertising interval: 100.000 msec (0x00a0)/Min advertising interval: 1280.000 msec (0x0800)/' "$AI/btmon-edited-pass.txt" > "$W/ai-maxonly"
+ai_case "only the minimum right, with the key -> FAIL" "$W/ai-minonly" "$W/key.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [100.000 msec (0x00a0)] max [1280.000 msec (0x0800)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has the key"
+ai_case "only the maximum right, with the key -> FAIL" "$W/ai-maxonly" "$W/key.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [1280.000 msec (0x0800)] max [150.000 msec (0x00f0)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has the key"
+ai_case "only the maximum at 1280 ms, no key -> not the old-image line" "$W/ai-minonly" "$W/nokey.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [100.000 msec (0x00a0)] max [1280.000 msec (0x0800)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has no key"
+ai_case "only the minimum at 1280 ms, no key -> not the old-image line" "$W/ai-maxonly" "$W/nokey.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [1280.000 msec (0x0800)] max [150.000 msec (0x00f0)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has no key"
+# the old image's values on a refused / non-connectable / unanswered command are a fault, not the old image
+D=$AI/btmon-04-wsl32-dated.txt; AI_1280='min [1280.000 msec (0x0800)] max [1280.000 msec (0x0800)]'
+awk 'f && /Status:/ {sub(/Success \(0x00\)/, "Command Disallowed (0x0c)"); f = 0} /\(0x08\|0x0006\) ncmd/ {f = 1} {print}' "$D" > "$W/ai-old-refused"
+sed 's/Type: Connectable undirected - ADV_IND (0x00)/Type: Non connectable undirected - ADV_NONCONN_IND (0x03)/' "$D" > "$W/ai-old-nonconn"
+awk '/\(0x08\|0x0006\) ncmd/ {exit} {l[++n] = $0} END {for (i = 1; i < n; i++) print l[i]}' "$D" > "$W/ai-old-nocc"
+grep -q 'Command Disallowed' "$W/ai-old-refused" && grep -q ADV_NONCONN_IND "$W/ai-old-nonconn" && ! grep -q '(0x08|0x0006) ncmd' "$W/ai-old-nocc" && grep -q '^< HCI .*(0x08|0x0006)' "$W/ai-old-nocc" \
+	&& tok "adv_int_check: the three edited old-image captures carry their fault" || tbad "adv_int_check: an edited old-image capture lost its fault"
+AI_F1="FAIL adv interval block 1 of 1: $AI_1280 type [Connectable undirected - ADV_IND (0x00)] status [Command Disallowed (0x0c)] $AI_WANT; main.conf has no key"
+AI_F2="FAIL adv interval block 1 of 1: $AI_1280 type [Non connectable undirected - ADV_NONCONN_IND (0x03)] status [Success (0x00)] $AI_WANT; main.conf has no key"
+AI_F3="FAIL adv interval block 1 of 1: $AI_1280 type [Connectable undirected - ADV_IND (0x00)] status [no Command Complete] $AI_WANT; main.conf has no key"
+ai_case "1280 ms, no key, the controller refused -> not the old-image line" "$W/ai-old-refused" "$W/nokey.conf" 1 "$AI_F1"
+ai_case "1280 ms, no key, non-connectable -> not the old-image line" "$W/ai-old-nonconn" "$W/nokey.conf" 1 "$AI_F2"
+ai_case "1280 ms, no key, no Command Complete -> not the old-image line" "$W/ai-old-nocc" "$W/nokey.conf" 1 "$AI_F3"
+# only the Command Complete of 0x0006 counts: its two lines removed, the other commands' Success lines still there
+awk '/\(0x08\|0x0006\) ncmd/ {skip = 1; next} skip {skip = 0; next} {print}' "$AI/btmon-edited-pass.txt" > "$W/ai-othercc"
+grep -q 'Status: Success' "$W/ai-othercc" && tok "adv_int_check: the other-CC fixture keeps other Success lines" || tbad "adv_int_check: the other-CC fixture should keep other Success lines"
+ai_case "another command's Command Complete is not this one's -> FAIL" "$W/ai-othercc" "$W/key.conf" 1 \
+	"FAIL adv interval block 1 of 1: min [100.000 msec (0x00a0)] max [150.000 msec (0x00f0)] type [Connectable undirected - ADV_IND (0x00)] status [no Command Complete] $AI_WANT; main.conf has the key"
+# the arm's format (btmon -T) with the two values edited by hand (NOT real) -> PASS
+sed 's/Min advertising interval: 1280.000 msec (0x0800)/Min advertising interval: 100.000 msec (0x00a0)/; s/Max advertising interval: 1280.000 msec (0x0800)/Max advertising interval: 150.000 msec (0x00f0)/' "$AI/btmon-04-wsl32-dated.txt" > "$W/ai-dated-pass"
+ai_case "the arm's format (btmon -T), values edited, with the key -> PASS" "$W/ai-dated-pass" "$W/key.conf" 0 "PASS adv interval 100.000 / 150.000 msec, ADV_IND (1 block)"
+# the arm's glue (adv_int_arm in prov-p2-254.sh): PASS -> ok, anything else -> no, with the judge's text
+arm_case() {	# <name> <capture> <main.conf> <want>
+	local o
+	o=$(ADV_INT_BUILD="$W/bb" sh -c ". '$REPO/scripts/node/ble-lib-254.sh'; ok() { echo \"OK \$*\"; }; no() { echo \"NO \$*\"; }
+		adv_int_haskey() { grep -Eq '^[[:space:]]*MinAdvertisementInterval[[:space:]]*=' \"\$CONF\"; }
+		$(grep '^adv_int_arm() ' "$REPO/scripts/node/prov-p2-254.sh")
+		BMF=\"\$1\"; CONF=\"\$2\"; adv_int_arm" x "$2" "$3")
+	if [ "$o" = "$4" ]; then tok "adv_int_arm: $1"; else tbad "adv_int_arm: $1: [$o]"; fi; }
+arm_case "a PASS goes to ok" "$AI/btmon-edited-pass.txt" "$W/key.conf" "OK adv interval 100.000 / 150.000 msec, ADV_IND (1 block)"
+arm_case "the old image goes to no" "$AI/btmon-04-wsl32-dated.txt" "$W/nokey.conf" "NO ${AI_OLD#FAIL }"
+arm_case "no capture goes to no" "$W/ai-missing" "$W/key.conf" "NO adv interval: no btmon capture to read"
+ai_case "no capture file -> FAIL" "$W/ai-missing" "$W/key.conf" 1 "FAIL adv interval: no btmon capture to read"
+: > "$W/ai-empty"; ai_case "an empty capture -> FAIL" "$W/ai-empty" "$W/key.conf" 1 "FAIL adv interval: no btmon capture to read"
+cat "$AI/btmon-edited-pass.txt" "$AI/btmon-edited-pass.txt" > "$W/ai-two"
+ai_case "two good blocks -> PASS (2 blocks)" "$W/ai-two" "$W/key.conf" 0 "PASS adv interval 100.000 / 150.000 msec, ADV_IND (2 blocks)"
+cat "$AI/btmon-edited-pass.txt" "$AI/btmon-04-wsl32.txt" > "$W/ai-mixed"
+ai_case "two blocks, the second at 1280 ms -> FAIL naming block 2" "$W/ai-mixed" "$W/key.conf" 1 \
+	"FAIL adv interval block 2 of 2: min [1280.000 msec (0x0800)] max [1280.000 msec (0x0800)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has the key"
+ai_case "the same two blocks without the key -> not the old-image line" "$W/ai-mixed" "$W/nokey.conf" 1 \
+	"FAIL adv interval block 2 of 2: min [1280.000 msec (0x0800)] max [1280.000 msec (0x0800)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has no key"
+# the arms that hold a fresh registration call the judge (each before it removes the capture)
+grep -qx '[[:space:]]*\[ "\$a" = dep-power \] && adv_int_arm[[:space:]]*#.*' "$REPO/scripts/node/prov-p2-254.sh" && tok "adv_int_check: the dep-power / power-bondable arm reads it for dep-power only" || tbad "adv_int_check: the dep-power guard on adv_int_arm is gone"
+[ "$(grep -cx '[[:space:]]*adv_int_arm' "$REPO/scripts/node/prov-p2-254.sh")" = 2 ] && tok "adv_int_check: adv-data and the dep-* arm call it unguarded" || tbad "adv_int_check: expected 2 bare adv_int_arm lines in prov-p2-254.sh"
+[ "$(grep -c '^[[:space:]].*adv_int_arm' "$REPO/scripts/node/prov-p2-254.sh")" = 3 ] && tok "adv_int_check: wired into 3 places of prov-p2-254.sh (adv-data, the dep-* arm, dep-power only)" || tbad "adv_int_check: expected 3 adv_int_arm calls in prov-p2-254.sh"
+# the known-failures entries (#329, until the image with the interval ships) match the fixed line of each arm and no other
+. "$REPO/scripts/dv/known-failures.sh"; KFL=$REPO/scripts/validation-known-failures.txt
+kfc() { printf '%s\n' "$2" > "$W/kf.log"; KF_NO_GH=1 kf_classify "$1" "$W/kf.log" "$KFL" "${3:-2026-12-20}"; }
+c=$(kfc prov-boot-provd-254 "FAIL prov-boot-provd-254: adv-data: ${AI_OLD#FAIL }"); case "$c" in "known #329"*) tok "known-failures: adv-data's old-image line -> known #329" ;; *) tbad "known-failures adv-data: [$c]" ;; esac
+for a in dep-bluetoothd dep-bluetoothd-kill dep-dbus dep-power; do
+	c=$(kfc prov-dep-restart-254 "FAIL prov-dep-restart-254: $a: ${AI_OLD#FAIL }"); case "$c" in "known #329"*) tok "known-failures: $a's old-image line -> known #329" ;; *) tbad "known-failures $a: [$c]" ;; esac; done
+c=$(kfc prov-dep-restart-254 "FAIL prov-dep-restart-254: dep-power: ${AI_OLD#FAIL }" 2026-12-21); case "$c" in "new (the entry for #329 2026-12-20 has expired"*) tok "known-failures: the day after the expiry -> NEW" ;; *) tbad "known-failures expiry: [$c]" ;; esac
+for l in "$AI_F1" "$AI_F2" "$AI_F3"; do
+	c=$(kfc prov-boot-provd-254 "FAIL prov-boot-provd-254: adv-data: ${l#FAIL }"); case "$c" in "new (unmatched"*) tok "known-failures: 1280 ms with a fault [${l##*status }] -> NEW" ;; *) tbad "known-failures should be NEW: [$l] -> [$c]" ;; esac; done
+c=$(kfc prov-boot-provd-254 "FAIL prov-boot-provd-254: adv-data: ${AI_OLD%% \[*} []"); case "$c" in "new (unmatched"*) tok "known-failures: the old-image line with no version -> NEW" ;; *) tbad "known-failures empty version: [$c]" ;; esac
+c=$(kfc prov-dep-restart-254 "FAIL prov-dep-restart-254: power-bondable: ${AI_OLD#FAIL }"); case "$c" in "new (unmatched"*) tok "known-failures: an arm that has no interval check -> NEW" ;; *) tbad "known-failures other arm: [$c]" ;; esac
+for l in "adv interval block 1 of 1: min [1280.000 msec (0x0800)] max [1280.000 msec (0x0800)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has the key" \
+	"adv interval 100.000 / 150.000 msec (1 block) but main.conf has no key" "adv interval: no LE Set Advertising Parameters (0x08|0x0006) in the capture" "adv interval: no btmon capture to read"; do
+	c=$(kfc prov-boot-provd-254 "FAIL prov-boot-provd-254: adv-data: $l"); case "$c" in "new (unmatched"*) tok "known-failures: [${l%%[:(]*}...] -> NEW" ;; *) tbad "known-failures should be NEW: [$l] -> [$c]" ;; esac; done
 echo "$P passed, $F failed"
 [ "$F" = 0 ] && [ "$P" -gt 0 ]

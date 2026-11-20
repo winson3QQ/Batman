@@ -1,0 +1,64 @@
+Bluetooth monitor ver 5.72
+= Note: Linux version 6.6.138 (aarch64)                         19:14:31.380400
+= Note: Bluetooth subsystem version 2.22                        19:14:31.380410
+= New Index: 88:A2:9E:B5:6C:8B (Primary,UART,hci0)       [hci0] 19:14:31.380412
+= Open Index: 88:A2:9E:B5:6C:8B                          [hci0] 19:14:31.380412
+= Index Info: 88:A2:9E:B5:6C:8B (Cypress Semiconductor)  [hci0] 19:14:31.380414
+@ MGMT Command: Add Extende.. (0x0054) plen 18  {0x0001} [hci0] 19:14:38.024830
+        Instance: 1
+        Flags: 0x00000001
+          Switch into Connectable mode
+        Duration: 0
+        Timeout: 0
+        Min advertising interval: 0.000 msec (0x0000)
+        Max advertising interval: 0.000 msec (0x0000)
+        TX power: 0 dbm (0x00)
+@ MGMT Event: Command Complete (0x0001) plen 7  {0x0001} [hci0] 19:14:38.123136
+      Add Extended Advertising Parameters (0x0054) plen 4
+        Status: Success (0x00)
+        Instance: 1
+        TX power: 127 dbm (0x7f)
+        Available adv data len: 31
+        Available scan rsp data len: 31
+@ MGMT Command: Add Extende.. (0x0055) plen 42  {0x0001} [hci0] 19:14:38.123286
+        Instance: 1
+        Advertising data length: 31
+        128-bit Service UUIDs (complete): 1 entry
+          Vendor specific
+        Company: internal use (65535)
+          Data: f1ec5917ccff
+        Flags: 0x04
+          BR/EDR Not Supported
+        Scan response length: 0
+< HCI Command: LE Set Advert.. (0x08|0x0008) plen 32  #5 [hci0] 19:14:38.123354
+        Length: 31
+        128-bit Service UUIDs (complete): 1 entry
+          Vendor specific
+        Company: internal use (65535)
+          Data: f1ec5917ccff
+        Flags: 0x04
+          BR/EDR Not Supported
+> HCI Event: Command Complete (0x0e) plen 4           #6 [hci0] 19:14:38.125511
+      LE Set Advertising Data (0x08|0x0008) ncmd 1
+        Status: Success (0x00)
+< HCI Command: LE Set Advert.. (0x08|0x0006) plen 15  #7 [hci0] 19:14:38.125543
+        Min advertising interval: 1280.000 msec (0x0800)
+        Max advertising interval: 1280.000 msec (0x0800)
+        Type: Connectable undirected - ADV_IND (0x00)
+        Own address type: Random (0x01)
+        Direct address type: Public (0x00)
+        Direct address: 00:00:00:00:00:00 (OUI 00-00-00)
+        Channel map: 37, 38, 39 (0x07)
+        Filter policy: Allow Scan Request from Any, Allow Connect Request from Any (0x00)
+> HCI Event: Command Complete (0x0e) plen 4           #8 [hci0] 19:14:38.126902
+      LE Set Advertising Parameters (0x08|0x0006) ncmd 1
+        Status: Success (0x00)
+< HCI Command: LE Set Adverti.. (0x08|0x000a) plen 1  #9 [hci0] 19:14:38.126922
+        Advertising: Enabled (0x01)
+> HCI Event: Command Complete (0x0e) plen 4          #10 [hci0] 19:14:38.127734
+      LE Set Advertise Enable (0x08|0x000a) ncmd 1
+        Status: Success (0x00)
+@ MGMT Event: Command Complete (0x0001) plen 4  {0x0001} [hci0] 19:14:38.127750
+      Add Extended Advertising Data (0x0055) plen 1
+        Status: Success (0x00)
+        Instance: 1

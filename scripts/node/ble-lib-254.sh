@@ -386,3 +386,80 @@ cmd_canary() {
 	h=$(grep -i -c -F -f "$pat"); rm -f "$pat"
 	[ "${h:-0}" = 0 ] && echo "CANARY clean" || die "CANARY: this node's IRK appears in $h fetched log line(s)"
 }
+
+# ---- #329 advertising interval (docs/design/329-adv-interval.md §8 T1, §11) -----------------------------------------
+# The image sets it in main.conf ([LE] MinAdvertisementInterval); without the key the kernel default is 1280 ms. Both
+# judges print their one fixed "image without the interval" line only when the file has no key: that line is the only
+# one scripts/validation-known-failures.txt matches, so on an image with the key nothing here can be KNOWN.
+adv_int_haskey() { grep -Eq '^[[:space:]]*MinAdvertisementInterval[[:space:]]*=' "${1:-/etc/bluetooth/main.conf}" 2>/dev/null; }
+adv_int_ver() { sed -n 's/^BATMAN_VERSION=//p' "${ADV_INT_BUILD:-/etc/batman-build}" 2>/dev/null | head -1; }
+# adv_int_check <btmon text> [main.conf]: what the controller was told. One line, "PASS …" / "FAIL …"; rc 0 / 1.
+# Every HCI LE Set Advertising Parameters command (found by its opcode, 0x08|0x0006: btmon shortens the name) must say
+# 100 / 150 ms and ADV_IND (the kernel forces 100 / 150 ms on a non-connectable advertisement whatever is configured,
+# hci_sync.c:1908), and its Command Complete (found by the event code, 0x0e: with -T btmon shortens that name too) must say Success. Only lines of "< HCI Command" records are read: the
+# MGMT records print the same labels. No capture or no such command = FAIL (nothing was checked). The extended command
+# (0x08|0x0036) is not read: this controller is never sent it (docs/design/329-adv-interval.md §11).
+adv_int_check() {
+	local _k=0
+	[ -s "$1" ] || { echo "FAIL adv interval: no btmon capture to read"; return 1; }
+	adv_int_haskey "${2:-}" && _k=1
+	awk -v key=$_k -v ver="$(adv_int_ver)" '
+		function val(s) { sub(/^[^:]*:[[:space:]]*/, "", s); return s }
+		/^[@<>=]/ { inb = 0; cc = 0; ccm = 0
+			if ($0 ~ /^< HCI / && index($0, "(0x08|0x0006)")) { n++; inb = 1 }
+			else if ($0 ~ /^> HCI Event:/ && index($0, "(0x0e)")) cc = 1
+			next }
+		inb && /Min advertising interval:/ { mn[n] = val($0) }
+		inb && /Max advertising interval:/ { mx[n] = val($0) }
+		inb && /^[[:space:]]*Type:/ { ty[n] = val($0) }
+		cc && index($0, "(0x08|0x0006)") { ccm = 1 }
+		cc && ccm && /Status:/ { if (n) st[n] = val($0); ccm = 0 }
+		END {
+			if (!n) { print "FAIL adv interval: no LE Set Advertising Parameters (0x08|0x0006) in the capture"; exit }
+			good = 0; old = 0; bad = 0
+			for (i = 1; i <= n; i++) {
+				c = (ty[i] == "Connectable undirected - ADV_IND (0x00)" && st[i] == "Success (0x00)")
+				if (c && mn[i] == "100.000 msec (0x00a0)" && mx[i] == "150.000 msec (0x00f0)") good++
+				else { if (!bad) bad = i; if (c && mn[i] == "1280.000 msec (0x0800)" && mx[i] == "1280.000 msec (0x0800)") old++ }
+			}
+			b = n " block" (n == 1 ? "" : "s")
+			if (good == n && key) print "PASS adv interval 100.000 / 150.000 msec, ADV_IND (" b ")"
+			else if (good == n) print "FAIL adv interval 100.000 / 150.000 msec (" b ") but main.conf has no key"
+			else if (old == n && !key) print "FAIL adv interval 1280.000 / 1280.000 msec (want 100.000 / 150.000): image without the interval [" ver "]"
+			else printf "FAIL adv interval block %d of %d: min [%s] max [%s] type [%s] status [%s] (want 100.000 / 150.000 msec, ADV_IND, Success); main.conf has %s\n", bad, n, mn[bad], mx[bad], ty[bad], (st[bad] == "" ? "no Command Complete" : st[bad]), (key ? "the key" : "no key")
+		}' "$1" | { IFS= read -r _l; echo "$_l"; case "$_l" in PASS\ *) return 0 ;; esac; return 1; }
+}
+# What the kernel holds (mgmt Read Default System Configuration, 0x000a / 0x000b = LE advertising interval min / max,
+# little-endian hex: a000 = 0x00a0, 0008 = 0x0800). bluetoothd sends the keys when it takes the adapter, with no reply
+# callback (adapter.c load_defaults): this readout is what shows a kernel that did not take them.
+adv_sys_read() { lim 4 sh -c ': | bluetoothctl mgmt.read-sysconfig' 2>&1; }
+# adv_sys_vals <readout> -> "<min> <max>", rc 0; rc 1 when either line is missing (bluetoothctl's mgmt commands die
+# without output now and then, E39). Both lines there = complete, even if bluetoothctl died after them.
+adv_sys_vals() {
+	echo "$1" | clean | awk '/Type: 0x000a[[:space:]]/ && /Value: / {a = $NF} /Type: 0x000b[[:space:]]/ && /Value: / {b = $NF}
+		END {if (a == "" || b == "") exit 1; print a, b}'
+}
+# adv_sys_check [main.conf] -> AS_OK (1 = a000 / f000) AS_MSG (the result text) AS_TRIES AS_UNR; rc 0 / 1.
+# 5 tries, 1 s apart; an unreadable try decides nothing. Without the key the first complete readout decides. With the
+# key a complete 0008 does not end the tries: bluetoothd powers the adapter (adapter.c:9380 -> plugins/policy.c:834)
+# before it sends the keys (adapter.c:9383), and the caller comes here as soon as the adapter is powered.
+adv_sys_check() {
+	local _k=0 _v _last=""
+	AS_OK=0; AS_TRIES=0; AS_UNR=0; AS_MSG=""
+	adv_int_haskey "${1:-}" && _k=1
+	pidof bluetoothd >/dev/null || { AS_MSG="adv sysconfig: bluetoothd not running"; return 1; }	# bluetoothctl would wait for it forever
+	while [ $AS_TRIES -lt 5 ]; do
+		[ $AS_TRIES -gt 0 ] && sleep 1
+		AS_TRIES=$((AS_TRIES + 1))
+		_v=$(adv_sys_vals "$(adv_sys_read)") || { AS_UNR=$((AS_UNR + 1)); continue; }
+		_last=$_v
+		if [ $_k = 0 ]; then
+			if [ "$_v" = "0008 0008" ]; then AS_MSG="adv sysconfig 0008 / 0008 (want a000 / f000): image without the interval [$(adv_int_ver)]"
+			else AS_MSG="adv sysconfig ${_v% *} / ${_v#* } but main.conf has no key"; fi
+			return 1
+		fi
+		[ "$_v" = "a000 f000" ] && { AS_OK=1; AS_MSG="adv sysconfig a000 / f000"; return 0; }
+	done
+	if [ -n "$_last" ]; then AS_MSG="adv sysconfig ${_last% *} / ${_last#* } after 5 tries (want a000 / f000)"; else AS_MSG="adv sysconfig unreadable"; fi
+	return 1
+}
