@@ -93,7 +93,31 @@ void main() {
     expect(rig.prober.probes, ['B×Y1'], reason: rig.nl.core.log.join('\n'));
     expect(rig.clock.t, lessThan(6000));
     expect(rig.nl.core.states['Y1']!.kind, Kind.read);
-    expect(rig.traces.where((t) => t.startsWith('adv resolver 1: 1 record(s)')), hasLength(1));
+    expect(rig.traces.where((t) => t.startsWith('adv resolver 1: ? of 1 record(s) opened')), hasLength(1));
+  });
+
+  // code review A M-5 (§8 S4): a resolver that gives no hint leaves the scheduler exactly as with no resolver at all —
+  // the same attempts at the same times and the same scheduler log
+  test('S4: no hint = the behaviour without the identifier (same attempts, same log)', () async {
+    Future<(List<String>, List<String>)> run(ResolverBuilder build) async {
+      final rig = Rig([const Rec('Y1', 1)], owner: {'B': 'Y1'}, build: build);
+      rig.radio.mfr['B'] = adv(9); // resolves to no record of this phone
+      await rig.nl.start(Page.home);
+      for (var t = 500; t <= 70000; t += 500) {
+        if (t == 3000) rig.radio.scanCtl.add('B');
+        if (t == 3500) rig.radio.scanCtl.add('C');
+        if (t % 5000 == 0) rig.radio.scanCtl.add('B'); // seen again and again, as a scan reports it
+        await rig.clock.run(500);
+      }
+      return (List<String>.of(rig.prober.probes), List<String>.of(rig.nl.core.log));
+    }
+
+    final never = Completer<Resolver>();
+    final withResolver = await run((ids) async => byFirstByte(ids));
+    final without = await run((ids) => never.future);
+    expect(withResolver.$1, isNotEmpty, reason: 'the world has attempts to compare');
+    expect(withResolver.$1, without.$1);
+    expect(withResolver.$2, without.$2);
   });
 
   test('S7: Manufacturer Data that resolves to none, or none at all, changes nothing', () async {
@@ -164,7 +188,7 @@ void main() {
     rig.radio.scanCtl.add('B');
     await rig.clock.run(1000);
     expect(rig.nl.core.log.where((l) => l.contains('B like Y2')), hasLength(1), reason: rig.nl.core.log.join('\n'));
-    expect(rig.traces.where((t) => t.startsWith('adv resolver 2: 2 record(s)')), hasLength(1), reason: '${rig.traces}');
+    expect(rig.traces.where((t) => t.startsWith('adv resolver 2: ? of 2 record(s) opened')), hasLength(1), reason: '${rig.traces}');
     expect(closed, [
       ['Y1']
     ], reason: 'the replaced resolver was closed (its keys wiped), the new one not');
@@ -220,6 +244,15 @@ void main() {
     expect(closed, [
       ['Y1']
     ], reason: 'and it was closed');
+  });
+
+  // code review B MINOR-2: the trace says how many of the records asked for opened, so a field log shows why a node
+  // got no hint
+  test('the resolver trace counts the records that opened', () async {
+    final rig = Rig([const Rec('Y1', 1), const Rec('Y2', 1)], owner: {'B': 'Y1'}, build: (ids) async => Resolver((mfr) => null, null, 1));
+    await rig.nl.start(Page.home);
+    await rig.clock.run(500);
+    expect(rig.traces.where((t) => t.startsWith('adv resolver 1: 1 of 2 record(s) opened')), hasLength(1), reason: '${rig.traces}');
   });
 
   test('S9: a resolver that throws gives no hint, and the scan goes on', () async {

@@ -192,7 +192,7 @@ class AppLink {
       // rotating identifier §3.3: opens with openSealedRecord only (never through the prober's keyError)
       buildResolver: (ids) => buildResolver(ids, (id) => openSealedRecord(platform, records, 'node/$id'), (plains) {
         final r = AdvResolver(records: plains);
-        return Resolver((mfr) => r.resolve(mfr: mfr), r.dispose);
+        return Resolver((mfr) => r.resolve(mfr: mfr), r.dispose, plains.length);
       }),
     );
     final writer = RecordWriter(
