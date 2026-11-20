@@ -361,6 +361,8 @@ class NodeLink implements LeaseListener {
       final st = e.value.st;
       if (st == KeptState.reading || (st == KeptState.parked && kind == LeaseKind.raw)) closes.add(_closeKept(e.key));
     }
+    // the round's attempt ends before the wait: it would connect again once these links are gone (review 272e0e2 C-1)
+    _abort();
     // the lease is given with these links gone and their sessions disposed (bounded as the wait in _dropAll)
     await Future.wait(closes).timeout(const Duration(seconds: 5), onTimeout: () => const []);
     await _dropAll();

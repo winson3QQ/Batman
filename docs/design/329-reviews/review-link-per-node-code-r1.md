@@ -39,7 +39,7 @@ mutation in a copy. Verdict of both: APPROVE-WITH-CHANGES.
 | mutation | failing test |
 |---|---|
 | `_closeKept` does not close the link first | L20 (and L11) |
-| `acquire` does not wait for the closes | L7 (300 ms unsubscribe) |
+| `acquire` does not wait for the closes | L7 (the plain one: sessions not disposed). **Corrected in round 2:** the 300 ms L7 named here at first could not fail; see review-link-per-node-code-r2.md |
 | a second `close()` returns at once | L15 (and T7 (c) in kept_link_test.dart) |
 
 The other 22 mutations of the first commit were run again: all caught.

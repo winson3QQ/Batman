@@ -163,6 +163,7 @@ class KRadio implements BleBackend {
       }
     });
     scheduleMicrotask(() {
+      if (!c.hasListener) return; // cancelled before it came up: never open (review 272e0e2 C-2)
       open++;
       linked.add(address);
       if (open > maxOpen) maxOpen = open;

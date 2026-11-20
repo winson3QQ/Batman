@@ -173,15 +173,23 @@ void main() {
     await l.release();
   });
 
-  test('L7: the same when the unsubscribe of tx takes 300 ms', () async {
+  test('L7: the same at the moment the lease is given, when the unsubscribe of tx takes 300 ms and the stack reports '
+      'a link gone 1 s after the disconnect', () async {
     final rig = await home2(subCancelMs: 300);
     final (s1, s2) = (rig.ks('Y1'), rig.ks('Y2'));
-    final f = rig.nl.acquire('舊頁', LeaseKind.raw);
-    await rig.run(1000, adv: false);
-    final l = (await f)!;
-    expect((rig.gate.links, rig.radio.open, rig.nl.keptCount, s1.disposed, s2.disposed), (0, 0, 0, true, true),
-        reason: rig.tr);
-    await l.release();
+    rig.radio.goneMs = 1000;
+    (int, int, int, bool, bool)? at;
+    final f = rig.nl.acquire('舊頁', LeaseKind.raw).then((l) {
+      at = (rig.gate.links, rig.radio.open, rig.nl.keptCount, s1.disposed, s2.disposed);
+      return l;
+    });
+    // acquire waits in real time as well: both clocks move
+    for (var i = 0; i < 100 && at == null; i++) {
+      await rig.run(100, adv: false);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect(at, (0, 0, 0, true, true), reason: rig.tr);
+    await (await f)!.release();
   });
 
   test('L20: a kept link being closed is gone from the gate before its unsubscribe returns', () async {
@@ -189,6 +197,28 @@ void main() {
     rig.nl.background();
     await rig.run(300, adv: false);
     expect((rig.gate.links, rig.gate.active, rig.radio.open, rig.nl.keptCount), (0, 0, 0, 0), reason: rig.tr);
+  });
+
+  test('L21: 3 records, a raw lease asked for while the round waits for the link it closed to make room: no connect '
+      'from then until the lease is given', () async {
+    for (final off in [0, 100]) {
+      final rig = await home(3, subCancelMs: 400);
+      rig.radio.goneMs = 300;
+      await rig.wait(() => rig.nl.core.roundActive && rig.gate.active > 0 && rig.nl.keptCount < 2, what: 'eviction');
+      await rig.run(off);
+      final c0 = rig.radio.connects;
+      (int, int, int)? at;
+      final f = rig.nl.acquire('舊頁', LeaseKind.raw).then((l) {
+        at = (rig.radio.connects - c0, rig.gate.links, rig.nl.keptCount);
+        return l;
+      });
+      for (var i = 0; i < 100 && at == null; i++) {
+        await rig.run(100, adv: false);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      expect(at, (0, 0, 0), reason: 'off=$off\n${rig.tr}');
+      await (await f)!.release();
+    }
   });
 
   test('L8: Bluetooth off with 2 parked: both closed', () async {
