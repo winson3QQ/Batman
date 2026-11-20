@@ -308,6 +308,7 @@ ai_case "real wsl.32 capture, no key in main.conf -> the fixed old-image line" "
 ai_case "real wsl.32 capture from the arm (btmon -T), no key -> the fixed old-image line" "$AI/btmon-04-wsl32-dated.txt" "$W/nokey.conf" 1 "$AI_OLD"
 ai_case "the same capture with the key -> another FAIL line" "$AI/btmon-04-wsl32.txt" "$W/key.conf" 1 \
 	"FAIL adv interval block 1 of 1: min [1280.000 msec (0x0800)] max [1280.000 msec (0x0800)] type [Connectable undirected - ADV_IND (0x00)] status [Success (0x00)] $AI_WANT; main.conf has the key"
+ai_case "real wsl.33 capture (btmon -T, 04) with the key -> PASS" "$AI/btmon-04-wsl33-dated.txt" "$W/key.conf" 0 "PASS adv interval 100.000 / 150.000 msec, ADV_IND (1 block)"
 ai_case "100 / 150 ms with the key -> PASS (edited fixture)" "$AI/btmon-edited-pass.txt" "$W/key.conf" 0 "PASS adv interval 100.000 / 150.000 msec, ADV_IND (1 block)"
 ai_case "100 / 150 ms without the key -> FAIL (who set it?)" "$AI/btmon-edited-pass.txt" "$W/nokey.conf" 1 "FAIL adv interval 100.000 / 150.000 msec (1 block) but main.conf has no key"
 # the MGMT records of the fixture carry the same labels with other values: the PASS above did not read them
@@ -365,6 +366,7 @@ arm_case() {	# <name> <capture> <main.conf> <want>
 		BMF=\"\$1\"; CONF=\"\$2\"; adv_int_arm" x "$2" "$3")
 	if [ "$o" = "$4" ]; then tok "adv_int_arm: $1"; else tbad "adv_int_arm: $1: [$o]"; fi; }
 arm_case "a PASS goes to ok" "$AI/btmon-edited-pass.txt" "$W/key.conf" "OK adv interval 100.000 / 150.000 msec, ADV_IND (1 block)"
+arm_case "the real wsl.33 capture goes to ok" "$AI/btmon-04-wsl33-dated.txt" "$W/key.conf" "OK adv interval 100.000 / 150.000 msec, ADV_IND (1 block)"
 arm_case "the old image goes to no" "$AI/btmon-04-wsl32-dated.txt" "$W/nokey.conf" "NO ${AI_OLD#FAIL }"
 arm_case "no capture goes to no" "$W/ai-missing" "$W/key.conf" "NO adv interval: no btmon capture to read"
 ai_case "no capture file -> FAIL" "$W/ai-missing" "$W/key.conf" 1 "FAIL adv interval: no btmon capture to read"
@@ -380,13 +382,13 @@ ai_case "the same two blocks without the key -> not the old-image line" "$W/ai-m
 grep -qx '[[:space:]]*\[ "\$a" = dep-power \] && adv_int_arm[[:space:]]*#.*' "$REPO/scripts/node/prov-p2-254.sh" && tok "adv_int_check: the dep-power / power-bondable arm reads it for dep-power only" || tbad "adv_int_check: the dep-power guard on adv_int_arm is gone"
 [ "$(grep -cx '[[:space:]]*adv_int_arm' "$REPO/scripts/node/prov-p2-254.sh")" = 2 ] && tok "adv_int_check: adv-data and the dep-* arm call it unguarded" || tbad "adv_int_check: expected 2 bare adv_int_arm lines in prov-p2-254.sh"
 [ "$(grep -c '^[[:space:]].*adv_int_arm' "$REPO/scripts/node/prov-p2-254.sh")" = 3 ] && tok "adv_int_check: wired into 3 places of prov-p2-254.sh (adv-data, the dep-* arm, dep-power only)" || tbad "adv_int_check: expected 3 adv_int_arm calls in prov-p2-254.sh"
-# the known-failures entries (#329, until the image with the interval ships) match the fixed line of each arm and no other
+# the #329 known-failures entries are gone (1.5.14-wsl.33 has the interval, firmware#32): the old-image line is NEW now
 . "$REPO/scripts/dv/known-failures.sh"; KFL=$REPO/scripts/validation-known-failures.txt
 kfc() { printf '%s\n' "$2" > "$W/kf.log"; KF_NO_GH=1 kf_classify "$1" "$W/kf.log" "$KFL" "${3:-2026-12-20}"; }
-c=$(kfc prov-boot-provd-254 "FAIL prov-boot-provd-254: adv-data: ${AI_OLD#FAIL }"); case "$c" in "known #329"*) tok "known-failures: adv-data's old-image line -> known #329" ;; *) tbad "known-failures adv-data: [$c]" ;; esac
+awk -F'	' '$3 == 329' "$KFL" | grep -q . && tbad "known-failures: a #329 entry is still in the file" || tok "known-failures: no #329 entry left"
+c=$(kfc prov-boot-provd-254 "FAIL prov-boot-provd-254: adv-data: ${AI_OLD#FAIL }"); case "$c" in "new (unmatched"*) tok "known-failures: adv-data's old-image line -> NEW" ;; *) tbad "known-failures adv-data: [$c]" ;; esac
 for a in dep-bluetoothd dep-bluetoothd-kill dep-dbus dep-power; do
-	c=$(kfc prov-dep-restart-254 "FAIL prov-dep-restart-254: $a: ${AI_OLD#FAIL }"); case "$c" in "known #329"*) tok "known-failures: $a's old-image line -> known #329" ;; *) tbad "known-failures $a: [$c]" ;; esac; done
-c=$(kfc prov-dep-restart-254 "FAIL prov-dep-restart-254: dep-power: ${AI_OLD#FAIL }" 2026-12-21); case "$c" in "new (the entry for #329 2026-12-20 has expired"*) tok "known-failures: the day after the expiry -> NEW" ;; *) tbad "known-failures expiry: [$c]" ;; esac
+	c=$(kfc prov-dep-restart-254 "FAIL prov-dep-restart-254: $a: ${AI_OLD#FAIL }"); case "$c" in "new (unmatched"*) tok "known-failures: $a's old-image line -> NEW" ;; *) tbad "known-failures $a: [$c]" ;; esac; done
 for l in "$AI_F1" "$AI_F2" "$AI_F3"; do
 	c=$(kfc prov-boot-provd-254 "FAIL prov-boot-provd-254: adv-data: ${l#FAIL }"); case "$c" in "new (unmatched"*) tok "known-failures: 1280 ms with a fault [${l##*status }] -> NEW" ;; *) tbad "known-failures should be NEW: [$l] -> [$c]" ;; esac; done
 c=$(kfc prov-boot-provd-254 "FAIL prov-boot-provd-254: adv-data: ${AI_OLD%% \[*} []"); case "$c" in "new (unmatched"*) tok "known-failures: the old-image line with no version -> NEW" ;; *) tbad "known-failures empty version: [$c]" ;; esac

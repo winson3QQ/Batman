@@ -112,7 +112,7 @@ AS=$REPO/tests/fixtures/advint-329/sysconfig-04-wsl32.txt; ASV='1.5.14-wsl.32+4c
 printf '[General]\n#MinAdvertisementInterval = 0x00A0\n' > "$T/nokey.conf"; printf '[LE]\nMinAdvertisementInterval = 0x00A0\n' > "$T/key.conf"
 echo "BATMAN_VERSION=$ASV" > "$T/abb"; mkdir -p "$T/as"
 sed 's/\(Type: 0x000a.*Value: \)0008/\1a000/; s/\(Type: 0x000b.*Value: \)0008/\1f000/' "$AS" > "$T/as/good"
-cp "$AS" "$T/as/old"; sed -n '1,/Type: 0x000a/p' "$AS" > "$T/as/cut"; : > "$T/as/empty"
+cp "$AS" "$T/as/old"; sed -n '1,/Type: 0x000a/p' "$AS" > "$T/as/cut"; cp "$REPO/tests/fixtures/advint-329/sysconfig-04-wsl33.txt" "$T/as/real33"; : > "$T/as/empty"
 echo "FAIL timeout after 4s: sh -c : | bluetoothctl mgmt.read-sysconfig" > "$T/as/timeout"
 { sed -n '1,/Type: 0x000b/p' "$T/as/good"; echo "Segmentation fault"; } > "$T/as/died"
 sed 's/\(Type: 0x000a.*Value: \)0008/\1a000/' "$AS" > "$T/as/minonly"; sed 's/\(Type: 0x000b.*Value: \)0008/\1f000/' "$AS" > "$T/as/maxonly"
@@ -124,6 +124,8 @@ as_case() { local name=$1 conf=$2 want=$4 i=0 r o; rm -f "$T"/as/try.*
 	[ "$o" = "$want" ] && ok "adv sysconfig: $name" || bad "adv sysconfig: $name: [$o]"; }
 AS_OLD="FAIL rebind 3: adv sysconfig 0008 / 0008 (want a000 / f000): image without the interval [$ASV]"
 as_case "real wsl.32 readout, no key -> the fixed old-image line" "$T/nokey.conf" "old" "$AS_OLD"$'\n'"DET rebind 3: adv sysconfig tries=1 unreadable=0"
+as_case "real wsl.33 readout with the key -> PASS on the first try" "$T/key.conf" "real33" "PASS rebind 3: adv sysconfig a000 / f000"$'
+'"DET rebind 3: adv sysconfig tries=1 unreadable=0"
 as_case "a000 / f000 with the key -> PASS on the first try (edited)" "$T/key.conf" "good" "PASS rebind 3: adv sysconfig a000 / f000"$'\n'"DET rebind 3: adv sysconfig tries=1 unreadable=0"
 as_case "key: 0008 twice, then a000 / f000 -> PASS, tries=3" "$T/key.conf" "old old good" "PASS rebind 3: adv sysconfig a000 / f000"$'\n'"DET rebind 3: adv sysconfig tries=3 unreadable=0"
 as_case "key: a timed-out read, then good -> PASS, unreadable=1, the timeout line is not printed" "$T/key.conf" "timeout good" "PASS rebind 3: adv sysconfig a000 / f000"$'\n'"DET rebind 3: adv sysconfig tries=2 unreadable=1"
@@ -144,21 +146,19 @@ o=$(lib 'pidof() { return 1; }; adv_sys_read() { echo CALLED; }; adv_sys_check "
 grep -A2 'if \[ "\$RB_UP" = 1 \] && \[ \$flip = 0 \]; then' "$REPO/scripts/node/bt-uart-305.sh" | grep -qx '[[:space:]]*adv_sys_check && pass "rebind \$i: \$AS_MSG" || no "rebind \$i: \$AS_MSG"' && ok "adv sysconfig: cmd_rebind calls the judge (RB_UP = 1, not --flip)" || bad "adv sysconfig: cmd_rebind does not call adv_sys_check"
 grep -A3 'if \[ "\$RB_UP" = 1 \] && \[ \$flip = 0 \]; then' "$REPO/scripts/node/bt-uart-305.sh" | grep -qx '[[:space:]]*echo "DET rebind \$i: adv sysconfig tries=\$AS_TRIES unreadable=\$AS_UNR"' && ok "adv sysconfig: cmd_rebind prints the tries / unreadable counts" || bad "adv sysconfig: cmd_rebind lost its DET line"
 grep -qx "adv_sys_read() { lim 4 sh -c ': | bluetoothctl mgmt.read-sysconfig' 2>&1; }" "$REPO/scripts/node/ble-lib-254.sh" && ok "adv sysconfig: the readout runs under a 4 s limit" || bad "adv sysconfig: adv_sys_read lost its limit"
-# known-failures (#329): only the fixed old-image line is KNOWN
+# known-failures: the #329 entry is gone (1.5.14-wsl.33 has the interval, firmware#32): the old-image line is NEW now
 . "$REPO/scripts/dv/known-failures.sh"; KFL=$REPO/scripts/validation-known-failures.txt
 kfc() { printf '%s\n' "$1" > "$T/kf.log"; KF_NO_GH=1 kf_classify bt-uart-rebind-305 "$T/kf.log" "$KFL" "${2:-2026-12-20}"; }
-c=$(kfc "$(for i in 1 2 10; do echo "${AS_OLD/rebind 3/rebind $i}"; done)"); case "$c" in "known #329"*) ok "known-failures: the old-image line of every rebind -> known #329" ;; *) bad "known-failures rebind: [$c]" ;; esac
+c=$(kfc "$(for i in 1 2 10; do echo "${AS_OLD/rebind 3/rebind $i}"; done)"); case "$c" in new*) ok "known-failures: the old-image line of every rebind -> NEW" ;; *) bad "known-failures rebind: [$c]" ;; esac
 c=$(kfc "${AS_OLD%% \[*} []"); case "$c" in new*) ok "known-failures: the old-image line with no version -> NEW" ;; *) bad "known-failures empty version: [$c]" ;; esac
-c=$(kfc "$AS_OLD" 2026-12-21); case "$c" in "new (the entry for #329 2026-12-20 has expired"*) ok "known-failures: the day after the expiry -> NEW" ;; *) bad "known-failures expiry: [$c]" ;; esac
 for l in "adv sysconfig unreadable" "adv sysconfig 0008 / 0008 after 5 tries (want a000 / f000)" "adv sysconfig a000 / f000 but main.conf has no key" "adv sysconfig: bluetoothd not running"; do
 	c=$(kfc "FAIL rebind 3: $l"); case "$c" in new*) ok "known-failures: [$l] -> NEW" ;; *) bad "known-failures should be NEW: [$l] -> [$c]" ;; esac; done
-c=$(kfc "$AS_OLD"$'\n'"FAIL rebind 4: adv sysconfig unreadable"); case "$c" in "new (never-known"*) ok "known-failures: one unreadable rebind among old-image lines -> NEW" ;; *) bad "known-failures mixed: [$c]" ;; esac
+c=$(kfc "$AS_OLD"$'\n'"FAIL rebind 4: adv sysconfig unreadable"); case "$c" in new*) ok "known-failures: one unreadable rebind among old-image lines -> NEW" ;; *) bad "known-failures mixed: [$c]" ;; esac
 # a run that stopped short is never only known lines (review D MAJOR-1)
 det() { local i; for i in $(seq 1 "$1"); do echo "DET rebind $i: unbind=12ms unbind_writes=[0x03] bind_writes=[0xcf,0x03,0x8b,0xcf] probe_up=1 up_s=2 kmsg_err=0"; echo "${AS_OLD/rebind 3/rebind $i}"; echo "DET rebind $i: adv sysconfig tries=1 unreadable=0"; done; }
 o=$(bt305_rebind_done "$(det 10)" 10); [ $? = 0 ] && [ -z "$o" ] && ok "rebind done: 10 of 10 reported -> no extra line" || bad "rebind done, full run: [$o]"
 cut3=$(det 3); o=$(bt305_rebind_done "$cut3" 10); r=$?
 [ $r = 1 ] && [ "$o" = "FAIL rebind: the node command did not finish (3 of 10 rebinds reported)" ] && ok "rebind done: cut after 3 -> its own FAIL line" || bad "rebind done, cut run: rc=$r [$o]"
-c=$(kfc "$cut3"); case "$c" in "known #329"*) ok "known-failures: the cut run's node lines alone would be known (the control)" ;; *) bad "known-failures cut control: [$c]" ;; esac
 c=$(kfc "$cut3"$'\n'"$o"); case "$c" in new*) ok "known-failures: the cut run with its FAIL line -> NEW" ;; *) bad "known-failures cut run: [$c]" ;; esac
 o=$(bt305_rebind_done "$(det 2)"$'\n'"NOTE rebind 3: still down — the harness reboots this node" 10); [ $? = 0 ] && [ -z "$o" ] && ok "rebind done: the node script stopped itself (still down) -> no extra line" || bad "rebind done, still down: [$o]"
 o=$(bt305_rebind_done "FAIL pre-305 image: test not applicable to this kernel" 10); [ $? = 0 ] && [ -z "$o" ] && ok "rebind done: never started and said why -> no extra line" || bad "rebind done, gate: [$o]"
