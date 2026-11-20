@@ -362,6 +362,28 @@ void main() {
   // #329 PR 6 T6-11 (swupdate, plan §11 MINOR): the status area's look — prepared = ok, writing / any step = busy,
   // finished = ok, reverted = bad, a refused apply (its tech has the node's codes) = bad, a file to pick = none.
   // Negative control: a refused apply shown as prepared (ok) -> FAIL.
+  // #329 honest-errors C3: the two node answers that end at the old version get their own next step; neither says the
+  // file is bad. The literals are the node texts (swupd.rs T_REVERTED / T_REVERTED_18).
+  // Negative control: one line for both (the old swNext) -> the reason-18 expectations FAIL.
+  test('swNext: reverted by the health check / no verdict (reason 18)', () {
+    const mesh = '節點仍是原本的版本，可以照常使用。常見原因是重開後連不上其他節點：這台若已加入隊伍網路，請先確認其他節點開著、連得上。'
+        '可以再更新一次；再退回的話，這個更新檔不要再試，請找維修人員。';
+    const plain = '節點仍是原本的版本，可以照常使用。可以再更新一次；再不行請找維修人員。';
+    expect(swNext(act(SwKind.done, text: '新版不健康，已退回原本的版本')), mesh);
+    expect(swNext(act(SwKind.done, text: '新版沒有完成試用，已回到原本的版本')), plain);
+    expect(plain, isNot(contains('連不上其他節點')));
+    for (final l in [mesh, plain]) {
+      expect(l, isNot(contains('更新檔可能有問題')));
+      expect(l, contains('可以再更新一次'));
+    }
+    expect(swNext(act(SwKind.done, text: '更新完成：1.5.14-wsl.30')), isNull);
+    // a version string is the node's: the words in it do not make the update a reverted one (mutation: no startsWith)
+    expect(swNext(act(SwKind.done, text: '更新完成：1.5.14-退回')), isNull);
+    expect(swNext(act(SwKind.done, text: '更新完成：回到原本的版本')), isNull);
+    expect(swNext(act(SwKind.show_, text: '新版不健康，已退回原本的版本')), isNull, reason: 'only on the result screen');
+    expect(swNext(null), isNull);
+  });
+
   test('swHero: the five states', () {
     SwAction with_(SwAction a, String tech) => SwAction(
         kind: a.kind, waitMs: a.waitMs, note: a.note, text: a.text, tech: tech, percent: a.percent, buttons: a.buttons,

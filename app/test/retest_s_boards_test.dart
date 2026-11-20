@@ -20,7 +20,7 @@ import 'package:batman_app/src/rust/api/owner.dart' show StatusView, TeamView;
 import 'package:batman_app/src/rust/api/rekey.dart' show OwnNodeView, RecipientView;
 import 'package:batman_app/src/rust/api/swupdate.dart';
 import 'package:batman_app/src/rust/frb_generated.dart';
-import 'package:batman_app/swupdate.dart' show SwFlow, SwHold, SwUpdatePage, swChannel, swPrepared, swRevertedNext;
+import 'package:batman_app/swupdate.dart' show SwFlow, SwHold, SwUpdatePage, swChannel, swPrepared;
 import 'package:batman_app/ui/add_pages.dart';
 import 'package:batman_app/ui/home_page.dart';
 import 'package:batman_app/ui/intro_pages.dart';
@@ -341,7 +341,14 @@ void main() {
       expect(find.descendant(of: find.byKey(const Key('sw-hero')), matching: find.text('更新沒有成功，已回到原本的版本')), findsOneWidget);
       expect(find.descendant(of: find.byKey(const Key('sw-hero')), matching: find.byIcon(Look.bad.icon)), findsOneWidget);
       // #329 PR 7 (p1p2-check 9.x_reverted): what to do now
-      expect(find.descendant(of: find.byKey(const Key('sw-hero')), matching: find.text(swRevertedNext)), findsOneWidget);
+      // #329 honest-errors C3: the literal. It no longer says the file is bad; the mesh reason only for this answer.
+      expect(
+          find.descendant(
+              of: find.byKey(const Key('sw-hero')),
+              matching: find.text('節點仍是原本的版本，可以照常使用。常見原因是重開後連不上其他節點：這台若已加入隊伍網路，請先確認其他節點開著、連得上。'
+                  '可以再更新一次；再退回的話，這個更新檔不要再試，請找維修人員。')),
+          findsOneWidget);
+      expect(find.textContaining('更新檔可能有問題'), findsNothing);
     }),
     'team_hub': B((ui) => TeamHubPage(app: app(null), ui: ui), check: (t) {
       // #329 PR 6 T6-11 (P2-1): each side's steps numbered, in order, before 「其他」

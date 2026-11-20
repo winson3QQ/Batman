@@ -42,10 +42,13 @@ enum OpEnd {
 }
 
 class OpReply {
-  const OpReply(this.end, {this.reply, this.login, this.busyName = ''});
+  const OpReply(this.end, {this.reply, this.login, this.found = false, this.busyName = ''});
   final OpEnd end;
   final ConsoleReply? reply;
   final LoginForEnd? login;
+
+  /// With [login] `notFound`: LoginForResult.found.
+  final bool found;
   final String busyName;
 
   @override
@@ -104,7 +107,7 @@ class OpSession {
       final r = await d.login(lease, id);
       final h = r.handoff;
       if (r.end != LoginForEnd.ok || h == null) {
-        return r.end == LoginForEnd.noLease ? const OpReply(OpEnd.leaseLost) : OpReply(OpEnd.login, login: r.end);
+        return r.end == LoginForEnd.noLease ? const OpReply(OpEnd.leaseLost) : OpReply(OpEnd.login, login: r.end, found: r.found);
       }
       if (gone()) {
         await h.close();
@@ -169,7 +172,7 @@ class OpenSession {
         final r = await d.login(lease, id);
         final h = r.handoff;
         if (r.end != LoginForEnd.ok || h == null) {
-          return failed(r.end == LoginForEnd.noLease ? const OpReply(OpEnd.leaseLost) : OpReply(OpEnd.login, login: r.end));
+          return failed(r.end == LoginForEnd.noLease ? const OpReply(OpEnd.leaseLost) : OpReply(OpEnd.login, login: r.end, found: r.found));
         }
         if (_gone || !lease.valid) {
           await h.close();

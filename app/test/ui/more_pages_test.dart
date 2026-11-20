@@ -277,6 +277,19 @@ void main() {
       expect(find.text(leaveNotAsked), findsNothing);
     });
 
+    // #329 honest-errors C2
+    testWidgets('T-L1: the node near but no session -> that line, nothing sent', (t) async {
+      final (f, _) = await openLeave(t);
+      f
+        ..loginEnd = LoginForEnd.notFound
+        ..loginFound = true;
+      await t.tap(find.widgetWithText(FilledButton, Btn.leaveNetwork));
+      await settle(t, f);
+      expect(find.textContaining('附近有像是這台節點的裝置，但沒有連上'), findsOneWidget);
+      expect(find.textContaining('沒有找到這台節點'), findsNothing);
+      expect(f.rigs.first.radio.written, isEmpty);
+    });
+
     testWidgets('T-L1: the link lost after network/leave went out -> 結果不明 (leave v4.1 §3)', (t) async {
       final (f, _) = await openLeave(t);
       f.rigs.first.radio.silent = true;

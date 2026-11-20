@@ -359,6 +359,10 @@ fn t3_every_row_of_section_4() {
     // 6 (a refusal) and the phase 6 rows are three different texts
     assert_ne!(su::reason_text(6, c), su::T_REVERTED);
     assert_ne!(su::T_REVERTED, su::T_REVERTED_18);
+    // the app picks the next step by these words (app/lib/swupdate.dart swNext; #329 honest-errors C3)
+    assert!(su::T_REVERTED.contains("退回"));
+    assert!(su::T_REVERTED_18.contains("回到原本的版本") && !su::T_REVERTED_18.contains("退回"));
+    assert!(!su::T_REVERTED.starts_with("更新完成") && !su::T_REVERTED_18.starts_with("更新完成"));
     // §3.1: trust and the bound port
     let gate = |r: Reply, dev: bool| match r {
         Reply::Ok(b) => su::gate(&b, dev),

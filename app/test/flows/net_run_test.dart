@@ -100,6 +100,7 @@ class World {
   final Set<String> confirmApplies = {};
   final confirmed = <String>[];
   final Map<String, LoginForEnd> loginEnds = {}; // id -> how its login ends (default ok)
+  bool loginFound = false; // #329 honest-errors C2: with notFound, a device that looked like the node was there
   final Map<String, String> dac = {};
   final logins = <String>[];
   bool appliedAfterMake = true;
@@ -122,7 +123,7 @@ class World {
           logins.add('$id${clearNotY ? ' clear' : ''}');
           onLogin?.call();
           final e = loginEnds[id] ?? LoginForEnd.ok;
-          if (e != LoginForEnd.ok) return LoginForResult(e);
+          if (e != LoginForEnd.ok) return LoginForResult(e, null, loginFound);
           return LoginForResult(LoginForEnd.ok, _FakeHandoff(id));
         },
         console: (h) => FakeConsole(this, (h as _FakeHandoff).fid),
@@ -281,6 +282,20 @@ void main() {
       await run.run();
       expect(run.rows[0].line, contains('60 秒內沒有找到這台節點'));
       expect(run.rows[1].state, RowState.ok);
+      expect(w.asks, ['02']);
+    });
+
+    // #329 honest-errors C2. Negative control: NetRun not passing `found` on -> the old line, FAIL.
+    test('a login that ends with the node near but no session: the row says so, not 「沒有找到」', () async {
+      final w = World()
+        ..loginEnds['02'] = LoginForEnd.notFound
+        ..loginFound = true
+        ..script('join', [ans('[JOINED] 已加入')]);
+      final run = w.run(['02', '03'], makes: false, joinRel: 'net/a');
+      await run.run();
+      expect(run.rows[0].line, loginFoundLine);
+      expect(run.rows[0].line, isNot(contains('沒有找到')));
+      expect((run.rows[0].state, run.rows[1].state), (RowState.failed, RowState.ok));
       expect(w.asks, ['02']);
     });
 
@@ -534,6 +549,17 @@ void main() {
       expect((c.end, c.offerMake), (CheckEnd.loginFailed, false));
       await c.run(clearNotY: true);
       expect(w.logins, ['04', '04 clear']);
+    });
+
+    // #329 honest-errors C2. Negative control: CheckRun not passing `found` on -> FAIL.
+    test('the login fails: the line tells 「沒有找到」 from 「附近有像是這台節點的裝置」', () async {
+      final w = World()..loginEnds['04'] = LoginForEnd.notFound;
+      final c = CheckRun(w.deps, id: '04', snapshot: () => snap([pend('p1', 'd4')]));
+      await c.run();
+      expect(c.lines, [loginLine(LoginForEnd.notFound)]);
+      w.loginFound = true;
+      await c.run();
+      expect(c.lines, [loginFoundLine]);
     });
 
 

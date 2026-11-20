@@ -90,6 +90,8 @@ const sshReplaceNote = '送出的這一組會取代之前由 app 加入的全部
     '例外：一把金鑰如果本來就在節點上、又由 app 送過，之後任何一次取代（不只送出空的一組）都會把它一起移除。'
     '要保留的金鑰（例如 lab key）請每一次都放進這一組。';
 const sshSetButton = '設定 SSH 金鑰（取代之前由 app 加入的）';
+const sshSetAsk = '設定 SSH 金鑰？';
+const sshSetYes = '設定';
 const sshRemoveButton = '移除 app 加入的全部 SSH 金鑰';
 const sshDoneLine = 'SSH 金鑰已設定';
 const sshRemovedLine = '已移除 app 加入的全部 SSH 金鑰';
@@ -141,6 +143,34 @@ class _SshKeysPageState extends State<SshKeysPage> {
                     BatButton(Btn.remove, key: const Key('ssh-remove-yes'), kind: BtnKind.danger, onPressed: () => Navigator.pop(c, true)),
                     const SizedBox(height: 6),
                     BatButton(Btn.cancel, kind: BtnKind.text, onPressed: () => Navigator.pop(c, false)),
+                  ]),
+                ],
+              ));
+      if (yes != true || !mounted) return;
+    } else {
+      // #329 honest-errors C5 (#329 line 260): this replaces the keys the app added before — asked first, with the
+      // page's own note (its exception included) and the fingerprints of exactly the lines that will be sent
+      final t = BatTheme.of(context);
+      final prints = [for (final l in lines) checkSshLine(l).fingerprint ?? ''];
+      final body = TextStyle(fontSize: Fs.body, height: 1.6, color: t.ink);
+      final yes = await showDialog<bool>(
+          context: context,
+          builder: (c) => AlertDialog(
+                backgroundColor: t.surf,
+                scrollable: true,
+                title: Text(sshSetAsk, style: TextStyle(fontSize: Fs.title, fontWeight: FontWeight.w700, color: t.ink)),
+                content: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                  Text(sshReplaceNote, key: const Key('ssh-set-note'), style: body),
+                  const SizedBox(height: 10),
+                  Text('這次送出 ${lines.length} 把：', key: const Key('ssh-set-count'), style: body),
+                  for (var i = 0; i < prints.length; i++)
+                    Text(prints[i], key: Key('ssh-set-print-$i'), style: TextStyle(fontSize: Fs.meta, height: 1.6, color: t.ink)),
+                ]),
+                actions: [
+                  Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                    BatButton(sshSetYes, key: const Key('ssh-set-yes'), onPressed: () => Navigator.pop(c, true)),
+                    const SizedBox(height: 6),
+                    BatButton(Btn.cancel, key: const Key('ssh-set-no'), kind: BtnKind.text, onPressed: () => Navigator.pop(c, false)),
                   ]),
                 ],
               ));

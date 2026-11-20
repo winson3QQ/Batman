@@ -39,12 +39,16 @@ OpDeps opDeps(AppLink a) => OpDeps(
 /// The line for an operation that did not end with the node's answer, or the answer's own words (no marks).
 String opLine(OpReply r) => switch (r.end) {
       OpEnd.busy => '另一個操作還在進行：${r.busyName}',
-      OpEnd.login => '${loginLine(r.login!)}沒有送出任何東西。',
+      OpEnd.login => '${loginLine(r.login!, found: r.found)}沒有送出任何東西。',
       OpEnd.gone => '',
       OpEnd.leaseLost => r.reply == null ? '這個操作被中斷了，沒有送出。請再試一次。' : stripMarkers(r.reply!.text),
       OpEnd.done => stripMarkers(r.reply!.text), // technical parts kept: shown through SayLine
       OpEnd.failed => '操作出錯，結果不明。請重新讀取後再決定要不要再做一次。',
     };
+
+/// A read that failed: [what] and the reason. The reason in brackets (no two colons), except the 「附近有像是這台節點
+/// 的裝置」 line, which has brackets of its own (#329 honest-errors C2).
+String readFailLine(String what, OpReply r) => r.end == OpEnd.login && r.found ? '$what。${opLine(r)}' : '$what（${opLine(r)}）';
 
 /// The settings when the operation succeeded (Rust gave them), else null.
 SettingsView? okSettings(OpReply r) => r.end == OpEnd.done && r.reply!.kind == ReplyKind.answer ? r.reply!.settings : null;
@@ -128,7 +132,7 @@ class _WifiPageState extends State<WifiPage> {
         _now = v;
         if (_ssid.text.isEmpty) _ssid.text = v.apSsid;
       } else {
-        _line = v != null ? '讀不到目前的名稱。' : '讀不到目前的名稱（${opLine(r)}）'; // #329 PR 7: no two colons (as the country page)
+        _line = v != null ? '讀不到目前的名稱。' : readFailLine('讀不到目前的名稱', r); // #329 PR 7: no two colons (as the country page)
         _again = true;
       }
     });
@@ -294,7 +298,7 @@ class _CountryPageState extends State<CountryPage> {
     setState(() {
       _reading = false;
       _cc = v != null && v.read && v.country.isNotEmpty ? v.country : null;
-      if (_cc == null) _line = v != null ? '讀不到目前的國家。' : '讀不到目前的國家（${opLine(r)}）'; // #329 PR 6: no two colons
+      if (_cc == null) _line = v != null ? '讀不到目前的國家。' : readFailLine('讀不到目前的國家', r); // #329 PR 6: no two colons
     });
   }
 

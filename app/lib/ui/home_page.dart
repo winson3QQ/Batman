@@ -349,6 +349,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver impleme
           next: h.next,
           time: h.look == Look.busy ? null : shownTime,
           onRefresh: h.look == Look.busy ? null : a.link.refresh,
+          steady: true, // #329 honest-errors C4
           extra: actionText == null
               ? null
               : [

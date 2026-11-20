@@ -809,6 +809,14 @@ class LoginFor {
   LoginEnd? end;
   int handshakes = 0;
 
+  /// #329 honest-errors C2: the addresses that looked like this node in this login and gave no session: one that
+  /// answered after its certificate checked (refusedOther / broken), or a 「是 Y」 / 「像 Y」 address that stayed
+  /// silent. An address that turns out not to be it (undecryptable, certRejected) is taken out again.
+  final Set<String> near = {};
+
+  /// With [LoginEnd.notFound] only: a device that looked like this node was there (the line says so).
+  bool get found => near.isNotEmpty;
+
   bool get done => end != null;
 
   /// As [NodeLinkCore.onScan]: true = the address is new to this login, or its hint changed.
@@ -877,6 +885,7 @@ class LoginFor {
         c.isY[a.addr] = id;
         end = LoginEnd.ok;
       case Res.undecryptable:
+        near.remove(a.addr);
         final w = c.writtenAt[id];
         if (w != null && now - w < c.p.n9Login) {
           retry.add(a.addr);
@@ -886,6 +895,7 @@ class LoginFor {
           (c.notY[a.addr] ??= {}).add(id);
         }
       case Res.certRejected:
+        near.remove(a.addr);
         (c.notY[a.addr] ??= {}).add(id);
         if (c.isY[a.addr] == id) c.isY.remove(a.addr);
         s.kind = Kind.unreachable;
@@ -900,9 +910,11 @@ class LoginFor {
         end = LoginEnd.refused;
       case Res.refusedOther:
       case Res.broken:
+        near.add(a.addr);
         c.isY[a.addr] = id;
         retry.add(a.addr);
       case Res.noResponse:
+        if (c.isY[a.addr] == id || like[a.addr] == id) near.add(a.addr); // before the memo below is dropped
         silent[a.addr] = (silent[a.addr] ?? 0) + 1;
         if (c.isY[a.addr] == id && silent[a.addr]! >= c.p.perAddr) {
           c.isY.remove(a.addr); // as in a round: two silences on the known address drop it, then it looks

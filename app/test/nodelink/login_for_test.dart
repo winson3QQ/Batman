@@ -12,7 +12,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'node_link_test.dart' show Clock, Radio, FakeProber;
 
-/// By address: `ok` logs in (a hand-off), `not` is 解不開, `cert` is 身分不符, `hang` waits until cancelled.
+/// By address: `ok` logs in (a hand-off), `not` is 解不開, `cert` is 身分不符, `hang` waits until cancelled, `busy` is
+/// the node answering "busy" after its certificate checked (refusedOther).
 class LoginProber implements Prober {
   LoginProber(this.by);
   final Map<String, String> by;
@@ -31,6 +32,13 @@ class LoginProber implements Prober {
         return Outcome(Res.body, '', h);
       case 'cert':
         return const Outcome(Res.certRejected);
+      case 'busy':
+        return const Outcome(Res.refusedOther);
+      case 'busy1': // busy once, then "not allowed"
+        by[link.address] = 'forbid';
+        return const Outcome(Res.refusedOther);
+      case 'forbid':
+        return const Outcome(Res.refusedForbidden);
       case 'hang':
         await cancelled;
         return const Outcome(Res.noResponse);
@@ -136,6 +144,25 @@ void main() {
     await rig.clock.run(2000);
     expect(r?.end, LoginForEnd.notFound);
     expect((rig.gate.scans, rig.gate.links), (0, 0));
+    expect(r!.found, false);
+  });
+
+  // #329 honest-errors C2. Negative control: _loginFor not returning LoginFor.found -> the first FAILs.
+  test('60 s with the node answering "busy" every time: notFound with found', () async {
+    final rig = Rig({'a1': 'busy'});
+    final l = await rig.lease();
+    final r = await rig.login(l, addrs: ['a1']);
+    expect((r!.end, r.found, r.handoff), (LoginForEnd.notFound, true, null));
+    expect(rig.prober.probes.length, greaterThan(1), reason: 'premise: it was tried again');
+    expect((rig.gate.scans, rig.gate.links), (0, 0));
+  });
+
+  test('60 s with only strangers (解不開, and one that never answers): notFound, not found', () async {
+    final rig = Rig({'a1': 'not', 'a2': 'hang'});
+    final l = await rig.lease();
+    final r = await rig.login(l, addrs: ['a1', 'a2']);
+    expect((r!.end, r.found), (LoginForEnd.notFound, false));
+    expect(rig.prober.probes, containsAll(['a1', 'a2']));
   });
 
   test('the 60 s start when the scan really starts: a wait for a scan slot is not counted', () async {
@@ -173,6 +200,15 @@ void main() {
     await rig.clock.run(300);
     expect(r?.end, LoginForEnd.precondition);
     expect(rig.gate.links, 0);
+  });
+
+  // mutation: `l.end == LoginEnd.notFound && l.found` -> `l.found`
+  test('the node answers "busy", then refuses this phone: refused, found false', () async {
+    final rig = Rig({'a1': 'busy1'});
+    final l = await rig.lease();
+    final r = await rig.login(l, addrs: ['a1']);
+    expect((r!.end, r.found), (LoginForEnd.refused, false));
+    expect(rig.prober.probes, ['a1', 'a1'], reason: 'premise: busy came first');
   });
 
   test('keys read live before the login: unusable -> precondition, and 2.4 shown', () async {

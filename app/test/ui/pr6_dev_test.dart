@@ -171,8 +171,84 @@ void main() {
       await t.enterText(find.byKey(const Key('ssh-lines')), k1);
       await t.pump();
       await t.tap(find.byKey(const Key('ssh-send')));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('ssh-set-yes'))); // #329 honest-errors C5
       await settle(t, f);
       expect(asked(f), ['ssh_keys/set 1: $k1']);
+    });
+
+    // #329 honest-errors C5: >= 1 line replaces what an app added before -> asked first, with what goes out.
+    // Negative control: the page sending without the dialog -> both FAIL (no dialog; 取消 has nothing to tap).
+    testWidgets('1+ lines -> asked first: the note, the count, exactly the fingerprints; 取消 sends nothing', (t) async {
+      final (f, _) = await open(t);
+      await t.enterText(find.byKey(const Key('ssh-lines')), '$k1\r\n\r\n$k2\r\n');
+      await t.pump();
+      await t.tap(find.byKey(const Key('ssh-send')));
+      await t.pumpAndSettle();
+      final dialog = find.byType(AlertDialog);
+      expect(find.descendant(of: dialog, matching: find.text(sshSetAsk)), findsOneWidget);
+      expect(t.widget<Text>(find.byKey(const Key('ssh-set-note'))).data, sshReplaceNote);
+      expect(t.widget<Text>(find.byKey(const Key('ssh-set-count'))).data, '這次送出 2 把：');
+      final prints = [for (var i = 0; i < 2; i++) t.widget<Text>(find.byKey(Key('ssh-set-print-$i'))).data];
+      expect(prints, [f1, f2]);
+      expect(find.byKey(const Key('ssh-set-print-2')), findsNothing);
+      expect(asked(f), isEmpty, reason: 'nothing before the answer');
+      await t.tap(find.byKey(const Key('ssh-set-no')));
+      await settle(t, f);
+      expect(asked(f), isEmpty);
+      expect(f.logins, 0);
+      expect(find.byType(AlertDialog), findsNothing);
+    });
+
+    // mutation: `yes != true` -> `yes == false`
+    testWidgets('1+ lines -> the dialog left without an answer (a tap outside) sends nothing', (t) async {
+      final (f, _) = await open(t);
+      await t.enterText(find.byKey(const Key('ssh-lines')), k1);
+      await t.pump();
+      await t.tap(find.byKey(const Key('ssh-send')));
+      await t.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsOneWidget);
+      await t.tapAt(const Offset(4, 4));
+      await t.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing, reason: 'premise: the dialog was left');
+      await settle(t, f);
+      expect(asked(f), isEmpty);
+      expect(f.logins, 0);
+    });
+
+    testWidgets('1+ lines -> 「設定」 sends the lines once', (t) async {
+      final (f, _) = await open(t);
+      await t.enterText(find.byKey(const Key('ssh-lines')), k1);
+      await t.pump();
+      await t.tap(find.byKey(const Key('ssh-send')));
+      await t.pumpAndSettle();
+      expect(asked(f), isEmpty);
+      await t.tap(find.byKey(const Key('ssh-set-yes')));
+      await settle(t, f);
+      expect(asked(f), ['ssh_keys/set 1: $k1']);
+    });
+
+    testWidgets('8 lines at text scale 1.3 on a phone: the dialog scrolls, no overflow, 「設定」 reachable', (t) async {
+      mockChannels(t);
+      final f = Fx(rust, logins: 1);
+      final a = app()..devTrust = true;
+      t.view.physicalSize = const Size(360, 640);
+      t.view.devicePixelRatio = 1;
+      addTearDown(t.view.reset);
+      await t.pumpWidget(host(MediaQuery(
+          data: const MediaQueryData(size: Size(360, 640), textScaler: TextScaler.linear(1.3)),
+          child: SshKeysPage(app: a, ui: UiState(MemStore()), deps: f.d))));
+      await t.enterText(find.byKey(const Key('ssh-lines')), List.filled(8, k1).join('\n'));
+      await t.pump();
+      await t.ensureVisible(find.byKey(const Key('ssh-send')));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('ssh-send')));
+      await t.pumpAndSettle();
+      expect(t.takeException(), isNull, reason: 'no overflow');
+      expect(find.byKey(const Key('ssh-set-yes')).hitTestable(), findsOneWidget);
+      await t.tap(find.byKey(const Key('ssh-set-no')));
+      await settle(t, f);
+      expect(asked(f), isEmpty);
     });
 
     // CRLF from a clipboard: each line's trailing CR and the blank lines go; the fingerprints are shown; one
@@ -194,6 +270,8 @@ void main() {
       expect(note, contains('每一次都放進這一組'));
       expect((send(t).text, send(t).kind), (sshSetButton, BtnKind.primary));
       await t.tap(find.byKey(const Key('ssh-send')));
+      await t.pumpAndSettle();
+      await t.tap(find.byKey(const Key('ssh-set-yes'))); // #329 honest-errors C5
       await settle(t, f);
       expect(asked(f), ['ssh_keys/set 2: $k1|$k2']);
       expect(find.text(sshDoneLine), findsOneWidget);
@@ -329,6 +407,8 @@ void main() {
     await t.enterText(find.byKey(const Key('ssh-lines')), k1);
     await t.pump();
     await t.tap(find.byKey(const Key('ssh-send')));
+    await t.pumpAndSettle();
+    await t.tap(find.byKey(const Key('ssh-set-yes'))); // #329 honest-errors C5
     await settle(t, f);
     expect(find.text('SSH 金鑰沒有設定：節點不接受'), findsOneWidget);
     expect(find.textContaining('代碼'), findsNothing);

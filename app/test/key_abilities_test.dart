@@ -339,6 +339,10 @@ void main() {
       testWidgets('r3 E-M1 / r4 G-M1: $button opens its page under a raw lease handed to the page; back releases it',
           (t) async {
         mock(t, answer());
+        // #329 honest-errors C4: home's status area is taller; a phone-sized view (360 x 800 dp), not the 800 x 600 default
+        t.view.physicalSize = const Size(1080, 2400);
+        t.view.devicePixelRatio = 3;
+        addTearDown(t.view.reset);
         AppLink.forgetForTest();
         final ble = _ScanBle();
         await t.pumpWidget(BatmanApp(makeLink: (dir) => AppLink.create(platform: platform, filesDir: dir, ble: ble)));
