@@ -1,6 +1,6 @@
-# #329 — one kept link per node (v3)
+# #329 — one kept link per node (v4)
 
-Status: v3, for review (v1 f558a4c: A REJECT, B APPROVE-WITH-CHANGES; v2 27c6ea2: C and D
+Status: v4, FROZEN — reviews E and F on v3 c6d2ab0: APPROVE-WITH-CHANGES, MINOR only, applied (v1 f558a4c: A REJECT, B APPROVE-WITH-CHANGES; v2 27c6ea2: C and D
 APPROVE-WITH-CHANGES; §10). Baseline:
 `docs/design/329-ux-speed-plan.md` v5.1 ("the UX plan", frozen, shipped in main 6e326fc). Everything in the UX
 plan stays as it is except the changes listed in §3. Paths are under `app/lib/src/nodelink/` unless they start
@@ -101,6 +101,10 @@ Costs:
   the answer was to go on, with no objection and no explicit yes. It is stated again in the PR body; if the
   user says no, `keptMax = 1` plus the node-page term in `keepFor` restores today's cost.
 - C2. Battery, U3.
+- C3. With `keptMax` nodes held and another target not yet read (a third record, a node that is off), every
+  attempt on an address that turns out not to be ours (a stranger's provd, an address not yet resolved)
+  first closes one held link (3.3): one reconnect and login for a healthy node, about once per new such
+  address. No mechanism added; still fewer connects than today.
 
 Does not handle (and why):
 
@@ -119,10 +123,11 @@ Does not handle (and why):
 - On a node's page for more than 120 s, the other node's link is closed by A4. The next home round connects.
 - A home round that runs to its 90 s cap (a target that cannot be reached): the next read of the kept nodes
   is 150 s after the last, so A4 closes their links and that round connects again.
-- A held node that was not read before a round ended at its cap keeps its last shown state (3.4).
-- After a long stay with every node held there are no scans, so the address memos older than 20 min are
-  dropped (`core.dart:391-396`); the first reconnect after that looks at unknown addresses again, as after
-  an app start.
+- After a long stay with every node held there are no scans, so the memos of addresses not held are dropped
+  at 20 min (`core.dart:391-396`). A held node's memo lasts until 20 min after its last kept read (3.4). If
+  the node changed its address in that time (900 s, `bluez.go:38`) the reconnect after a lost link waits on
+  the old address until the rotating identifier names the new one or the 30 s window ends — as on a node
+  page today, now for every held node.
 - A second owner's or a member's phone that needs a held node: C1.
 
 ## 3. The change
@@ -188,15 +193,18 @@ Everything else in the gate is as it is: the per-link 120 s timer, `pass`, `revo
 
 ### 3.3 Room: never more than `keptMax` links
 
-`keptMax = 2` (the number the bench can check; U1). Before NodeLink connects — a round's attempt or a login
-by the existing path — if `keptMax` entries exist, the first parked entry in map order is closed, and the
-connect waits for it to be gone (it is counted in `active`). So the app's own links (parked + reading + lent
-+ connecting + closing) are never more than `keptMax`, and a new link always has room to be kept. An attempt
-starts only after every parked entry of the round was read (3.2-4), so no unread entry is closed for it. If
-no entry is parked (cannot happen: one lease, so at most one is lent), the connect goes ahead.
+`keptMax = 2` (the number the bench can check; U1). Where NodeLink is about to connect — in a round after
+`core.next()` returned an attempt, in a login after `l.next()` returned one, never before — if `keptMax`
+entries exist, the first parked entry in map order is closed and the connect waits until `gate.active == 0`
+(not for the close call: `GateLink.close()` returns at once on a link already closing, `ble_gate.dart:123`).
+After the wait NodeLink checks again that this attempt is still the current one (`identical(_attempt, a)` in
+a round; the lease still mine in a login) and that its cancel has not completed; otherwise it does not
+connect. The 8 s msg2 timer starts after the wait. So the app's own links (parked + reading + lent +
+connecting + closing) are never more than `keptMax`, and a new link always has room to be kept. An attempt
+starts only after every parked entry of the round was read (3.2-4), so no unread entry is closed for it.
 
-With 3 or more nodes on the home page this closes one entry and connects one node per round (today: every
-node, every round).
+With n > `keptMax` nodes on the home page this is n − `keptMax` closes and connects per round (today: n
+connects, every round).
 
 ### 3.4 Core (`core.dart`)
 
@@ -206,9 +214,14 @@ node, every round).
   scan and connect.
 - `roundTargets`: the active round's targets (read-only), for the scan rule.
 
-- `_conclude` (`core.dart:729-741`): a target in the kept set with no body, no reason and no error code when
-  the round ends (a round that hit its cap before the read) is `Concl.unchanged`, not `notFound` — the link
-  is there; the next round reads it.
+- `keptRead` also sets `lastSeen[addr] = now` (it sets `isY[addr]` at `core.dart:600` / `:606` without it).
+  Without this a held node's address memo is dropped by `_begin` at 20 min and put back by the next kept
+  read with no `lastSeen`, so it is never dropped again (review F-2). With it the memo lasts 20 min after
+  the last kept read, as for an address seen in a scan.
+
+`_conclude` is not changed. (v3 turned a held target not read at a round's end into `Concl.unchanged`;
+that state cannot be reached — kept reads run first and an entry exists only with a body or under a lease —
+and `unchanged` shows a fresh read after two rounds, `core.dart:682-696`. Review E-1 / F-1.)
 
 Nothing else changes in the core: a kept target with an error code ends the round at its 30 s window, as
 today on a node page.
@@ -220,6 +233,7 @@ today on a node page.
 | Set of open links, each link's token, the 120 s timer | BleGate | NodeLink (`links`, `active`, `up`) |
 | Kept entries and their state, `readEnd`, the read wake-up timer | NodeLink | tests |
 | `core` kept-id set | NodeLink (through `setKept`) | NodeLinkCore |
+| The plugin's shared notification / connection channels (the last listener leaving drops every device, A9) | kept open by: each link's tx subscription (NodeLink / the lease holder) and the gate's `linkStates` | — |
 | The lease | LeaseRegistry | NodeLink, gate (listeners, order unchanged) |
 | A lent link's session | the operation holding the lease | — |
 | Round, targets, node states | NodeLinkCore | NodeLink, UI |
@@ -257,11 +271,11 @@ gate timer), reading (NodeLink's), lent (the lease's), closing (nobody's; counte
 | Operation from a node page (session lease on X), Y kept | Y cannot be kept at all | X's entry lent; Y stays parked; ends by A4 if the lease lasts > 120 s | L6 |
 | Operation from home / team / settings | new connect | X's entry closed, new connect right after (§2); other entries stay, 3.3 | L6b, D9 |
 | Raw lease (older claim / scan page) | kept link closed, waited for | every parked entry closed, waited for | L7 |
+| Raw lease taken back at 900 s while the raw page still has its own plugin link (`app/lib/claim_recovery.dart:528`, outside the gate) | NodeLink may connect beside it | unchanged from v5.1; NodeLink's own links stay ≤ `keptMax`, so up to `keptMax` + 1 on the phone | not tested (as the baseline) |
 | Bluetooth off / permission lost / keys | kept link closed | every not-lent entry closed | L8 |
 | Link down (out of range, node reboot, node idle limit, `killOthers` after a claim / replay by someone else, owner removed) | entry forgotten | that entry forgotten, others untouched | L9 |
 | Record removed | its kept link closed | same, per entry | L10 |
-| More than `keptMax` nodes | — | 3.3: one close + one connect per round | L11 |
-| Round hits its cap before a held node was read | — | state unchanged (3.4) | L19 |
+| More than `keptMax` nodes | — | 3.3: n − `keptMax` closes + connects per round | L11 |
 | OTA of a held node (lease > 120 s, node reboots) | — | other entry ended by A4; the node's link down → L9 | L6, L9 |
 | Node ends the session but its disconnect fails (N1 rule, 30 s) | parked link looks alive; first use finds out | same, per entry (§5) | L15 |
 | App killed / crash | Android closes the link (U4) | same, for each | D7 |
@@ -297,7 +311,7 @@ PR body. Each row's control is the named change reverted, run once, shown failin
 | L8 | `radio(bluetooth:false)` with 2 parked: both closed | only the first entry closed |
 | L9 | link down on X: X forgotten, Y read on its link in the same round, X by scan + connect | every entry forgotten on a link down |
 | L10 | record of X removed: X closed, Y kept | check only the first entry |
-| L11 | 3 records, keptMax 2: `radio.maxOpen == 2` over 3 rounds; each round after the first = 2 kept reads + 1 close + 1 connect; with X and Y parked a login for Z from home closes one and never has 3 open | 3.3 removed → `maxOpen == 3` |
+| L11 | 3 records, keptMax 2: `radio.maxOpen == 2` over 3 rounds; each round after the first = 2 kept reads + 1 close + 1 connect; with X and Y parked a login for Z from home closes one and never has 3 open; a round cancelled during the 3.3 wait: no connect follows | 3.3 removed → `maxOpen == 3`; re-check removed → a connect after the cancel |
 | L12 | gate: connect to an address that has a link → refused; while another link is connecting, lent or closing → refused; with 2 parked → allowed | each term removed |
 | L13 | round begun 0.3 s after X's park, Y not kept: Y's attempt starts only after X's (deferred) read ended | "no parked entry keptNeeds" removed → the attempt starts during the wait |
 | L14 | all targets kept: no scan started in the round; X's entry dies mid-round → the scan starts | scan rule → always scan |
@@ -305,7 +319,7 @@ PR body. Each row's control is the named change reverted, run once, shown failin
 | L16 | kept read of X ends with an error code while Y is still looked for and the rig advertises X's address: no attempt for X, the round ends at its window | `setKept` not applied in `_candidates` → an attempt for X |
 | L17 | page change starts a new round 0.3 s after X was parked — once after an attempt, once after a kept read, once after give-back: the next read on X starts at 1.1 s, not before; a pump arriving during the wait does not lose the wake-up | wait removed → read at 0.3 s; wake-up put on `_timer` → no read after the extra pump |
 | L18 | home → node page while X's entry is reading: the read ends, the entry is parked, the node page shows the body | close of a reading entry in `setPage` → a connect |
-| L19 | round ends at its cap with held X not read: X's shown state unchanged, no miss counted | `_conclude` line removed → `notFound` |
+| L19 | X held and read for 21 min, then its link is lost: `isY` / `lastSeen` hold X's address until 20 min after the last kept read, then both are dropped | `lastSeen` line removed → `isY` still holds the address |
 
 Full suite: `flutter test`, `dart analyze`, `cargo test`, `test-all.sh` (no Rust change expected).
 
@@ -398,3 +412,11 @@ Changes from v2 (reviews C and D, all checked against source by the author):
 - Device evidence rewritten to the log lines that exist; node paths corrected (D-3). D9 added and the
   close-then-connect cost of an off-page operation stated (C-1).
 - Give-back on `Page.other`, memo drop after long holds: stated (C-8, C-9).
+
+Changes from v3 (reviews E and F: both APPROVE-WITH-CHANGES, MINOR only; checked against source):
+
+- The `_conclude` change is deleted with its §2 line, §6 row and test (E-1, F-1).
+- 3.3: eviction only after an attempt was returned; wait on `gate.active == 0`; re-check after the wait;
+  n − `keptMax` per round; dead text removed (E-2, E-3, E-4). L11 covers the re-check.
+- `keptRead` sets `lastSeen` (F-2); L19 is now its test; §2 memo line corrected.
+- C3 added (F-3); §4 plugin channels row; §6 raw-lease takeback row (F-4).
