@@ -646,8 +646,9 @@ func cmdNode(args []string) {
 			keys = append(keys, k)
 		}
 		env := cl.ownerOp("ssh_keys/set", cmap{{uint64(1), keys}})
-		code, _ := cl.call("ssh_keys.set", cmap{{uint64(1), h}, {uint64(2), env}})
-		fmt.Printf("RESULT ssh_keys.set code=%d\n", code)
+		code, r := cl.call("ssh_keys.set", cmap{{uint64(1), h}, {uint64(2), env}})
+		why, _ := r.get(1).(uint64) // 329-sshkeys-cut §3.4: reason 25 = not known to be persisted (0 = none)
+		fmt.Printf("RESULT ssh_keys.set code=%d reason=%d\n", code, why)
 	case "root-reset":
 		env := cl.ownerOp("root_password/reset", cmap{})
 		code, r := cl.call("root_password.reset", cmap{{uint64(1), h}, {uint64(2), env}})
