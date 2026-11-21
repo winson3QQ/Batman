@@ -41,7 +41,9 @@ export PATH="$T/bin:$PATH"
 ST=$T/opt/batdata/state; echo "bootx B radio" > "$ST/ota-armed.mesh"
 . "$T/lib/rundir.sh"; batman_rundir || { echo "FAIL the scratch run dir is not usable"; exit 1; }
 snap(){ { (cd "$RUNDIR" && find . -mindepth 1 -maxdepth 1 ! -name autocommit.dry.d ! -name autocommit.dry.lock ! -name autocommit-dryrun.log | sort); echo ---; (cd "$T/opt/batdata" && find . | sort); md5sum "$ST/ota-armed.mesh"; } 2>/dev/null; }
-dry(){ AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=1 timeout 240 sh "$AC" run 2>&1; }
+# AD_SH: the shell (CI runs dash and busybox sh — the node's; code review A m4 / B m7)
+SH=${AD_SH:-sh}
+dry(){ AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=1 timeout 240 $SH "$AC" run 2>&1; }
 b=$(snap)
 o1=$(dry); a1=$(snap)
 grep -q 'DRYRUN decision: REVERT' <<< "$o1" && ok "dry run 1 reached the watchdog's REVERT decision" || no "dry run 1: no REVERT decision [$(tail -3 <<< "$o1" | tr '\n' ' ')]"
@@ -54,13 +56,20 @@ o2=$(dry); a2=$(snap)
 grep -q 'DRYRUN decision: REVERT' <<< "$o2" && ok "dry run 2 (same boot) also reached REVERT" || no "dry run 2: no REVERT decision (a leftover marker from run 1?) [$(tail -3 <<< "$o2" | tr '\n' ' ')]"
 [ "$a2" = "$b" ] && ok "dry run 2 changed nothing real" || no "dry run 2 changed real state"
 # a second dry run while one runs
-( AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=$(( $(cut -d. -f1 /proc/uptime) + 20 )) timeout 240 sh "$AC" run > "$T/bg.out" 2>&1 ) & bp=$!   # the deadline is an uptime: alive ~20 s
+( AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=$(( $(cut -d. -f1 /proc/uptime) + 20 )) timeout 240 $SH "$AC" run > "$T/bg.out" 2>&1 ) & bp=$!   # the deadline is an uptime: alive ~20 s
 for _ in $(seq 1 50); do [ -s "$RUNDIR/autocommit.dry.lock/pids" ] && break; sleep 0.1; done
-o3=$(AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=1 timeout 30 sh "$AC" run 2>&1); r3=$?
+o3=$(AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=1 timeout 30 $SH "$AC" run 2>&1); r3=$?
 [ $r3 = 1 ] && grep -q 'another dry run is running' <<< "$o3" && ok "a concurrent dry run exits 1" || no "concurrent dry run: rc=$r3 [$o3]"
 wait $bp
 grep -q 'DRYRUN decision: REVERT' "$T/bg.out" && ok "the first of the two still reached REVERT" || no "the background dry run did not finish [$(tail -2 "$T/bg.out" | tr '\n' ' ')]"
 [ ! -e "$RUNDIR/autocommit.dry.lock" ] && ok "the lock is gone after the runs" || no "the lock stayed: $(cat "$RUNDIR/autocommit.dry.lock/pids" 2>/dev/null)"
+# a dry run killed with TERM (the harness's `kill $p`) leaves no lock behind (code review A m3 / B m3)
+AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=$(( $(cut -d. -f1 /proc/uptime) + 60 )) $SH "$AC" run > "$T/kill.out" 2>&1 & kp=$!
+for _ in $(seq 1 50); do [ -s "$RUNDIR/autocommit.dry.lock/pids" ] && break; sleep 0.1; done
+sleep 1; kill -TERM $kp; wait $kp 2>/dev/null
+for _ in $(seq 1 50); do [ -e "$RUNDIR/autocommit.dry.lock" ] || break; sleep 0.1; done
+[ ! -e "$RUNDIR/autocommit.dry.lock" ] && ok "a dry run killed with TERM removed its lock" || no "TERM left the lock: $(cat "$RUNDIR/autocommit.dry.lock/pids" 2>/dev/null)"
+o5=$(dry); grep -q 'DRYRUN decision: REVERT' <<< "$o5" && ok "the next dry run is not blocked" || no "the next dry run after a TERM: [$(tail -2 <<< "$o5" | tr '\n' ' ')]"
 # a planted symlink in place of the dry dir
 mkdir -p "$T/target"; : > "$T/target/keep"; rm -rf "$RUNDIR/autocommit.dry.d"; ln -s "$T/target" "$RUNDIR/autocommit.dry.d"
 dry > /dev/null

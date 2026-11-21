@@ -3,8 +3,11 @@ package node
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -345,4 +348,57 @@ func TestBootRetryVerbNotRefusedAfterFailedRetry(t *testing.T) {
 	if provstore.TxnPresent(r.n.P) {
 		t.Fatal(".txn left after the verb's Finish")
 	}
+}
+
+// (f') an OTA being written (batman-slot holds the slot flock) postpones the retry like a trial does; code review A m5 /
+// B m4. Negative control: without the otaBusy gate the retry runs under the OTA.
+func TestBootRetryPostponedWhileOTA(t *testing.T) {
+	r, _ := memberRig(t)
+	r.crashTxn2("sae-v2-pass", "m2", "36")
+	lb, s := withLog(r), newStepper(r.n)
+	r.sys.setkeyErrs = []error{&SetkeyError{RC: 2}}
+	r.n.BootFinish(func() {})
+	s.next(t)
+	f, err := os.OpenFile(filepath.Join(r.n.P.RunDir, "batman-slot.flock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	sk := len(r.sys.setkeys)
+	s.run <- struct{}{}
+	if d := s.next(t); d != bootRetryPostpone || len(r.sys.setkeys) != sk {
+		t.Fatalf("with the slot flock held: wait %s, setkeys +%d (want postponed, none)", d, len(r.sys.setkeys)-sk)
+	}
+	if !lb.has("boot finish retry postponed: ota busy") {
+		t.Fatalf("no postpone line: %q", lb.l)
+	}
+	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	f.Close()
+	s.run <- struct{}{}
+	lb.wait(t, "finished (boot retry 1)")
+	r.settle()
+	r.finishedCleanly("sae-v1-pass/m1/28")
+}
+
+// (d) a retry never overlaps a verb: while a verb holds the helper mutex the retry's try waits for it (code review A m5 /
+// B m4)
+func TestBootRetryWaitsForTheMutex(t *testing.T) {
+	r, _ := memberRig(t)
+	r.crashTxn2("sae-v2-pass", "m2", "36")
+	lb, s := withLog(r), newStepper(r.n)
+	r.sys.setkeyErrs = []error{&SetkeyError{RC: 2}}
+	r.n.BootFinish(func() {})
+	s.next(t)
+	r.n.mu.Lock() // a verb in progress
+	sk := len(r.sys.setkeys)
+	s.run <- struct{}{}
+	time.Sleep(300 * time.Millisecond)
+	if len(r.sys.setkeys) != sk || lb.has("boot retry 1") {
+		r.n.mu.Unlock()
+		t.Fatal("the retry ran while the mutex was held")
+	}
+	r.n.mu.Unlock()
+	lb.wait(t, "finished (boot retry 1)")
 }

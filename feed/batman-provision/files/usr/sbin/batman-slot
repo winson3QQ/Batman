@@ -46,8 +46,10 @@ ALLOWLIST=${BATMAN_FW_ALLOWLIST:-/usr/share/batman/firmware-allowlist-bcm2710.sh
 # #254 L175: the library dir (bootfacts.sh). BATMAN_LIB is a test seam, honoured only for a real directory owned by us
 # (root on a node) and writable by nobody else (#280 rule) — else /usr/lib/batman. Only root sets root's environment.
 BATLIB=/usr/lib/batman
-if [ -n "${BATMAN_LIB:-}" ] && [ -d "$BATMAN_LIB" ] && [ ! -L "$BATMAN_LIB" ] && [ -O "$BATMAN_LIB" ]; then
-	case "$(ls -ld "$BATMAN_LIB" 2>/dev/null)" in ?????w*|????????w*) ;; ?*) BATLIB=$BATMAN_LIB ;; esac
+# The sourced file is checked the same way (not a link, ours, not group / other-writable; code review A m7 / B m6).
+lib_ok() { [ -e "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && case "$(ls -ld "$1" 2>/dev/null)" in ?????w*|????????w*) return 1 ;; ?*) return 0 ;; esac; }
+if [ -n "${BATMAN_LIB:-}" ] && [ -d "$BATMAN_LIB" ] && lib_ok "$BATMAN_LIB" && lib_ok "$BATMAN_LIB/bootfacts.sh"; then
+	BATLIB=$BATMAN_LIB
 fi
 # bf_lib: bootfacts.sh loaded (bf_vc_ack defined); rc 1 when the library is missing
 bf_lib() { type bf_vc_ack >/dev/null 2>&1 || . "$BATLIB/bootfacts.sh" 2>/dev/null; type bf_vc_ack >/dev/null 2>&1; }

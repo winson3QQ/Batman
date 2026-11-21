@@ -272,10 +272,17 @@ if [ "$DRY" = 1 ]; then
 	if ! mkdir "$DLOCK" 2>/dev/null; then
 		{ [ -d "$DLOCK" ] && [ ! -L "$DLOCK" ] && [ -O "$DLOCK" ]; } || { echo "batman-autocommit: dry run: $DLOCK is not our directory" >&2; exit 1; }
 		dry_alive && { echo "batman-autocommit: dry run: another dry run is running (pids $(cat "$DLOCK/pids" 2>/dev/null))" >&2; exit 1; }
+		# take-over = remove, then mkdir again: of two dry runs taking over at once only one mkdir wins (code review A m3)
 		log "dry run: taking over a stale lock (pids $(cat "$DLOCK/pids" 2>/dev/null))"
+		rm -rf "$DLOCK"
+		mkdir "$DLOCK" 2>/dev/null || { echo "batman-autocommit: dry run: lost the take-over of $DLOCK" >&2; exit 1; }
 	fi
 	dry_pids $$ || { echo "batman-autocommit: dry run: cannot write $DLOCK/pids" >&2; exit 1; }
+	# busybox ash runs no EXIT trap when a signal kills it: TERM / INT exit through it (as batman-config-save does), so a
+	# killed dry run leaves no lock behind (code review A m3 / B m3)
 	trap dry_end EXIT
+	trap 'exit 143' TERM
+	trap 'exit 130' INT
 	rm -rf "$ACD"
 	mkdir -m 700 "$ACD" 2>/dev/null && [ -d "$ACD" ] && [ ! -L "$ACD" ] && [ -O "$ACD" ] || { echo "batman-autocommit: dry run: cannot make $ACD" >&2; exit 1; }
 fi

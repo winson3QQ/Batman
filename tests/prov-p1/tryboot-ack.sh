@@ -22,7 +22,7 @@ chmod 755 "$T/bin/vcmailbox"
 fx(){ awk -v f="$1" '$0 ~ "^"f"\\(\\) *\\{" {p=1} p {print} p && /^\}/ {exit}' "$BS"; }
 for f in disarm_tryboot arm_tryboot; do [ -n "$(fx $f)" ] || { no "$f() missing from $BS"; echo "TRYBOOT-ACK cases=0 fails=1"; exit 1; }; done
 # the library loader as batman-slot defines it (BATLIB from BATMAN_LIB, bf_lib); absent on an old batman-slot
-loader=$(sed -n '/^BATLIB=/,/^bf_lib()/p' "$BS")
+loader=$(sed -n '/^BATLIB=/,/^bf_lib()/p' "$BS")   # BATLIB=, lib_ok(), the BATMAN_LIB check, bf_lib()
 # run <what: get|disarm|arm> <layout> <lib dir> -> one line: the result / DIE msg / WARN msg + "ARMED"/"CLEARED"
 run(){
 	(
@@ -75,5 +75,10 @@ chmod 775 "$T/lib"; cases=$((cases+1))
 o=$(BATMAN_LIB="$T/lib" sh -c "$loader"'; echo "$BATLIB"')
 [ "$o" = /usr/lib/batman ] && ok "BATMAN_LIB group-writable -> ignored ($o)" || no "BATMAN_LIB group-writable honoured ($o)"
 chmod 755 "$T/lib"
+# … and so is a directory whose bootfacts.sh is group-writable (the sourced file is checked too; code review A m7 / B m6)
+chmod 664 "$T/lib/bootfacts.sh"; cases=$((cases+1))
+o=$(BATMAN_LIB="$T/lib" sh -c "$loader"'; echo "$BATLIB"')
+[ "$o" = /usr/lib/batman ] && ok "BATMAN_LIB with a group-writable bootfacts.sh -> ignored ($o)" || no "BATMAN_LIB with a group-writable bootfacts.sh honoured ($o)"
+chmod 644 "$T/lib/bootfacts.sh"
 echo "TRYBOOT-ACK cases=$cases fails=$fails"
 [ $cases -gt 0 ] && [ $fails = 0 ]

@@ -122,6 +122,7 @@ jobs:
           bash tests/prov-p1/autocommit-prov-case.sh $F/usr/bin/batman-autocommit
           bash tests/prov-p1/autocommit-mesh-arm.sh $F/usr/bin/batman-autocommit
           bash tests/prov-p1/autocommit-dry.sh $F/usr/bin/batman-autocommit $F/usr/lib/batman   # #254 L96
+          AD_SH="busybox sh" bash tests/prov-p1/autocommit-dry.sh $F/usr/bin/batman-autocommit $F/usr/lib/batman   # the node's shell
           bash tests/prov-p1/99zz-mesh-expect.sh $F/etc/uci-defaults/99zz-batman-prov-state
           bash tests/prov-p1/batman-slot-addr-defer.sh $F/usr/sbin/batman-slot
           # P1b's product gate (#254 security review F1) lands after the harness (#290): red on purpose until then
