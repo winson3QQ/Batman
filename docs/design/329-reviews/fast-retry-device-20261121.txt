@@ -1,0 +1,20 @@
+# #329 fast retry, device acceptance run 2026-11-21 06:58-08:03 (S20 RFCN30HMRAR, APK 97dd650 sha256 7DDBC149CA6D4A637D79FC1B63316DFD9FB5E0002E523D226F640E9848E7E734; nodes 04 / 02 on wsl.33)
+# a4cycle.sh x 4 chunks of 25 (fr1..fr4.logcat, kept in Desktop/Batman/a4/fr/); parser: fast-retry-stats.py fr*.logcat
+# attempts with a connected= line: 202
+when               kind     attempt        code   2nd+ downs          result        conn fail->end
+11-21 06:58:42.013 attempt  …81×…880c      133     403 6              body           748      2731
+11-21 07:08:26.613 attempt  …59×…880c      133     403 6              body           418      2544
+11-21 07:12:23.964 attempt  …59×…880c      133     402 4              body           983      2922
+11-21 07:17:41.921 attempt  …53×…880c      133     404 5              body           776      2870
+11-21 07:18:18.265 attempt  …53×…880c      133     403 5              body           161      2401
+11-21 07:32:43.992 attempt  …CD×…7d2c      133     404 6              body           496      2257
+11-21 07:37:17.663 attempt  …60×…7d2c      133     403 5              noResponse      -1       921
+11-21 07:37:25.420 attempt  …60×…7d2c      133     403 4              noResponse      -1      1366
+11-21 07:51:42.076 attempt  …60×…7d2c      133     403 5              body           438      2429
+11-21 07:56:11.029 attempt  …C7×…7d2c      133     403 5              noResponse      -1       772
+11-21 07:56:19.570 attempt  …C7×…7d2c      133     403 4              body           300      2142
+
+retries: 11; read a body: 8; first 10: 7/10; retries not made (with a reason): 0; round ends with notFound: 1
+first failure -> end of a retry that read: median 2544 ms, worst 2922 ms (baseline: next attempt 6.4-9.8 s later)
+FAIL: only 7 of the first 10 retries read a body (< 8)
+FAIL (1)
