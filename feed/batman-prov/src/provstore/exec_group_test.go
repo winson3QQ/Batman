@@ -163,3 +163,30 @@ func alive(t *testing.T, pf string, d time.Duration) bool {
 	syscall.Kill(pid, syscall.SIGKILL)
 	return true
 }
+
+// code review A2 m3: a TERM-ignoring member UNDER a handler shell is spared at 10 s (its ancestor is cleaning up) and
+// killed at 30 s; Exec returns after the 30 s bound, not before 10 s nor long after 30 s
+func TestExecIgnorerUnderHandlerKilledAt30s(t *testing.T) {
+	pf := filepath.Join(t.TempDir(), "gc.pid")
+	t0 := time.Now()
+	// the ignorer is a script file (no nested quoting): it ignores TERM and spins; its parent shell traps TERM (handler)
+	ig := filepath.Join(t.TempDir(), "ignorer.sh")
+	if err := os.WriteFile(ig, []byte("trap '' TERM\necho $$ > "+pf+"\nwhile :; do sleep 1; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rc, out := Exec(time.Second, testEnv, nil, "sh", "-c",
+		`sh -c 'trap "sleep 60" TERM; sh `+ig+` & wait' >/dev/null 2>&1 & wait`)
+	el := time.Since(t0)
+	if rc != RCTimeout {
+		t.Fatalf("rc %d (%q)", rc, out)
+	}
+	if el < 30*time.Second || el > 45*time.Second {
+		t.Fatalf("returned after %s (want the 30 s bound: >= 31 s, < 45 s)", el.Round(time.Second))
+	}
+	if alive(t, pf, 2*time.Second) {
+		t.Fatal("the TERM-ignoring member under the handler survived the 30 s bound")
+	}
+	if !strings.Contains(out, "outlived TERM: killed") {
+		t.Fatalf("no kill note: %q", out)
+	}
+}

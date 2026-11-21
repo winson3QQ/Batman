@@ -32,6 +32,8 @@ run(){
 		layout(){ echo "$L"; }; L=$2; T=B
 		if [ "$1" = get ]; then . "$3/bootfacts.sh" 2>/dev/null; type bf_get >/dev/null 2>&1 || { echo "NOLIB"; exit 0; }; bf_get; exit 0; fi
 		eval "$loader"
+		# "no lib" rows: never fall back to a host /usr/lib/batman (code review A2 m2)
+		[ "$3" = "$T/nolib" ] && BATLIB=$3
 		eval "$(fx disarm_tryboot)"; eval "$(fx arm_tryboot)"
 		if [ "$1" = disarm ]; then disarm_tryboot && echo CLEARED; else arm_tryboot >/dev/null && echo ARMED; fi
 	) 2>&1 | tr '\n' ' ' | sed 's/ *$//'
