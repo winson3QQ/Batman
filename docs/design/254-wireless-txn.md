@@ -237,7 +237,7 @@ LuCI and a join then failed, Finish could never restore them, and the M6 lockout
 
 **15.2 No subprocess may keep the helper from serving (A MAJOR-2, B MAJOR-1).** Every command the helper runs has a
 deadline: `halow-setkey` 300 s, `batman-config-save` 300 s, anything else 60 s. The command runs in its own process
-group; at the deadline the group gets SIGTERM, then SIGKILL 10 s later. A daemonised grandchild holding the pipe is cut
+group; at the deadline the group gets SIGTERM, then its members are polled: 10 s later the ones without a TERM handler get SIGKILL, 30 s later all that are left (#254 L112, 254-v16-group1 §12-§13). A daemonised grandchild holding the pipe is cut
 off 5 s after the command exits. A timeout returns rc 124, "outcome unknown", so `.txn` is kept.
 - The boot Finish runs **in the background holding the helper mutex**, taken before the socket listens. No verb can run
   before it ends, and the helper always listens.
