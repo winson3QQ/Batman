@@ -97,4 +97,9 @@ prov-update-254|prov-update-254|
 prov-bundle-gate-254|prov-bundle-gate-254|
 prov-autocommit-p3-254|prov-autocommit-p3-254|
 prov-country-join-254|prov-country-join-254|
-prov-http-254|prov-http-254|"
+prov-http-254|prov-http-254|
+prov-sshkeys-post-254|prov-sshkeys-cut-254|POST
+prov-sshkeys-failpost-254|prov-sshkeys-cut-254|FAILPOST
+prov-sshkeys-cut1-254|prov-sshkeys-cut-254|CUT1
+prov-sshkeys-fail1-254|prov-sshkeys-cut-254|FAIL1
+prov-sshkeys-rc6-254|prov-sshkeys-cut-254|RC6"
