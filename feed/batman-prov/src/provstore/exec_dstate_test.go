@@ -90,6 +90,11 @@ func TestExecAbandonsDState(t *testing.T) {
 		if !strings.HasPrefix(r, strconv.Itoa(RCTimeout)+" ") || !strings.Contains(r, "abandoned") {
 			t.Fatalf("Exec returned %q (want rc %d, abandoned)", r, RCTimeout)
 		}
+		// #254 v16-group1 §13 / code review A m1, B m1: a blocked member without a TERM handler is abandoned after the
+		// deadline + 10 s (KILL) + 10 s, as before stopGroup — not after its 30 s cleanup bound
+		if el := time.Since(t0); el > 2*time.Second+24*time.Second {
+			t.Fatalf("abandoned after %s (want <= deadline 2 s + 10 s + 10 s + slack)", el.Round(time.Second))
+		}
 	case <-time.After(60 * time.Second):
 		t.Fatal("Exec still waiting for an unkillable command after 60 s")
 	}

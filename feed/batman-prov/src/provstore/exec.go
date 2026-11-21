@@ -139,9 +139,12 @@ const BulkDir = "/tmp/run/batman-provd-bulk"
 
 // stopGroup ends the process group pgid at a deadline or a cancel (#254 L112 / docs/design/254-v16-group1.md §12, §13):
 // SIGTERM to the group, then its members are polled every 100 ms (a /proc scan; a zombie does not count) until none is
-// left. 10 s after the TERM every member without a TERM handler gets SIGKILL (it ignores TERM, or it is blocked with the
-// default action pending); 30 s after it, every member that is still there. Kills go to the pids just seen, never to
-// -pgid, so a group id reused after the group emptied is never hit. Returns how many members were killed.
+// left. 10 s after the TERM every member that is not cleaning up gets SIGKILL; "cleaning up" = it has a TERM handler,
+// or one of its ancestors inside the group has (a shell trap runs sync / umount as new children without handlers —
+// code review A-M1 / B m2). If nothing is cleaning up after that round, stopGroup returns (an unkillable member is then
+// the caller's abandoned case, 10 + 10 s as before); else 30 s after the TERM every member still there gets SIGKILL.
+// Kills go to the pids just seen, never to -pgid, so a group id reused after the group emptied is never hit. Returns
+// how many members were killed.
 func stopGroup(pgid int) int {
 	syscall.Kill(-pgid, syscall.SIGTERM)
 	t0, killed, soft := time.Now(), 0, false
@@ -161,19 +164,46 @@ func stopGroup(pgid int) int {
 		}
 		if el >= 10*time.Second && !soft {
 			soft = true
-			for p, handles := range m {
-				if !handles && syscall.Kill(p, syscall.SIGKILL) == nil {
+			cleaning := 0
+			for p := range m {
+				if cleaningUp(p, m) {
+					cleaning++
+				} else if syscall.Kill(p, syscall.SIGKILL) == nil {
 					killed++
 				}
+			}
+			if cleaning == 0 {
+				return killed
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 }
 
-// groupMembers: the live (not zombie) pids whose process group is pgid -> whether each has a SIGTERM handler.
-func groupMembers(pgid int) map[int]bool {
-	m := map[int]bool{}
+// member: one live process of the group
+type member struct {
+	ppid    int
+	handles bool // SIGTERM in SigCgt
+}
+
+// cleaningUp: p, or an ancestor of p that is a member too, has a TERM handler
+func cleaningUp(p int, m map[int]member) bool {
+	for i := 0; i < 64; i++ { // a parent chain inside one group is short; the bound stops a corrupt loop
+		e, ok := m[p]
+		if !ok {
+			return false
+		}
+		if e.handles {
+			return true
+		}
+		p = e.ppid
+	}
+	return false
+}
+
+// groupMembers: the live (not zombie) pids whose process group is pgid -> their parent and TERM handler.
+func groupMembers(pgid int) map[int]member {
+	m := map[int]member{}
 	ents, _ := os.ReadDir("/proc")
 	for _, e := range ents {
 		pid, err := strconv.Atoi(e.Name())
@@ -196,7 +226,8 @@ func groupMembers(pgid int) map[int]bool {
 		if g, err := strconv.Atoi(f[2]); err != nil || g != pgid {
 			continue
 		}
-		m[pid] = catchesTERM(pid)
+		pp, _ := strconv.Atoi(f[1])
+		m[pid] = member{ppid: pp, handles: catchesTERM(pid)}
 	}
 	return m
 }
@@ -222,7 +253,13 @@ func killedNote(pgid, killed int) string {
 	if killed > 0 {
 		s = "group member(s) outlived TERM: killed (" + strconv.Itoa(killed) + ")\n"
 	}
-	if n := len(groupMembers(pgid)); n > 0 {
+	// a member killed a moment ago may not be gone yet: look again for up to 1 s before calling it unkillable
+	n := len(groupMembers(pgid))
+	for i := 0; n > 0 && i < 10; i++ {
+		time.Sleep(100 * time.Millisecond)
+		n = len(groupMembers(pgid))
+	}
+	if n > 0 {
 		s += "a group member could not be killed (" + strconv.Itoa(n) + ")\n"
 	}
 	return s

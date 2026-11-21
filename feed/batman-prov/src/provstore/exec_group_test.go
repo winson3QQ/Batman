@@ -78,17 +78,20 @@ func TestExecGivesMembersTheTERMGrace(t *testing.T) {
 	}
 }
 
-// §13: a member with a TERM handler that needs 15 s is not killed at 10 s (the 30 s bound applies to it)
+// §13 + code review A-M1 / B m2: a member with a TERM handler that needs 15 s is not killed at 10 s — nor are the
+// commands its trap runs (new children without a handler: here `sleep 15`, in the field sync / umount); `&&` makes the
+// marker depend on the sleep finishing, and Exec must have waited for it
 func TestExecHandlerGetsMoreThan10s(t *testing.T) {
 	d := t.TempDir()
 	mk := filepath.Join(d, "cleaned")
 	t0 := time.Now()
-	rc, _ := Exec(time.Second, testEnv, nil, "sh", "-c", "sh -c 'trap \"sleep 15; touch "+mk+"; exit 0\" TERM; while :; do sleep 1; done' >/dev/null 2>&1 & wait")
+	rc, _ := Exec(time.Second, testEnv, nil, "sh", "-c", "sh -c 'trap \"sleep 15 && touch "+mk+"; exit 0\" TERM; while :; do sleep 1; done' >/dev/null 2>&1 & wait")
+	el := time.Since(t0)
 	if rc != RCTimeout {
 		t.Fatalf("rc %d", rc)
 	}
-	if _, err := os.Stat(mk); err != nil {
-		t.Fatalf("killed before its 15 s cleanup ended (returned after %s)", time.Since(t0).Round(time.Second))
+	if _, err := os.Stat(mk); err != nil || el < 15*time.Second {
+		t.Fatalf("the trap's 15 s cleanup was cut (marker %v, returned after %s)", err == nil, el.Round(time.Second))
 	}
 }
 
