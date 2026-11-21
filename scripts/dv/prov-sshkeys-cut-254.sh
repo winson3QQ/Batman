@@ -16,8 +16,9 @@
 #   CUT1      sysrq at the pre-commit --save         INVALID (no step 1) | PASS
 #   FAIL1     the pre-commit --save exits 1 unsaved, then a resend whose post-commit --save exits 1   INVALID | PASS
 #   RC6       the post-commit --save runs, then exits 6   PASS | PASS (a guard: rc 6 is not a failure)
-# INVALID (never a PASS): the hook never fired; a --save from another caller ran in the window; after a reboot, p5's
-# authorized_keys was rewritten before the judgement.
+# INVALID (never a PASS): the hook never fired; another caller's --prov-only ran in the window (its --save / --on-join /
+# --if-healthy / --seed are held off by the hook and logged); after a reboot, p5's authorized_keys was rewritten before
+# the judgement (ctime after the boot).
 # Type: — / F. Side effects: 04 claimed by this run ~25 min; the cut arms: 1 sysrq reboot + the restore's reboot.
 # Run from Git Bash on the bench PC: NODE=<04> PEER=<02> bash scripts/dv/prov-sshkeys-cut-254.sh <ARM>
 set -u
@@ -50,12 +51,12 @@ pk_login(){ local r=2 o
 # where: "rec=.. file=.. p5rec=.. p5file=.. p5gen=.. ovgen=.. p5new=<0|1>" — which of A / B (A, B, AB, none) the overlay
 # record, the overlay file, p5's record and p5's copy hold; both generations; p5new=1 when p5's authorized_keys was
 # written after this boot began. p5 is mounted read-only with the journal replayed (-o ro, as batman-config-save's
-# --prov-get), never ro,noload. Counts only, never a key printed.
+# --prov-get), never ro,noload. p5new uses the ctime (config-save copies with cp -a, which keeps the mtime). Counts only.
 where(){ qr "c(){ a=\$(grep -cF '$BA' \$1 2>/dev/null); b=\$(grep -cF '$BB' \$1 2>/dev/null); case \"\${a:-0}\${b:-0}\" in 00) echo none;; 0*) echo B;; *0) echo A;; *) echo AB;; esac; }
 g(){ sed -n 's/.* gen=\([0-9]*\).*/\1/p' \$1 2>/dev/null; }
 mkdir -p -m 0700 /tmp/run/batman-dv; m=\$(mktemp -d /tmp/run/batman-dv/p5k.XXXXXX)
 if mount -t ext4 -o ro /dev/mmcblk0p5 \$m 2>/dev/null; then
- bt=\$((\$(date +%s) - \$(cut -d. -f1 /proc/uptime))); mt=\$(stat -c %Y \$m/identity/dropbear/authorized_keys 2>/dev/null || echo 0)
+ bt=\$((\$(date +%s) - \$(cut -d. -f1 /proc/uptime))); mt=\$(stat -c %Z \$m/identity/dropbear/authorized_keys 2>/dev/null || echo 0)
  echo \"rec=\$(c /etc/batman-prov/prov.cbor) file=\$(c $AK) p5rec=\$(c \$m/prov.cbor) p5file=\$(c \$m/identity/dropbear/authorized_keys) p5gen=\$(g \$m/prov.meta) ovgen=\$(g /etc/batman-prov/prov.meta) p5new=\$([ \$mt -gt \$bt ] && echo 1 || echo 0)\"
  umount \$m
 else echo 'p5-mount-failed'; fi
@@ -90,12 +91,16 @@ q "sync; cp -p /usr/bin/batman-config-save $W/cfgsave.real && chmod 700 $W/cfgsa
 W=$W
 pe=\$(readlink /proc/\$PPID/exe); g=\$(sed -n 's/.* gen=\([0-9]*\).*/\1/p' /etc/batman-prov/prov.meta 2>/dev/null)
 [ -e \$W/window ] && echo \"\$1 \$pe \$g\" >> \$W/calls
+# in the window, another caller's p5 write (joinwatch --on-join, an operator --save) is held off, so nothing but the
+# op itself can change p5's copy before the judgement (review A5-1); it is logged and answered 0
+if [ -e \$W/window ] && [ \"\$pe\" != $HELPER ]; then case \"\$1\" in --save|--on-join|--if-healthy|--seed)
+	echo \"held \$1 \$pe \$g\" >> \$W/calls; logger -t batman-dv \"dv-cut $RUN: held off \$1 from \$pe\"; exit 0 ;; esac; fi
 if [ \"\$1\" = --save ] && [ -e \$W/arm ] && [ \"\$pe\" = $HELPER ]; then
 	read mode at < \$W/arm; g0=\$(cat \$W/g0)
 	case \"\$g\" in \"\$g0\") now=pre ;; \"\$((g0 + 1))\") now=post ;; *) now=other ;; esac
 	logger -t batman-dv \"dv-cut $RUN: --save g0=\$g0 g=\$g at=\$now armed=\$mode/\$at\"
 	if [ \"\$now\" = \"\$at\" ]; then
-		rm -f \$W/arm; echo \"\$mode \$at \$g\" > \$W/fired; sync
+		rm -f \$W/arm; echo \"\$mode \$at \$g\" > \$W/fired   # no sync here: the cut must lose what is not synced yet
 		case \$mode in
 		cut) logger -t batman-dv \"dv-cut $RUN: sysrq instead of --save\"; echo b > /proc/sysrq-trigger; sleep 30 ;;
 		fail) logger -t batman-dv \"dv-cut $RUN: exit 1 instead of --save\"; echo 'batman-config-save: dv simulated failure' >&2; exit 1 ;;
@@ -113,8 +118,10 @@ arm(){ local w0 g0
 	w0=$(where); g0=$(field "$w0" p5gen)
 	[ -n "$g0" ] && [ "$g0" = "$(field "$w0" ovgen)" ] || { inv "G0: p5 gen '$g0' vs overlay gen '$(field "$w0" ovgen)'"; return 1; }
 	q "echo $g0 > $W/g0; rm -f $W/fired $W/calls; touch $W/window; echo '$1 $2' > $W/arm"; say "armed $1 at the $2-commit --save (G0=$g0)"; }
-# other_calls: any config-save call in the window that is not the helper's (it could rewrite p5's copy)
-other_calls(){ calls | awk -v h="$HELPER" '$2 != h' ; }
+# other_calls: another caller's config-save call in the window that was not held off (it could rewrite p5's copy)
+# (the held-off modes cannot; --prov-get / --check only read): only another caller's --prov-only is left
+other_calls(){ calls | awk -v h="$HELPER" '$1 == "--prov-only" && $2 != h {print}' ; }
+held_calls(){ calls | grep '^held ' ; }
 b0=$(field "$(qr "$ST")" boot)
 reply=""
 if [ "$ARM" = FAIL1 ]; then
@@ -155,7 +162,8 @@ else
 	RC6) grep -q 'RESULT ssh_keys.set code=0' <<< "$r" && ok "rc 6 answers OK" || no "rc 6 answered '$reply' (want code=0)" ;;
 	esac
 fi
-oc=$(other_calls); [ -z "$oc" ] || inv "another batman-config-save caller ran in the window: $(echo $oc)"
+hc=$(held_calls); [ -z "$hc" ] || say "held off in the window (not run): $(echo $hc)"
+oc=$(other_calls); [ -z "$oc" ] || inv "another caller wrote p5 in the window: $(echo $oc)"
 q "rm -f $W/arm $W/window"
 # --- (1) invariant I
 holdsI "$w" && ok "(1) I holds: every app key in the file and in p5's copy is in p5's record ($w)" || no "(1) I broken: an app key is in the file or in p5's copy but not in p5's record ($w)"
