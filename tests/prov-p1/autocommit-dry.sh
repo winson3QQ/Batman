@@ -63,7 +63,7 @@ grep -q 'DRYRUN decision: REVERT' "$T/bg.out" && ok "the first of the two still 
 [ ! -e "$RUNDIR/autocommit.dry.lock" ] && ok "the lock is gone after the runs" || no "the lock stayed: $(cat "$RUNDIR/autocommit.dry.lock/pids" 2>/dev/null)"
 # a planted symlink in place of the dry dir
 mkdir -p "$T/target"; : > "$T/target/keep"; rm -rf "$RUNDIR/autocommit.dry.d"; ln -s "$T/target" "$RUNDIR/autocommit.dry.d"
-o4=$(dry)
+dry > /dev/null
 [ -f "$T/target/keep" ] && [ -d "$RUNDIR/autocommit.dry.d" ] && [ ! -L "$RUNDIR/autocommit.dry.d" ] && ok "planted symlink removed as a link, target untouched" || no "planted symlink: target keep=$([ -f "$T/target/keep" ] && echo yes || echo no) dir=$(ls -ld "$RUNDIR/autocommit.dry.d" 2>&1)"
 echo "AUTOCOMMIT-DRY cases=$cases fails=$fails"
 [ $cases -gt 0 ] && [ $fails = 0 ]
