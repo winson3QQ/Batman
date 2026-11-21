@@ -15,6 +15,8 @@ autocommit.canary-ok
 autocommit.why
 autocommit.ctl
 autocommit.ctl.dry
+autocommit.dry.d
+autocommit.dry.lock
 autocommit-dryrun.log
 # slot / firmware / reboot
 batman-fw-override

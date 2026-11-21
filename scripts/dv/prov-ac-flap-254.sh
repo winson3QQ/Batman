@@ -8,7 +8,8 @@
 #   and HELD" (content recorded) -> in the same trial a background dry run
 #   (AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=<uptime+120>, killed after 180 s; no `timeout`
 #   applet on the node) prints "DRYRUN decision: COMMIT slot B (services 3x10s, mesh samples <n>)" -> back to A.
-#   The mutant slot is never really committed (v4 A-M1); the dry run's own ctl dir is autocommit.ctl.dry (:53).
+#   The mutant slot is never really committed (v4 A-M1); the dry run's own markers (ctl included) are in
+#   autocommit.dry.d since #254 L96 (autocommit.ctl.dry before).
 # Type: hold / A. Side effects: 04 ~45 min, B rewritten twice (wbox, then V), ~4 reboots.
 set -u
 PR_UNIT=prov-ac-flap-254

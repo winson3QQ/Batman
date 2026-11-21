@@ -102,4 +102,5 @@ prov-sshkeys-post-254|prov-sshkeys-cut-254|POST
 prov-sshkeys-failpost-254|prov-sshkeys-cut-254|FAILPOST
 prov-sshkeys-cut1-254|prov-sshkeys-cut-254|CUT1
 prov-sshkeys-fail1-254|prov-sshkeys-cut-254|FAIL1
-prov-sshkeys-rc6-254|prov-sshkeys-cut-254|RC6"
+prov-sshkeys-rc6-254|prov-sshkeys-cut-254|RC6
+prov-bootfinish-retry-254|prov-bootfinish-retry-254|"

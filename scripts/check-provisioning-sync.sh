@@ -30,6 +30,7 @@ joinwatch.init:etc/init.d/joinwatch
 halow-keyguard.init:etc/init.d/halow-keyguard
 uci-defaults/95-batman-storage:etc/uci-defaults/95-batman-storage
 uci-defaults/96-batman-config-migrate:etc/uci-defaults/96-batman-config-migrate
+uci-defaults/99zz-batman-prov-state:etc/uci-defaults/99zz-batman-prov-state
 www/status:www/cgi-bin/status
 www/bundle:www/cgi-bin/bundle
 www/mesh:www/cgi-bin/mesh
