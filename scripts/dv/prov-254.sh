@@ -32,6 +32,9 @@ PEERMAC=${PEERMAC:-a8:dd:9f:4d:c7:60}   # 02's mesh interface (wlh0): the neighb
 REPO=${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 PR_OUT=${PR_OUT:-//wsl.localhost/Ubuntu-24.04/home/yello/out}; PR_OUT_WSL=${PR_OUT_WSL:-/home/yello/out}
 REPO_WSL=${REPO#//wsl.localhost/Ubuntu-24.04}   # the repo as WSL sees it (scripts/dv/wsl-rootfs.sh runs there)
+# a Windows checkout run from Git Bash (/c/src/...) is /mnt/c/src/... in WSL; without this every payload read failed
+# ("cannot read etc/batman-build") and pr_end could not rewrite B (#329 2026-11-21)
+case "$REPO_WSL" in /[a-zA-Z]/*) REPO_WSL=/mnt/$(printf %s "${REPO_WSL:1:1}" | tr 'A-Z' 'a-z')${REPO_WSL:2} ;; esac
 PR_UNIT=${PR_UNIT:?PR_UNIT = the unit name (prov-<x>-254)}
 case "$PR_UNIT" in prov-*-254) ;; *) echo "FAIL bad PR_UNIT $PR_UNIT"; exit 2 ;; esac
 RUN=${RUN:-p$(echo "${PR_UNIT#prov-}" | tr -dc 'a-z0-9' | cut -c1-14)$(date +%m%d%H%M%S)}
