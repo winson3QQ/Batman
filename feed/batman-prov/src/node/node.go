@@ -836,6 +836,16 @@ func (n *Node) ownerOpVerb(verb string, rec *provstore.Record, a cbor.Map) (cbor
 	return nil, fail(ESchema, "unreachable")
 }
 
+// persisted: a batman-config-save --save rc after which the identity files (authorized_keys included) are in p5 and
+// synced — 0, or 6 (a uci value was not persistable; the identity was still renamed in and synced first,
+// batman-config-save:595-617). Any other rc: not known to be persisted (329-sshkeys-cut §3.1).
+func persisted(rc int) bool { return rc == 0 || rc == 6 }
+
+// sshKeys (329-sshkeys-cut v5 §3.1): every app-added line in a durable copy of authorized_keys (the overlay file, the
+// p5 copy) stays listed in the durable record's SSHKeysAdded at every instant, so the app can always remove it.
+// step 1 (only when a recorded key goes away): drop it from the file and --save; step 2: commit the new list; step 3:
+// write the new keys and --save. A failure once the file may have changed answers reason 25 ("unknown, may be partly
+// applied: send the same set again").
 func (n *Node) sshKeys(rec *provstore.Record, body cbor.Map) (cbor.Map, *Error) {
 	la, _ := body.Get(1)
 	list, ok := la.([]any)
@@ -843,39 +853,69 @@ func (n *Node) sshKeys(rec *provstore.Record, body cbor.Map) (cbor.Map, *Error) 
 		return nil, fail(ESchema, "keys: 0..8 lines")
 	}
 	var lines []string
+	want := map[string]bool{}
 	for _, l := range list {
 		s, ok := l.(string)
-		if !ok || len(s) > 256 || strings.ContainsAny(s, "\r\n") || !sshLine.MatchString(s) {
+		if !ok || len(s) > 256 || strings.ContainsAny(s, "\r\n") {
 			return nil, fail(ESchema, "key line rejected")
 		}
-		lines = append(lines, s)
+		s = strings.TrimSpace(s) // the form AuthorizedKeys() reads back (main.go AuthorizedKeys)
+		if !sshLine.MatchString(s) {
+			return nil, fail(ESchema, "key line rejected")
+		}
+		if !want[s] {
+			want[s] = true
+			lines = append(lines, s)
+		}
+	}
+	old := map[string]bool{}
+	for _, k := range rec.SSHKeysAdded {
+		old[strings.TrimSpace(k)] = true // records written before the trim still match
 	}
 	cur, err := n.Sys.AuthorizedKeys()
 	if err != nil {
 		return nil, fail(EApply, "%v", err)
 	}
-	added := map[string]bool{}
-	for _, k := range rec.SSHKeysAdded {
-		added[k] = true
-	}
-	var out []string
+	var ops, keep []string
 	for _, k := range cur { // keep every line we did not add ourselves (operator / lab keys)
-		if !added[k] {
-			out = append(out, k)
+		switch {
+		case !old[k]:
+			ops = append(ops, k)
+		case want[k]:
+			keep = append(keep, k)
 		}
 	}
-	out = append(out, lines...)
+	step1 := false
+	for k := range old { // decided on the record, never on the file (the p5 copy may still hold a removed key)
+		if !want[k] {
+			step1 = true
+			break
+		}
+	}
+	if step1 {
+		if err := n.Sys.SetAuthorizedKeys(append(append([]string(nil), ops...), keep...)); err != nil {
+			return nil, fail(EApply, "%v", err) // atomic rename: the file is unchanged
+		}
+		if rc, out := n.saveRetry(); !persisted(rc) {
+			n.Log("ssh_keys.set: --save rc=%d after the removal: %s", rc, lastOf(out))
+			return nil, failR(EApply, ReasonSSHUnpersisted, "ssh_keys: removal not persisted (--save rc=%d)", rc)
+		}
+	}
 	next := *rec
 	next.Generation++
 	next.SSHKeysAdded = lines
 	if err := n.commit(&next, "ssh_keys"); err != nil {
+		if step1 {
+			return nil, failR(EApply, ReasonSSHUnpersisted, "ssh_keys: commit after the removal: %s", err.Reason)
+		}
 		return nil, err
 	}
-	if err := n.Sys.SetAuthorizedKeys(out); err != nil {
-		return nil, fail(EApply, "%v", err)
+	if err := n.Sys.SetAuthorizedKeys(append(append([]string(nil), ops...), lines...)); err != nil {
+		return nil, failR(EApply, ReasonSSHUnpersisted, "ssh_keys: %v", err)
 	}
-	if rc, _ := n.Sys.Save(); rc != 0 {
-		n.Log("ssh_keys.set: --save rc=%d", rc)
+	if rc, out := n.saveRetry(); !persisted(rc) {
+		n.Log("ssh_keys.set: --save rc=%d: %s", rc, lastOf(out))
+		return nil, failR(EApply, ReasonSSHUnpersisted, "ssh_keys: not persisted (--save rc=%d)", rc)
 	}
 	return cbor.M(), nil
 }

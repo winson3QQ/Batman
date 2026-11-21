@@ -20,6 +20,9 @@ const (
 	ReasonBadValue     = 13 // a value refused (or not read back: the node went back to the previous one)
 	ReasonCountryJoin  = 14 // the country changes only while not in a network
 	ReasonLegacy       = 20 // a legacy node (radio not app-managed, D20)
+	// ssh_keys/set: not known to be persisted, may be partly applied — the same set may be sent again (329-sshkeys-cut
+	// §3.4). Same number as the helper error code EInput, a different namespace.
+	ReasonSSHUnpersisted = 25
 )
 
 // setkey's P3 exit codes (halow-setkey --rollback): 0 set (or already that value), 2 refused, 3 not read back

@@ -395,12 +395,33 @@ func (s realSys) AuthorizedKeys() ([]string, error) {
 	}
 	return out, nil
 }
+
+// SetAuthorizedKeys: tmp + fsync + rename (329-sshkeys-cut §3.1): a power loss before the next sync leaves the old
+// file or the new one, never an empty one. No directory fsync: --save's sync makes the rename durable.
 func (s realSys) SetAuthorizedKeys(lines []string) error {
 	tmp := akPath + ".prov"
-	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
+	_, werr := f.WriteString(strings.Join(lines, "\n") + "\n")
+	if serr := f.Sync(); werr == nil {
+		werr = serr
+	}
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		os.Remove(tmp)
+		return werr
+	}
 	return os.Rename(tmp, akPath)
+}
+
+// keyLines: how many key lines authorized_keys holds (the boot "record created" log, 329-sshkeys-cut §3.3)
+func keyLines() int {
+	k, _ := realSys{}.AuthorizedKeys()
+	return len(k)
 }
 func (s realSys) DevOpen() bool { _, err := os.Stat("/etc/batman-dev-open"); return err == nil }
 func (s realSys) WriteTxnMarker(token string) error {
@@ -453,6 +474,7 @@ func bootEnv(p provstore.Paths) boot.Env {
 			return uciGet("wireless." + i + ".key")
 		},
 		Log:      logf,
+		KeyLines: keyLines,
 		Generate: keystore.Generate,
 		Sleep:    time.Sleep,
 	}
@@ -634,7 +656,7 @@ func daemon(p provstore.Paths) {
 	n.Health, n.TrialCached = h.Get, trial.Trial
 	// 254-p3-impl §3.4: status.get's caches, refreshed in the background (only while an app asked in the last 10 min)
 	n.SetStatusSource(node.StatusSource{HalowStatus: halowStatusJSON, P5Fresh: p5Fresh, UciStaged: uciStaged})
-	n.SetSettingsSource(readSettings) // §3.3, ticked by the same ticker
+	n.SetSettingsSource(readSettings)         // §3.3, ticked by the same ticker
 	n.SetPeerSource(node.DefaultPeerSource()) // 254-app-team-status §4.1: status keys 8 / 9, sampled every 15 s
 	// §3.3 F63: a p5 stale only in P3's new keys is saved once — not on a trial; design D-9: the first boot after a
 	// sysupgrade is a trial, so wait for its commit (checked every 30 s) instead of waiting for the next boot
