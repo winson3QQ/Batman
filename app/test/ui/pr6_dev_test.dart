@@ -418,6 +418,40 @@ void main() {
     expect(find.text('代碼 2，原因 13'), findsOneWidget);
   });
 
+  // 329-sshkeys-cut §3.4: reason 25 (not known to be persisted) is an answered reply: its words show (not 「沒有成功」),
+  // and the same set can be sent again from the same page, which finishes it. Negative control: Rust's error_text without the reason-25
+  // case gives 「沒有成功」 (owner.rs `reasons` test).
+  testWidgets('329-sshkeys-cut: reason 25 -> 「結果不明」, then the same set again succeeds', (t) async {
+    mockChannels(t);
+    final f = Fx(rust, logins: 2); // the page opens one session per send (OpSession.once)
+    final s = f.rigs[0].session as P4Session;
+    s.sshDetail = '[REQ_FAIL] 設定 SSH 金鑰結果不明 — 可能只套用了一部分，可以再送一次同一組（會整組取代）\u001e代碼 11，原因 25\u001f';
+    final a = app()..devTrust = true;
+    t.view.physicalSize = const Size(1080, 4000);
+    t.view.devicePixelRatio = 1;
+    addTearDown(t.view.reset);
+    await t.pumpWidget(host(SshKeysPage(app: a, ui: UiState(MemStore()), deps: f.d)));
+    await t.tap(find.byKey(const Key('pick-$id')));
+    await t.pump();
+    await t.enterText(find.byKey(const Key('ssh-lines')), k1);
+    await t.pump();
+    await t.tap(find.byKey(const Key('ssh-send')));
+    await t.pumpAndSettle();
+    await t.tap(find.byKey(const Key('ssh-set-yes')));
+    await settle(t, f);
+    expect(find.text('設定 SSH 金鑰結果不明 — 可能只套用了一部分，可以再送一次同一組（會整組取代）'), findsOneWidget);
+    expect(find.textContaining('沒有成功'), findsNothing);
+    noControl(t);
+    (f.rigs[1].session as P4Session).sshDetail = '[SSH_DONE] SSH 金鑰已設定';
+    await t.tap(find.byKey(const Key('ssh-send')));
+    await t.pumpAndSettle();
+    await t.tap(find.byKey(const Key('ssh-set-yes')));
+    await settle(t, f);
+    expect(s.asked, ['ssh_keys/set 1: $k1']);
+    expect((f.rigs[1].session as P4Session).asked, ['ssh_keys/set 1: $k1'], reason: 'the same set goes out again');
+    expect(find.textContaining('結果不明'), findsNothing, reason: 'the second answer replaced the line');
+  });
+
   // Negative control: diagCopy / the page without logText -> the raw characters FAIL.
   testWidgets('D7: 診斷 shows and copies a technical line\'s markers as 〔〕', (t) async {
     mockChannels(t);

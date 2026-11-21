@@ -70,6 +70,15 @@ type fakeSys struct {
 	encryption     string // "" = sae
 	markersRemoved int
 	restorableErr  error // CheckRestorable forced error
+
+	// 329-sshkeys-cut §8 durability model: keysSynced = the overlay file a power loss keeps (the last synced one),
+	// p5keys = p5's identity/dropbear/authorized_keys; both follow keys on a --save that persisted. cut, when set, is
+	// called at "set" (after a SetAuthorizedKeys) and "save" (before a Save) and may panic to stop the op there.
+	keysSynced, p5keys []string
+	cut                func(point string)
+	setKeysErr         error
+	saveLost           []bool // per Save, in order: true = that --save did not put authorized_keys into p5 nor sync
+	loseAfterGen       uint64 // != 0: every Save once p5 holds a generation > this one is lost (keyed on state, not count)
 }
 
 type saveRC struct {
@@ -112,16 +121,30 @@ func (f *fakeSys) GetP5(dir string) (int, string) {
 	return 0, ""
 }
 func (f *fakeSys) Save() (int, string) {
+	if f.cut != nil {
+		f.cut("save")
+	}
 	f.saves++
 	if f.txnMarker {
 		f.saveUnderMarker++
 	}
+	r := saveRC{}
 	if len(f.saveOut) > 0 {
-		r := f.saveOut[0]
+		r = f.saveOut[0]
 		f.saveOut = f.saveOut[1:]
-		return r.rc, r.out
 	}
-	return 0, ""
+	lost := false
+	if len(f.saveLost) > 0 {
+		lost, f.saveLost = f.saveLost[0], f.saveLost[1:]
+	}
+	if f.loseAfterGen != 0 && len(f.persisted) > 0 && f.persisted[len(f.persisted)-1] > f.loseAfterGen {
+		lost = true
+	}
+	if !lost {
+		f.keysSynced = append([]string(nil), f.keys...)
+		f.p5keys = append([]string(nil), f.keys...)
+	}
+	return r.rc, r.out
 }
 func (f *fakeSys) SetKeyNoPersist(k, id, ch string) error {
 	f.setkeys = append(f.setkeys, id+"/"+ch)
@@ -229,7 +252,7 @@ func (f *fakeSys) CryptPassword(pw string) (string, error) {
 	return "$6$x$" + pw, nil
 }
 func (f *fakeSys) AuthorizedKeys() ([]string, error)  { return f.keys, nil }
-func (f *fakeSys) SetAuthorizedKeys(l []string) error { f.keys = l; return nil }
+func (f *fakeSys) SetAuthorizedKeys(l []string) error { return f.setAK(l) }
 func (f *fakeSys) DevOpen() bool                      { return f.devOpen }
 func (f *fakeSys) WriteTxnMarker(string) error        { f.txnMarker = true; return nil }
 func (f *fakeSys) ClearTxnMarker()                    { f.txnMarker = false }
@@ -491,4 +514,17 @@ func (f *fakeSys) SetCountry(cc string) int { f.setCountry = append(f.setCountry
 func (f *fakeSys) SetAP(ssid, pass string) int {
 	f.setAP = append(f.setAP, ssid+"|"+pass)
 	return f.setRC
+}
+
+// setAK: the fake's SetAuthorizedKeys (329-sshkeys-cut §8): an injected write error leaves the file unchanged (atomic
+// rename); then the cut point "set"
+func (f *fakeSys) setAK(l []string) error {
+	if f.setKeysErr != nil {
+		return f.setKeysErr
+	}
+	f.keys = l
+	if f.cut != nil {
+		f.cut("set")
+	}
+	return nil
 }

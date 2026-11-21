@@ -761,6 +761,11 @@ fn code_text(code: u64) -> &'static str {
 
 /// One error answer as a line: what failed, why, then the codes (and the verb the node named) for support.
 fn error_text(asked: &str, code: u64, detail: &Value) -> String {
+    // 329-sshkeys-cut §3.4: reason 25 = ssh_keys/set not known to be persisted. Not 「沒有成功」: part of it may already
+    // be in place, and sending the same set again finishes it (the node replaces the whole set).
+    if asked == "ssh_keys/set" && detail.get(2).and_then(Value::as_uint) == Some(25) {
+        return format!("[REQ_FAIL] 設定 SSH 金鑰結果不明 — 可能只套用了一部分，可以再送一次同一組（會整組取代）\u{1E}代碼 {code}，原因 25\u{1F}");
+    }
     let why = reason_text(detail).unwrap_or_else(|| code_text(code).into());
     let reason = detail.get(2).and_then(Value::as_uint).map(|r| format!("，原因 {r}")).unwrap_or_default();
     let verb = detail.get(1).and_then(Value::as_text).map(|v| format!("，{}", statuspage::shown(v))).unwrap_or_default();
@@ -2098,7 +2103,11 @@ mod tests {
             "[REQ_FAIL] 更改設定沒有成功：這是舊版節點，它的無線電不由 App 管理\u{1E}代碼 6，原因 20，settings/set\u{1F}"
         );
         assert_eq!(error_text("ssh_keys/set", 12, &Value::Map(vec![])), "[REQ_FAIL] 設定 SSH 金鑰沒有成功：嘗試太多次，請稍後再試\u{1E}代碼 12\u{1F}");
-        assert_eq!(error_text("x/y", 99, &Value::Map(vec![])), "[REQ_FAIL] 操作\u{1E}x/y\u{1F}沒有成功：節點回報錯誤\u{1E}代碼 99\u{1F}");
+        assert_eq!(
+            error_text("ssh_keys/set", 11, &m(vec![(2, Value::Uint(25))])),
+            "[REQ_FAIL] 設定 SSH 金鑰結果不明 — 可能只套用了一部分，可以再送一次同一組（會整組取代）\u{1E}代碼 11，原因 25\u{1F}"
+        );
+        assert_eq!(error_text("x/y", 99, &Value::Map(vec![])),"[REQ_FAIL] 操作\u{1E}x/y\u{1F}沒有成功：節點回報錯誤\u{1E}代碼 99\u{1F}");
     }
 
     /// #329 PR 6 D7a (2) / T-C4c: the sentence functions of F5 / F6 / E-M1 — the main part has no code and no ASCII word

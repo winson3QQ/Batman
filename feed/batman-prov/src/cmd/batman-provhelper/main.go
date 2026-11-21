@@ -395,12 +395,32 @@ func (s realSys) AuthorizedKeys() ([]string, error) {
 	}
 	return out, nil
 }
+// SetAuthorizedKeys: tmp + fsync + rename (329-sshkeys-cut §3.1): a power loss before the next sync leaves the old
+// file or the new one, never an empty one. No directory fsync: --save's sync makes the rename durable.
 func (s realSys) SetAuthorizedKeys(lines []string) error {
 	tmp := akPath + ".prov"
-	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
+	_, werr := f.WriteString(strings.Join(lines, "\n") + "\n")
+	if serr := f.Sync(); werr == nil {
+		werr = serr
+	}
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		os.Remove(tmp)
+		return werr
+	}
 	return os.Rename(tmp, akPath)
+}
+
+// keyLines: how many key lines authorized_keys holds (the boot "record created" log, 329-sshkeys-cut §3.3)
+func keyLines() int {
+	k, _ := realSys{}.AuthorizedKeys()
+	return len(k)
 }
 func (s realSys) DevOpen() bool { _, err := os.Stat("/etc/batman-dev-open"); return err == nil }
 func (s realSys) WriteTxnMarker(token string) error {
@@ -453,6 +473,7 @@ func bootEnv(p provstore.Paths) boot.Env {
 			return uciGet("wireless." + i + ".key")
 		},
 		Log:      logf,
+		KeyLines: keyLines,
 		Generate: keystore.Generate,
 		Sleep:    time.Sleep,
 	}
