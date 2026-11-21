@@ -131,6 +131,10 @@ type Node struct {
 	// failure; the last commit-only resolve
 	lastFinishFail time.Time
 	finishFails    int // consecutive Finish failures (the backoff doubles, §16.1)
+	// #254 L111: why the last finish() failed (written by finish only, under mu); the boot retry's clock (nil = the
+	// package default bootRetrySleep)
+	lastFinishCause finishCause
+	retrySleep      func(time.Duration)
 	// 254-p2-impl §4.3: health.get's source (health.Env.Get) and the cached is-trial (info.state key 5); nil in tests
 	// = no health / Sys.IsTrial
 	Health      func() string
