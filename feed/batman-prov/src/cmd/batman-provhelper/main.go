@@ -395,6 +395,7 @@ func (s realSys) AuthorizedKeys() ([]string, error) {
 	}
 	return out, nil
 }
+
 // SetAuthorizedKeys: tmp + fsync + rename (329-sshkeys-cut §3.1): a power loss before the next sync leaves the old
 // file or the new one, never an empty one. No directory fsync: --save's sync makes the rename durable.
 func (s realSys) SetAuthorizedKeys(lines []string) error {
@@ -655,7 +656,7 @@ func daemon(p provstore.Paths) {
 	n.Health, n.TrialCached = h.Get, trial.Trial
 	// 254-p3-impl §3.4: status.get's caches, refreshed in the background (only while an app asked in the last 10 min)
 	n.SetStatusSource(node.StatusSource{HalowStatus: halowStatusJSON, P5Fresh: p5Fresh, UciStaged: uciStaged})
-	n.SetSettingsSource(readSettings) // §3.3, ticked by the same ticker
+	n.SetSettingsSource(readSettings)         // §3.3, ticked by the same ticker
 	n.SetPeerSource(node.DefaultPeerSource()) // 254-app-team-status §4.1: status keys 8 / 9, sampled every 15 s
 	// §3.3 F63: a p5 stale only in P3's new keys is saved once — not on a trial; design D-9: the first boot after a
 	// sysupgrade is a trial, so wait for its commit (checked every 30 s) instead of waiting for the next boot
