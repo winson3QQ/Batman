@@ -149,6 +149,8 @@ reason-code  = 1 ; update: trial slot active
              / 22 ; the last write did not complete: the other slot is not usable
              / 23 ; written but not applied (the pending is gone: check again)
              / 24 ; this image trusts no release root key: it cannot be updated through the app
+             / 25 ; ssh_keys/set: not known to be persisted, may be partly applied — send the same set again
+                  ; (329-sshkeys-cut §3.4; not the helper error code EInput = 25, a different namespace)
 
 msg-type = "info" / "claim/begin" / "claim/finish" / "auth/owner"
          / "owner/add" / "owner/remove" / "settings/get" / "settings/set"

@@ -29,6 +29,7 @@ type Env struct {
 	BootID   func() string
 	MeshKey  func() string // live mesh key (for "claimed + placeholder"); "" if unknown
 	Log      func(format string, a ...any)
+	KeyLines func() int // key lines in authorized_keys; nil = not checked (329-sshkeys-cut §3.3)
 	Generate func(dir string) error
 	Sleep    func(time.Duration)
 }
@@ -150,6 +151,17 @@ func run(e Env) Result {
 		return Result{RC: rc, Verdict: state, Action: fmt.Sprintf("generated identity, %s, persist rc=%d", state, prc)}, true
 	}
 
+	// 329-sshkeys-cut §3.3: a record made from nothing has no SSHKeysAdded, so every key line now in authorized_keys
+	// reads as an operator key. An app-added one among them (a record lost on both copies) cannot be removed by the
+	// app any more; that is not fixable without the record, so it is said once here.
+	recreated := func() {
+		if e.KeyLines == nil {
+			return
+		}
+		if k := e.KeyLines(); k > 0 {
+			e.Log("record created with no app-key list: %d key line(s) in authorized_keys count as operator keys; an app-added one among them is no longer removable by the app (remove by hand, then batman-config-save --save)", k)
+		}
+	}
 	switch rc {
 	case 0: // p5 has a complete prov + identity
 		if p5Rec == nil {
@@ -177,6 +189,7 @@ func run(e Env) Result {
 		if ovIdent {
 			if ovRec == nil {
 				r := &provstore.Record{Generation: 1, State: provstore.Unclaimed}
+				recreated()
 				provstore.WriteOverlay(e.P, r)
 				ovRec = r
 			}
@@ -186,6 +199,7 @@ func run(e Env) Result {
 		if p5Ident { // p5 has an identity but no record: restore it, never generate a second one
 			copyDir(filepath.Join(dir, "identity"), e.P.Identity())
 			r := &provstore.Record{Generation: 1, State: provstore.Unclaimed}
+			recreated()
 			provstore.WriteOverlay(e.P, r)
 			prc, _ := persistAll(false)
 			return Result{RC: rc, Verdict: provstore.Unclaimed, Action: fmt.Sprintf("restored p5 identity, record persisted rc=%d", prc)}
@@ -201,6 +215,7 @@ func run(e Env) Result {
 		}
 		if ovIdent {
 			r := &provstore.Record{Generation: 1, State: provstore.Legacy}
+			recreated()
 			provstore.WriteOverlay(e.P, r)
 			prc, _ := persistAll(true)
 			return Result{RC: rc, Verdict: provstore.Legacy, Action: fmt.Sprintf("persisted identity, legacy, rc=%d", prc)}
@@ -208,6 +223,7 @@ func run(e Env) Result {
 		if p5Ident {
 			copyDir(filepath.Join(dir, "identity"), e.P.Identity())
 			r := &provstore.Record{Generation: 1, State: provstore.Legacy}
+			recreated()
 			provstore.WriteOverlay(e.P, r)
 			prc, _ := persistAll(false)
 			return Result{RC: rc, Verdict: provstore.Legacy, Action: fmt.Sprintf("restored p5 identity, legacy record persisted rc=%d", prc)}

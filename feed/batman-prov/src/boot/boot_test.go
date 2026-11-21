@@ -2,6 +2,7 @@ package boot
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -465,5 +466,28 @@ func TestRc10NeverDowngrades(t *testing.T) {
 	f.p5Record(provstore.Claimed, 3)
 	if r := Run(f.e); r.Verdict != "unknown(identity-mismatch)" || len(f.persists) != 0 {
 		t.Fatalf("Run on rc 10 with another identity: %+v", r)
+	}
+}
+
+// 329-sshkeys-cut §3.3: a record created from nothing says how many key lines it now counts as operator keys
+func TestRecordCreatedLogsKeyLines(t *testing.T) {
+	for _, keys := range []int{0, 2} {
+		f := newFx(t, 9)
+		f.overlayIdentity()
+		var logs []string
+		f.e.Log = func(s string, a ...any) { logs = append(logs, fmt.Sprintf(s, a...)) }
+		f.e.KeyLines = func() int { return keys }
+		if r := Run(f.e); r.Verdict != provstore.Legacy {
+			t.Fatalf("%+v", r)
+		}
+		found := false
+		for _, l := range logs {
+			if strings.Contains(l, "record created with no app-key list: 2 key line(s)") {
+				found = true
+			}
+		}
+		if found != (keys == 2) {
+			t.Fatalf("keys=%d: log %v", keys, logs)
+		}
 	}
 }
