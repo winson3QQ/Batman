@@ -32,9 +32,10 @@
 set -u
 W=$(cd "$(dirname "$0")" && pwd); R=${PRM_ROOT:-}; ST=$R/opt/batdata/state; LG=$R/opt/batdata/log; P=${PRM_PROC:-/proc}
 . "$R/usr/lib/batman/rundir.sh" || { echo "FAIL no rundir.sh"; exit 1; }
-# #254 L96: a dry run keeps its markers in autocommit.dry.d (+ the one-at-a-time lock); the older names stay for an image
+# #254 L96: a dry run keeps its markers in autocommit.dry.d (its lock is not restored: a dead pid would be planted back,
+# code review B m9); the older names stay for an image
 # without it. canary-ok was missing its autocommit. prefix (it never matched).
-RDF="autocommit.wd autocommit.decided autocommit.why autocommit.hold-consumed autocommit.hold-discarded autocommit.ctl.dry autocommit.dry.d autocommit.dry.lock autocommit-dryrun.log autocommit.canary-ok"
+RDF="autocommit.wd autocommit.decided autocommit.why autocommit.hold-consumed autocommit.hold-discarded autocommit.ctl.dry autocommit.dry.d autocommit-dryrun.log autocommit.canary-ok"
 up(){ cut -d. -f1 /proc/uptime; }
 cs(){ u=$(cut -d' ' -f1 /proc/uptime); echo "${u%.*}${u#*.}"; }   # uptime in 1/100 s (two decimals in /proc/uptime)
 nap(){ sleep 0.1 2>/dev/null || sleep 1; }                       # a busybox without fractional sleep: 1 s steps

@@ -17,11 +17,16 @@ PR_UNIT=prov-bootfinish-retry-254
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
 TXN='[ -e /etc/batman-prov/.txn ] && echo present || echo gone'
-LINES="logread | grep 'batman-provhelper' | grep -E 'boot finish|finish \\(|finished \\(|network.leave|boot rc=' | tail -14"
+# code review A m6 / B m8: every judgement reads only the log after this run's own marker (a rerun in the same boot
+# would otherwise match the previous run's lines)
+MARK="batman-dv-run: $RUN start"
+SINCE="logread | sed -n '/$MARK/,\$p'"
+LINES="$SINCE | grep 'batman-provhelper' | grep -E 'boot finish|finish \\(|finished \\(|network.leave|boot rc=' | tail -14"
 pr_begin 2400 || { pr_result; exit 1; }
 pr_member || { pr_abort "member"; pr_result; exit 1; }
 W=/tmp/run/batman-dv/wbox/$RUN
 pw prep >/dev/null
+q "logger -t batman-dv-run '$RUN start'"
 # the wrapper: the first two --forget-mesh calls exit 3 (logged); every other call is the real setkey
 q "cp -p /usr/bin/halow-setkey $W/setkey.real && chmod 700 $W/setkey.real && rm -f $W/inj.n && printf '#!/bin/sh\ncase \" \$* \" in *\" --forget-mesh \"*) n=\$(cat $W/inj.n 2>/dev/null || echo 0); if [ \"\$n\" -lt 2 ]; then echo \$((n + 1)) > $W/inj.n; logger -t batman-dv-inj \"forget rc 3 injected (\$((n + 1)) of 2) at uptime \$(cut -d. -f1 /proc/uptime)\"; echo \"not verified on the air (injected)\"; exit 3; fi ;; esac\nexec $W/setkey.real \"\$@\"\n' > $W/setkey.inj && chmod 755 $W/setkey.inj"
 h=$(qr "sha256sum < $W/setkey.inj | cut -c1-64"); b=$(pw bind setkey.inj "$h" /usr/bin/halow-setkey); say "$b"
@@ -35,10 +40,10 @@ else
 	q '/etc/init.d/batman-provhelper restart'
 	tf=""; i=0
 	until [ $i -ge 60 ]; do
-		tf=$(qr "logread | grep 'batman-provhelper' | grep 'boot finish:' | tail -1 | grep -q . && cut -d. -f1 /proc/uptime")
+		tf=$(qr "$SINCE | grep 'batman-provhelper' | grep 'boot finish:' | tail -1 | grep -q . && cut -d. -f1 /proc/uptime")
 		[ -n "$tf" ] && [ "$tf" -gt "$t0" ] && break; tf=""; sleep 5; i=$((i + 1))
 	done
-	inj=$(qr "logread | grep -c 'batman-dv-inj.*forget rc 3 injected'")
+	inj=$(qr "$SINCE | grep -c 'batman-dv-inj.*forget rc 3 injected'")
 	if [ -z "$tf" ]; then
 		inv "no 'boot finish:' failure line within 300 s of the helper restart (injections: ${inj:-0})"
 	elif [ "${inj:-0}" -lt 2 ]; then
