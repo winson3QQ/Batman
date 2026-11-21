@@ -169,6 +169,7 @@ jobs:
           bash tests/prov-p1/prov-root-hash.sh $F/usr/lib/batman/prov-lock.sh
           bash tests/prov-p1/prov-lock-init.sh $F/etc/init.d/batman-prov-lock $F/usr/lib/batman/prov-lock.sh
           bash tests/prov-p1/batman-slot-rollback-gate.sh $F/usr/sbin/batman-slot $F/usr/lib/batman/prov-lock.sh
+          bash tests/prov-p1/tryboot-ack.sh $F/usr/sbin/batman-slot $F/usr/lib/batman/bootfacts.sh   # #254 L175
           bash tests/prov-p1/claim-lock-lints.sh .
       # #254 wireless transactions (254-wireless-txn §6/§7/§11, v8 §15; review A m9). The harness lands first (#290): on a
       # product without them these two steps are RED on purpose (KNOWN #254); `!cancelled()` so they run (and the steps

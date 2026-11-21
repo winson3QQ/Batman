@@ -43,6 +43,14 @@ GUID_B=3276af79-0000-4000-8000-000000000004
 GUID_NONE=00000000-0000-0000-0000-000000000000
 BOOTMNT=/boot                       # bootA/p1 is mounted here (pi4: holds autoboot.txt + ab.good)
 ALLOWLIST=${BATMAN_FW_ALLOWLIST:-/usr/share/batman/firmware-allowlist-bcm2710.sha256}
+# #254 L175: the library dir (bootfacts.sh). BATMAN_LIB is a test seam, honoured only for a real directory owned by us
+# (root on a node) and writable by nobody else (#280 rule) — else /usr/lib/batman. Only root sets root's environment.
+BATLIB=/usr/lib/batman
+if [ -n "${BATMAN_LIB:-}" ] && [ -d "$BATMAN_LIB" ] && [ ! -L "$BATMAN_LIB" ] && [ -O "$BATMAN_LIB" ]; then
+	case "$(ls -ld "$BATMAN_LIB" 2>/dev/null)" in ?????w*|????????w*) ;; ?*) BATLIB=$BATMAN_LIB ;; esac
+fi
+# bf_lib: bootfacts.sh loaded (bf_vc_ack defined); rc 1 when the library is missing
+bf_lib() { type bf_vc_ack >/dev/null 2>&1 || . "$BATLIB/bootfacts.sh" 2>/dev/null; type bf_vc_ack >/dev/null 2>&1; }
 BADMARK=BATMAN-BAD                  # on a slot's boot FAT: apply failed verification, never commit it
 CMDLINE_COMMON="console=serial0 console=ttyUSB0,115200 console=tty1 rootfstype=squashfs,ext4 rootwait=20 panic=10"
 
@@ -415,6 +423,18 @@ disarm_tryboot() {
 	vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1
 	r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null)
 	st DISARM get="$r"
+	if [ "$(layout)" = pi4 ]; then
+		# #254 L175 (254-v16-group1 §1): the read-back counts only when the firmware handled the tag (word 5)
+		lib=1; bf_lib || lib=0
+		# shellcheck disable=SC2086
+		set -- $r
+		if [ $lib = 0 ]; then warn "bootfacts.sh missing — cannot read the tryboot flag back; cleared blind"
+		elif bf_vc_ack "$@"; then
+			[ "$(( $6 ))" -eq 0 ] || die "tryboot flag still armed after clearing it (GET $6) — refusing to write"
+		elif [ "${2:-}" = 0x80000000 ]; then warn "tryboot GET not handled by this firmware (vcmailbox: '$r'); cleared blind"
+		else warn "cannot read the tryboot flag back on this firmware; cleared blind"; fi
+		return 0
+	fi
 	# shellcheck disable=SC2086
 	set -- $r
 	if [ "${2:-}" = 0x80000000 ]; then
@@ -781,12 +801,26 @@ arm_tryboot() {
 	# the decisive evidence for "armed vs ignored": raw SET + GET, what autoboot aims at, the supply
 	otalog_k SLOT ARM target="$T" fw_t="$(fw_part "$T" 2>/dev/null)" ab_all="$(ab_section all 2>/dev/null)" ab_try="$(ab_section tryboot 2>/dev/null)" set="$s" get="$r" thr="$(ota_thr)"
 	# response: <size> <code> <tag> <len> <reqresp> <value> <end>; code 0x80000000 = success
-	set -- $r
-	if [ "${2:-}" = 0x80000000 ]; then
-		[ "$(( ${6:-0} ))" -eq 1 ] || die "tryboot flag did not arm (GET returned ${6:-?}) — slot $T written and verified, but NOT armed"
+	if [ "$(layout)" = pi4 ]; then
+		# #254 L175 (254-v16-group1 §1): word 5 0x80000004 = the firmware handled the GET; an unhandled GET gives no
+		# evidence the SET did anything -> refuse, never "armed blind"
+		bf_lib || die "bootfacts.sh missing — cannot verify the arm; slot $T written and verified, but NOT armed"
+		set -- $r
+		if bf_vc_ack "$@"; then
+			[ "$(( $6 ))" -eq 1 ] || die "tryboot flag did not arm (GET returned $6) — slot $T written and verified, but NOT armed"
+		elif [ "${2:-}" = 0x80000000 ]; then
+			die "tryboot GET not handled by this firmware (vcmailbox: '$r') — cannot verify the arm; slot $T written and verified, but NOT armed"
+		else
+			warn "cannot read the tryboot flag back on this firmware (vcmailbox: '$r'); armed blind as before"
+		fi
 	else
-		[ "$(layout)" = pi3 ] && die "cannot read the tryboot flag back (vcmailbox: '$r') — NOT armed"
-		warn "cannot read the tryboot flag back on this firmware (vcmailbox: '$r'); armed blind as before"
+		set -- $r
+		if [ "${2:-}" = 0x80000000 ]; then
+			[ "$(( ${6:-0} ))" -eq 1 ] || die "tryboot flag did not arm (GET returned ${6:-?}) — slot $T written and verified, but NOT armed"
+		else
+			[ "$(layout)" = pi3 ] && die "cannot read the tryboot flag back (vcmailbox: '$r') — NOT armed"
+			warn "cannot read the tryboot flag back on this firmware (vcmailbox: '$r'); armed blind as before"
+		fi
 	fi
 	# don't pollute boot-reasons with a spurious UNCLEAN on the trial's first boot — written only once
 	# the trial is really armed, so a failed arm does not label the next plain boot a trial (S5 review)
@@ -1003,7 +1037,7 @@ cmd_rollback() {
 cmd_reboot() {
 	reason=${*:-operator request}
 	# shellcheck source=/dev/null
-	. /usr/lib/batman/bootfacts.sh 2>/dev/null
+	. "$BATLIB/bootfacts.sh" 2>/dev/null
 	why=""
 	type bf_get >/dev/null 2>&1 || why="no bootfacts lib"
 	[ -z "$why" ] && [ "$(bf_pi4)" != yes ] && why="not a Pi 4 A/B card"
