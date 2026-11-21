@@ -18,7 +18,7 @@ import (
 // a missing dmsetup / losetup FAILS (the test must not report clean without having tested).
 func TestExecAbandonsDState(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("needs root (CI and DV run -tags prov_test as root)")
+		t.Skip("needs root (CI runs -tags prov_test as root)")
 	}
 	for _, c := range []string{"dmsetup", "losetup", "dd"} {
 		if _, err := exec.LookPath(c); err != nil {

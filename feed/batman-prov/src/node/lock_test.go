@@ -141,9 +141,10 @@ func TestGenPasswordUniform(t *testing.T) {
 		d := float64(c) - exp
 		chi += d * d / exp
 	}
-	// 55 degrees of freedom: p = 0.001 at ~93.2. The old modulo version gives chi ~ 1000+ here.
-	if chi > 93.2 {
-		t.Fatalf("chi-square %.1f > 93.2: not uniform", chi)
+	// 55 degrees of freedom: p = 1e-6 at ~119.9 (#254 L112 A4 m5: at p = 0.001 CI went red at random once per ~1000
+	// runs). The old modulo version gives chi ~ 1000+ here, so it still fails.
+	if chi > 119.9 {
+		t.Fatalf("chi-square %.1f > 119.9: not uniform", chi)
 	}
 }
 

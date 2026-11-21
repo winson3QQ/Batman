@@ -76,3 +76,19 @@ func TestNoWirelessChangeDuringOTA(t *testing.T) {
 }
 
 func removeFile(p string) { _ = os.Remove(p) }
+
+// #254 L112 A4 m3: only rc 3 with the radio off by hand is a hand-off — rc 124 (deadline, outcome unknown) with the
+// radio off is a failure (.txn kept), even when uci holds the previous state
+func TestHandOffNotOnRC124(t *testing.T) {
+	r, _ := memberRig(t)
+	r.crashTxn2("sae-v2-pass", "m2", "36")
+	r.sys.radioOff, r.sys.inMark = true, false
+	r.sys.setkeyErrs = []error{&SetkeyError{RC: provstore.RCTimeout}}
+	r.sys.setkeyHalf = true // uci reached the previous state anyway
+	if err := r.fin(); err == nil {
+		t.Fatal("Finish took rc 124 with the radio off as a hand-off")
+	}
+	if !provstore.TxnPresent(r.n.P) {
+		t.Fatal(".txn removed")
+	}
+}
