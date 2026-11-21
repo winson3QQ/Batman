@@ -42,15 +42,20 @@ ACLOG=/opt/batdata/log/autocommit.log
 [ -r /usr/lib/batman/rundir.sh ] && . /usr/lib/batman/rundir.sh
 RUNDIR=${RUNDIR:-/nonexistent/batman-rundir}
 [ "${AUTOCOMMIT_DRYRUN:-0}" = 1 ] && ACLOG=$RUNDIR/autocommit-dryrun.log   # a dry run must not show up as "LAST OTA"
-DECIDED=$RUNDIR/autocommit.decided        # the one atomic claim (mkdir) both main and watchdog must win
-COMMITTED=$RUNDIR/autocommit.committed
 DRY=${AUTOCOMMIT_DRYRUN:-0}
+# #254 L96 (docs/design/254-v16-group1.md §3): a dry run keeps EVERY autocommit marker in its own directory, emptied at
+# the start of each dry run (one at a time: $DLOCK) — it never reads or writes the real ones, except that it also
+# honours the real hold-consumed (the harness plants it to stand the dry watchdog down). Production: ACD = RUNDIR.
+ACD=$RUNDIR; [ "$DRY" = 1 ] && ACD=$RUNDIR/autocommit.dry.d
+DLOCK=$RUNDIR/autocommit.dry.lock
+DECIDED=$ACD/autocommit.decided           # the one atomic claim (mkdir) both main and watchdog must win
+COMMITTED=$ACD/autocommit.committed
 [ "$DRY" = 1 ] && DEFER_MAX=${AUTOCOMMIT_DEFER_MAX:-$DEFER_MAX}   # test seam: shorten the bounded deferral
 # v2.4 (#261/#265): operator-acceptance hold. The p6 one-shot flag names the build it is meant for; it is
 # consumed on the first tryboot, whatever that boot then does, and becomes a marker in a root-owned 0700
 # control dir inside the run dir (#280).
 HOLDCOMMIT_FLAG=$ST/autocommit-hold-commit
-CTL=$RUNDIR/autocommit.ctl; [ "$DRY" = 1 ] && CTL=$RUNDIR/autocommit.ctl.dry
+CTL=$ACD/autocommit.ctl
 ctl_ok(){ [ -d "$CTL" ] && [ ! -L "$CTL" ] && [ -O "$CTL" ]; }
 # A planted $CTL (a file, a symlink, someone else's dir) is removed and re-made once; rm -rf on a symlink
 # removes the link, never its target. Still not ours after that = the caller fails CLOSED (review #265 F14a).
@@ -74,8 +79,8 @@ real_tryboot(){  # this boot is a one-shot tryboot of a slot that is not provabl
 	batman-slot is-trial >/dev/null 2>&1; [ $? -ne 1 ]
 }
 
-RUN=$RUNDIR/autocommit.run                # main's pid lives in $RUN/pid (R1)
-HOLDC=$RUNDIR/autocommit.hold-consumed    # a hold seen this boot — survives a main restart (R1)
+RUN=$ACD/autocommit.run                # main's pid lives in $RUN/pid (R1)
+HOLDC=$ACD/autocommit.hold-consumed    # a hold seen this boot — survives a main restart (R1)
 pid_is(){  # $1 pid, $2 pattern in its (NUL-flattened) cmdline
 	[ -n "$1" ] && kill -0 "$1" 2>/dev/null && { tr '\0' ' ' < "/proc/$1/cmdline"; } 2>/dev/null | grep -q "$2"
 }
@@ -95,6 +100,7 @@ op_flag(){ type batman_opf >/dev/null 2>&1 || return 1; batman_opf "$1"; }   # r
 held(){
 	op_flag /tmp/batman-autocommit.hold && return 0
 	[ -f "$HOLDC" ] && return 0
+	[ "$DRY" = 1 ] && [ -f "$RUNDIR/autocommit.hold-consumed" ] && return 0   # read only (the harness plant)
 	if [ -f "$ST/autocommit-hold-once" ]; then
 		[ "$DRY" = 1 ] || { rm -f "$ST/autocommit-hold-once"; sync; }
 		: > "$HOLDC"
@@ -111,6 +117,8 @@ held(){
 # shellcheck source=/dev/null
 [ -f /usr/lib/batman/otatrace.sh ] && . /usr/lib/batman/otatrace.sh
 type otalog >/dev/null 2>&1 || { otalog() { :; }; otalog_k() { :; }; ota_get() { :; }; ota_thr() { :; }; }
+# a dry run never writes the p6 OTA trace (the real record halow-status and the app read) — #254 L96
+[ "$DRY" = 1 ] && { otalog() { :; }; otalog_k() { :; }; }
 . /usr/lib/batman/meshjoin.sh
 
 # The canary is built ON THE NODE from this rootfs's own busybox + musl loader (#209 S5 review K1c):
@@ -160,7 +168,7 @@ if [ "${1:-}" = release ]; then
 	if [ "$DRY" != 1 ]; then
 		batman-slot is-trial >/dev/null 2>&1; [ $? = 0 ] || { echo "release: this boot is not an uncommitted trial"; exit 1; }
 		main_alive || { echo "release: the autocommit run is not alive — commit by hand: batman-slot commit"; exit 1; }
-		dl=$(cat "$RUNDIR/autocommit.deadline" 2>/dev/null); case "$dl" in ''|*[!0-9]*) echo "release: no deadline recorded"; exit 1;; esac
+		dl=$(cat "$ACD/autocommit.deadline" 2>/dev/null); case "$dl" in ''|*[!0-9]*) echo "release: no deadline recorded"; exit 1;; esac
 		[ "$(up)" -lt "$dl" ] || { echo "release: past the deadline (${dl}s) — the trial is being reverted"; exit 1; }
 	fi
 	: > "$CTL/released" && log "RELEASED: operator lifted the hold-commit — commit follows the normal gate (incl. the pre-commit canary)"
@@ -170,11 +178,11 @@ if [ "${1:-}" = release ]; then
 	s0=$(batman-slot active 2>/dev/null); dl=${dl:-$(( $(up) + 300 ))}; lim=$(( dl - $(up) + 30 ))
 	while [ "$lim" -gt 0 ]; do
 		[ -f "$COMMITTED" ] && { echo "release: committed"; exit 0; }
-		[ "$DRY" = 1 ] || main_alive || [ -f "$COMMITTED" ] || { echo "release: autocommit run ended without committing ($(cat "$RUNDIR/autocommit.why" 2>/dev/null))"; exit 1; }
+		[ "$DRY" = 1 ] || main_alive || [ -f "$COMMITTED" ] || { echo "release: autocommit run ended without committing ($(cat "$ACD/autocommit.why" 2>/dev/null))"; exit 1; }
 		[ "$(batman-slot active 2>/dev/null)" = "$s0" ] || { echo "release: slot changed"; exit 1; }
 		sleep 2; lim=$((lim - 2))
 	done
-	echo "release: not committed by the deadline ($(cat "$RUNDIR/autocommit.why" 2>/dev/null))"; exit 1
+	echo "release: not committed by the deadline ($(cat "$ACD/autocommit.why" 2>/dev/null))"; exit 1
 fi
 
 # The revert watchdog (B/N1/N4): runs as its own process (`batman-autocommit watchdog`, started with
@@ -197,7 +205,7 @@ revert_watchdog(){
 		batman-slot reboot committed "autocommit: trial slot $SLOT reverted (run dir unusable)"
 		sync; reboot
 	fi
-	mkdir "$RUNDIR/autocommit.wd" 2>/dev/null || exit 0
+	mkdir "$ACD/autocommit.wd" 2>/dev/null || exit 0
 	while [ "$(up)" -lt "$DEADLINE" ]; do
 		[ -f "$COMMITTED" ] && exit 0
 		held && { log "hold present — revert watchdog stands down"; exit 0; }
@@ -234,11 +242,11 @@ revert_watchdog(){
 	[ -f "$COMMITTED" ] && exit 0
 	held && { log "hold present at the deadline — not reverting"; exit 0; }
 	real_tryboot || { log "no longer a real tryboot at the deadline — not reverting"; exit 0; }
-	why=$(cat "$RUNDIR/autocommit.why" 2>/dev/null)
-	rm -f "$ST/ota-armed.mesh"
+	why=$(cat "$ACD/autocommit.why" 2>/dev/null)
 	log "TRIAL-REVERTED slot $SLOT after $(( $(up) - START ))s: ${why:-unhealthy}"
 	aclog "TRIAL-REVERTED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version) waited=$(( $(up) - START ))s reason=${why:-unhealthy}"
 	if [ "$DRY" = 1 ]; then echo "DRYRUN decision: REVERT (reboot to the committed slot) — reason: ${why:-unhealthy}"; exit 0; fi
+	rm -f "$ST/ota-armed.mesh"   # after the DRY exit: a dry run never touches p6 (#254 L96)
 	otalog_k AC REVERT slot=$SLOT why="${why:-unhealthy}"
 	# remember which slot+version was reverted: if the firmware later boots it anyway (Pi 4 EEPROM bug,
 	# docs/design/explicit-reboot.md) it must never be committed as a "#133 stale fallback"
@@ -250,6 +258,27 @@ revert_watchdog(){
 [ "${1:-}" = watchdog ] && { revert_watchdog; exit 0; }
 
 [ "${1:-}" = run ] || { echo "usage: batman-autocommit run" >&2; exit 2; }
+
+# #254 L96: one dry run at a time ($DLOCK holds "<main pid> [<watchdog pid>]"), each from an empty $ACD. A lock whose
+# pids are all gone is taken over; an empty pids file younger than a minute is a dry run starting (never taken over).
+# Anything that is not our directory, or a dir that cannot be made, ends the dry run — never the real names.
+dry_alive(){
+	[ -s "$DLOCK/pids" ] || { [ -z "$(find "$DLOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ]; return; }
+	for p in $(cat "$DLOCK/pids" 2>/dev/null); do pid_is "$p" batman-autocommit && return 0; done; return 1
+}
+dry_pids(){ echo "$*" > "$DLOCK/pids.tmp" && mv "$DLOCK/pids.tmp" "$DLOCK/pids"; }
+dry_end(){ [ -n "${WDPID:-}" ] && { kill "$WDPID" 2>/dev/null; wait "$WDPID" 2>/dev/null; }; rm -rf "$DLOCK"; }
+if [ "$DRY" = 1 ]; then
+	if ! mkdir "$DLOCK" 2>/dev/null; then
+		{ [ -d "$DLOCK" ] && [ ! -L "$DLOCK" ] && [ -O "$DLOCK" ]; } || { echo "batman-autocommit: dry run: $DLOCK is not our directory" >&2; exit 1; }
+		dry_alive && { echo "batman-autocommit: dry run: another dry run is running (pids $(cat "$DLOCK/pids" 2>/dev/null))" >&2; exit 1; }
+		log "dry run: taking over a stale lock (pids $(cat "$DLOCK/pids" 2>/dev/null))"
+	fi
+	dry_pids $$ || { echo "batman-autocommit: dry run: cannot write $DLOCK/pids" >&2; exit 1; }
+	trap dry_end EXIT
+	rm -rf "$ACD"
+	mkdir -m 700 "$ACD" 2>/dev/null && [ -d "$ACD" ] && [ ! -L "$ACD" ] && [ -O "$ACD" ] || { echo "batman-autocommit: dry run: cannot make $ACD" >&2; exit 1; }
+fi
 
 # #280 fail closed: without a usable root-only run dir there is no trustworthy claim, deadline or hold state.
 # Never commit; a real tryboot still gets its deadline revert (watchdog without the claim, see above).
@@ -287,7 +316,7 @@ if { dt_tryboot || { [ "$DRY" = 1 ] && [ "${AUTOCOMMIT_FORCE_TRIAL:-0}" = 1 ]; }
 	else
 		log "HOLD-COMMIT-DISCARDED: flag is for [$want], this boot runs [$(version)] — not holding"
 		aclog "HOLD-COMMIT-DISCARDED boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) flag=$want booted=$(version)"
-		echo "flag for [$want] discarded by a tryboot of [$(version)]" > "$RUNDIR/autocommit.hold-discarded"
+		echo "flag for [$want] discarded by a tryboot of [$(version)]" > "$ACD/autocommit.hold-discarded"
 	fi
 	[ "$DRY" = 1 ] || [ "$HOLDUNSAFE" = 1 ] || { rm -f "$HOLDCOMMIT_FLAG"; sync; }
 fi
@@ -334,7 +363,7 @@ SLOT=$(batman-slot active)
 # Single instance per boot (N4) that survives a restart (#209 S5 review R1): the run dir holds main's
 # pid. A live main -> exit; a dead one (killed by `restart`) -> take over, keeping its deadline and any
 # hold it saw — a restart must neither leave zero poll loops (the watchdog would then revert a healthy
-# trial) nor start a second watchdog (it is single via $RUNDIR/autocommit.wd). No run dir: no single
+# trial) nor start a second watchdog (it is single via $ACD/autocommit.wd). No run dir: no single
 # instance either (#280 N6) — each procd respawn starts another claim-less watchdog; they all revert to the
 # same committed slot (harmless, logged; the case should never occur).
 if [ "$DRY" != 1 ] && [ "$RDBAD" = 0 ]; then
@@ -374,15 +403,15 @@ if [ "$REVERT" = 1 ] && held; then log "hold present — this trial will not be 
 
 # 3) deadline (N2): uptime-based; operator override on p6 (survives OTA) else the image default per SoC.
 #    Computed ONCE per boot and kept in the run dir, so a main that takes over keeps the watchdog's deadline (R1).
-if [ "$DRY" != 1 ] && [ -s "$RUNDIR/autocommit.deadline" ] && [ -s "$RUNDIR/autocommit.start" ]; then
-	DEADLINE=$(cat "$RUNDIR/autocommit.deadline"); START=$(cat "$RUNDIR/autocommit.start")
+if [ "$DRY" != 1 ] && [ -s "$ACD/autocommit.deadline" ] && [ -s "$ACD/autocommit.start" ]; then
+	DEADLINE=$(cat "$ACD/autocommit.deadline"); START=$(cat "$ACD/autocommit.start")
 else
 	case "$(cat /proc/device-tree/compatible 2>/dev/null)" in *bcm2837*) DEF=900 ;; *) DEF=600 ;; esac
 	T=$(cat "$ST/autocommit.timeout" 2>/dev/null | tr -dc '0-9'); [ -n "$T" ] || T=$DEF
 	[ "$T" -lt 300 ] && T=300; [ "$T" -gt 3600 ] && T=3600
 	if [ "$DRY" = 1 ] && [ -n "${AUTOCOMMIT_TIMEOUT:-}" ]; then T=$AUTOCOMMIT_TIMEOUT; MIN_WINDOW=0; fi
 	START=$(up); DEADLINE=$T; [ "$DEADLINE" -lt $((START + MIN_WINDOW)) ] && DEADLINE=$((START + MIN_WINDOW))
-	[ "$DRY" = 1 ] || [ "$RDBAD" = 1 ] || { echo "$DEADLINE" > "$RUNDIR/autocommit.deadline"; echo "$START" > "$RUNDIR/autocommit.start"; }
+	[ "$DRY" = 1 ] || [ "$RDBAD" = 1 ] || { echo "$DEADLINE" > "$ACD/autocommit.deadline"; echo "$START" > "$ACD/autocommit.start"; }
 fi
 log "slot $SLOT is an uncommitted trial — gate until uptime ${DEADLINE}s (now $(up)s), revert=$REVERT"
 
@@ -431,11 +460,12 @@ if [ "$REVERT" = 1 ]; then
 	export AC_DEADLINE=$DEADLINE AC_START=$START AC_SLOT=$SLOT AC_NOCLAIM=$RDBAD
 	if [ "$DRY" = 1 ]; then
 		( revert_watchdog ) & WDPID=$!
+		dry_pids "$$ $WDPID" || log "dry run: cannot record the watchdog pid"
 	else
 		setsid "$0" watchdog </dev/null >/dev/null 2>&1 &
 	fi
 fi
-[ "$UNKNOWN" = 1 ] && { echo "slot commit state unreadable (batman-slot is-trial)" > "$RUNDIR/autocommit.why"; exit 0; }
+[ "$UNKNOWN" = 1 ] && { echo "slot commit state unreadable (batman-slot is-trial)" > "$ACD/autocommit.why"; exit 0; }
 [ "$RDBAD" = 1 ] && { log "not committing: run dir unusable (#280)"; exit 0; }
 
 # 6) health
@@ -445,8 +475,8 @@ running(){
 }
 # health_ok runs inside $(...) — a subshell — so its latch must be a file, not a variable (code review F4)
 # warn_once <key> <text>: one log line per boot (health_ok runs every poll, in a subshell)
-warn_once(){ [ -f "$RUNDIR/autocommit.warn-$1" ] && return 0; : > "$RUNDIR/autocommit.warn-$1" 2>/dev/null; log "WARN: $2"; }
-CANARY_LATCH=$RUNDIR/autocommit.canary-ok
+warn_once(){ [ -f "$ACD/autocommit.warn-$1" ] && return 0; : > "$ACD/autocommit.warn-$1" 2>/dev/null; log "WARN: $2"; }
+CANARY_LATCH=$ACD/autocommit.canary-ok
 # echo a reason + return 1 when unhealthy; silent + return 0 when healthy (services/infra only)
 health_ok(){
 	# p6 must be mounted (v2.2 M3b): otherwise the docker/payload checks below silently skip themselves.
@@ -525,7 +555,7 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 	# #254: a member trial must bring its radio up on the configured mesh (meshjoin_radio_up), neighbours or not
 	if [ -z "$why" ] && [ "$RADIO_REQ" = 1 ] && ! meshjoin_radio_up; then why="member: HaLow mesh interface not up on the configured mesh id"; ok=0; fi
 	# #254 §6.4 + P-U5: the BLE health gate is WARN-only until the Pi 4 BT UART wedge is fixed — logged, never blocks
-	if [ -f "$ST/ble-ok" ] && [ ! -f "$RUNDIR/autocommit.ble-warned" ]; then
+	if [ -f "$ST/ble-ok" ] && [ ! -f "$ACD/autocommit.ble-warned" ]; then
 		bh=$(cat "$RUNDIR/batman-prov.health" 2>/dev/null)
 		hb=$(echo "$bh" | sed -n 's/^boot_id=\([^ ]*\) .*/\1/p'); hts=$(echo "$bh" | sed -n 's/.* ts=\([0-9]*\) .*/\1/p')
 		# §3.7.6: the line must be this boot's and at most 60 s old — a stale "good" line is not good
@@ -533,7 +563,7 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 		[ "$hb" = "$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" ] && [ -n "$hts" ] && [ $(( $(up) - hts )) -le 60 ] ||
 			{ bh=""; bho="stale or another boot's: $bho"; }
 		case "$bh" in *"bluetoothd=1"*"hci0_powered=1"*"adv_registered_once=1"*) ;; *)
-			log "WARN ble: ble-ok present but BLE health is not good ($bho) — not blocking (P-U5)"; : > "$RUNDIR/autocommit.ble-warned" ;; esac
+			log "WARN ble: ble-ok present but BLE health is not good ($bho) — not blocking (P-U5)"; : > "$ACD/autocommit.ble-warned" ;; esac
 	fi
 	if [ "$NEED_MESH" = 1 ]; then
 		if [ "$jn" -lt "$JOIN_NEED" ]; then why="${why:+$why; }mesh not joined/reachable ($jn/$JOIN_NEED samples: plink=${MJ_PLINK:-0} batman(wlh0)=${MJ_BAT:-0})"
@@ -555,7 +585,7 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 		esac
 		if [ "$ok" -ge "$NEED" ] && [ -z "${WBOXLOGGED:-}" ]; then WBOXLOGGED=1; log "trial $SLOT is healthy but: $why"; otalog AC "$wtag" slot="$SLOT"; fi
 	fi
-	echo "$why" > "$RUNDIR/autocommit.why"
+	echo "$why" > "$ACD/autocommit.why"
 	if [ "$ok" -ge "$NEED" ] && [ -z "$why" ]; then
 		# #265: the canary latched on its FIRST success, so a runtime broken after that was committed (measured:
 		# latched 41-46 s before an injected runc break, then committed). Re-run it — unlatched — right before
@@ -563,7 +593,7 @@ while [ "$(up)" -lt "$DEADLINE" ]; do
 		# committed and the watchdog reverts it. Once per commit attempt only (v2.3 S3: Pi 3A+ memory).
 		if have_docker_tenant; then
 			if ! c=$(canary_run); then
-				rm -f "$CANARY_LATCH"; why="pre-commit canary failed: $c"; echo "$why" > "$RUNDIR/autocommit.why"
+				rm -f "$CANARY_LATCH"; why="pre-commit canary failed: $c"; echo "$why" > "$ACD/autocommit.why"
 				log "PRECOMMIT-CANARY-FAIL: $c — not committing, dwell reset"; otalog AC PRECOMMIT-CANARY-FAIL why="$c"
 				aclog "PRECOMMIT-CANARY-FAIL boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id) slot=$SLOT version=$(version) why=$c"
 				ok=0; sleep "$POLL"; continue
