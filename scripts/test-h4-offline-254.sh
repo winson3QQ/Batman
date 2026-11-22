@@ -28,5 +28,10 @@ for m in netobj nodecert blebridge httprelay benchstore signrel; do t "$m" "$m s
 t "bench_ip + p5_ap_back (stubbed node)" '^[1-9][0-9]* passed, 0 failed$' bash "$REPO/scripts/dv/test-bench-p5-254.sh"
 t "rollback guard + field-anchored slot match + lint" '^================ test-slot-guard: [1-9][0-9]* passed, 0 failed' bash "$REPO/scripts/dv/test-slot-guard-254.sh"
 t "restore / finish path (nodes.txt line, A found by MAC, finish NEEDS-PERSON)" '^================ test-restore: [1-9][0-9]* passed, 0 failed' bash "$REPO/scripts/dv/test-restore-254.sh"
+# #254 g4 §1 / §2 / §16: the ac-flap P3 judge, the host-derived misc-* mutants (each FAILs its named case; CRLF /
+# work-tree / non-fitting patch / zero rows FAIL), wslx's retry of a WSL launcher failure only
+t "acflap_judge (P3 rule, synthetic inputs)" '^TEST-ACFLAP: [1-9][0-9]* passed, 0 failed$' bash "$REPO/scripts/dv/test-acflap-254.sh"
+t "derive_misc + misc-* mutants vs autocommit-mesh-arm" '^TEST-DERIVE-MISC: [1-9][0-9]* passed, 0 failed$' bash "$REPO/tests/wbox/test-derive-misc.sh"
+t "dv-prov-tools wslx retry (stub wsl.exe)" '^TEST-WSLX: [1-9][0-9]* passed, 0 failed$' bash "$REPO/tests/wbox/test-wslx-retry.sh"
 t "P3 unit table (gen-p3-units --check)" '^gen-p3-units: ok, [1-9][0-9]* rows in [1-9][0-9]* units' python3 "$REPO/scripts/dv/gen-p3-units.py" --check
 echo "$P passed, $F failed"; [ $F = 0 ]

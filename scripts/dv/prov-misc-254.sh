@@ -7,7 +7,8 @@
 #   present" before "gate until"; any miss = INVALID); each arm's state put back and compared (RESTORED-SAME):
 #     L38 a (99zz -> helper member/radio while waiting: node-side INLOOP = the gate line, then >= 3 s without the
 #         verdict) required: 1; b (99zz only) prov=unclaimed after >= 58 s of node uptime;
-#         c (another boot's line) prov=none; neg: misc-l38 bound -> b answers < 60 s, a stays unclaimed
+#         c (another boot's line) prov=none; neg: misc-l38 bound -> b answers < 60 s; nega: misc-l38r (waits, never
+#         re-reads; #254 g4 §2) with a's switch -> INLOOP, the switch done, still prov=unclaimed after >= 58 s
 #     L42 member/radio, no arm file -> "no usable ota-armed.mesh" + required: 1; a correct radio arm file -> armed in
 #         radio-only mode + required: 0 (so (6a)'s "no file after apply" assertion discriminates); neg: misc-l42 -> 0
 #     L43 an arm file of another boot -> the whole line required: 1, no "no usable", the file unchanged; neg misc-l43 -> 0
@@ -18,6 +19,8 @@
 #   L9 / L10 bluetoothd / dbus restart -> health ok within 40 s; neg: bluetoothd stopped -> health bluetoothd=0
 #   L27 dropbear restart -> the lab key logs in; neg: a throwaway key is refused
 #   L3 clean reboot -> boot-reasons prev=CLEAN (trigger prov-dv-254) + the helper's "boot rc=" line
+# The misc-* autocommits come from scripts/dv-prov-tools.sh (derived on the host from V's file, #254 g4 §2); every one
+# listed in tests/wbox/helpers.list must be there and verified for V before anything starts, else INVALID up front.
 # Type: — / A / F. Side effects: ~12 dry runs (ota-trace AC lines), one reboot, short helper / bluetoothd / dbus /
 # dropbear restarts; a misc-l* autocommit is bound over /usr/bin/batman-autocommit only during its arm.
 set -u
@@ -42,6 +45,7 @@ bindac(){	# <misc-lNN>: its autocommit (dv-prov-tools) into W and bound over /us
 # reported with inv and its judgement lines are then not trusted by the callers (the INVALID makes the unit INVALID).
 dr(){
 	local tag=$1 b=$2 ps=$3 arm=$4 mid=${5:-} o cap=30 j
+	DMID=""   # "INLOOP" once a mid-arm switch was done in the wait loop
 	case "$tag" in l38*) cap=90 ;; esac   # §20.1: the L38 arms wait up to 60 s for the helper
 	o=$(mn save); grep -q '^SAVED' <<< "$o" || { no "$tag save: $o"; return 1; }
 	[ "$b" = - ] || bindac "$b" || { mn restore >/dev/null; return 1; }
@@ -53,7 +57,7 @@ dr(){
 	esac
 	if [ -n "$mid" ]; then
 		o=$(QT=60 mn inloop "$tag")
-		if [ "$o" = INLOOP ]; then say "$tag mid (node-side INLOOP): $(mn setps "${mid%%|*}") / $(mn setarm "${mid#*|}")"
+		if [ "$o" = INLOOP ]; then DMID=INLOOP; say "$tag mid (node-side INLOOP): $(mn setps "${mid%%|*}") / $(mn setarm "${mid#*|}")"
 		else inv "$tag: not in the wait loop when it had to be switched ($o — arm-a.$tag.verdict)"; fi
 	fi
 	o=$(QT=$((cap + 60)) mn judge "$tag" "$cap"); j=$(head -1 <<< "$o"); DOUT=$(tail -n +2 <<< "$o")
@@ -91,8 +95,11 @@ dryarms(){
 	if has "(prov=none"; then ok "L38 c: another boot's prov-state -> prov=none"; else no "L38 c: [$(mjr)]"; fi
 	dr l38neg misc-l38 "this 99zz unclaimed 0" "none" || return 1
 	if has "mesh join required: 0 (prov=unclaimed" && [ "${DEL:-99}" -lt 58 ] 2>/dev/null; then ok "L38 negative control: misc-l38 does not wait (${DEL}s)"; else no "L38 negative control: ${DEL}s [$(mjr)] — the mutant had no effect"; fi
-	dr l38nega misc-l38 "this 99zz unclaimed 0" "none" "this helper member radio|none" || return 1
-	if has "(prov=unclaimed"; then ok "L38 negative control a: misc-l38 keeps 99zz's unclaimed"; else no "L38 negative a: [$(mjr)]"; fi
+	# nega (#254 L117 / L128): misc-l38 has no wait loop, so the a-switch always came too late (TOOFAST -> INVALID);
+	# misc-l38r keeps the loop but never re-reads: INLOOP, the switch done, and still 99zz's unclaimed after the full wait
+	dr l38nega misc-l38r "this 99zz unclaimed 0" "none" "this helper member radio|none" || return 1
+	if [ "$DMID" = INLOOP ] && has "mesh join required: 0 (prov=unclaimed" && [ "${DEL:-0}" -ge 58 ] 2>/dev/null; then ok "L38 negative control a: misc-l38r waited ${DEL}s (INLOOP, switched to the helper's line) and kept 99zz's unclaimed"
+	else no "L38 negative a: mid=[${DMID:-none}] ${DEL:-?}s [$(mjr)]"; fi
 	# L42
 	dr l42 - "this helper member radio" "none" || return 1
 	if has "member: no usable ota-armed.mesh — neighbours required (fail-closed)" && has "mesh join required: 1 "; then ok "L42: no arm file -> neighbours required (fail-closed), required: 1"; else no "L42: [$(mjr)]"; fi
@@ -163,7 +170,23 @@ svcarms(){
 	case "$o" in *"prev=CLEAN"*"trigger=prov-dv-254"*) ok "L3: clean reboot -> prev=CLEAN (trigger prov-dv-254)" ;; *) no "L3: boot-reasons [$o]" ;; esac
 	if o=$(pr_trial_line 'batman-provhelper.*boot rc=' 6); then ok "L3: helper ${o##*]: }"; else no "L3: no helper 'boot rc=' line after the reboot"; fi
 }
+# misc_tools <V>: every misc-* autocommit of tests/wbox/helpers.list for <V>, verified against its SHA256SUMS; prints
+# what is missing, rc 1 when anything is (a list with no misc-* row is missing too)
+misc_tools(){
+	local v=$1 name r=0 k=0 d
+	while read -r name _; do
+		case "$name" in misc-*) ;; *) continue ;; esac
+		k=$((k + 1)); d=$PR_TOOLS/$v/$name
+		[ -f "$d/batman-autocommit" ] && (cd "$d" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1 || { echo "$name ($d)"; r=1; }
+	done < "$REPO/tests/wbox/helpers.list"
+	[ "$k" -gt 0 ] || { echo "no misc-* row in tests/wbox/helpers.list"; r=1; }
+	return $r
+}
+# up front, before the lease and the snapshot: nothing on the node is touched when a tool is missing
+v0=$(field "$(qr "$ST")" ver)
+if [ -n "$v0" ] && ! o=$(misc_tools "$v0"); then inv "misc tools missing for $v0 — run scripts/dv-prov-tools.sh $v0 (a misc patch that does not fit V is a FAIL there): $(echo $o)"; pr_result; exit 2; fi
 pr_begin 2400 || { pr_result; exit 1; }
+if ! o=$(misc_tools "$PR_V"); then inv "misc tools missing for $PR_V — run scripts/dv-prov-tools.sh $PR_V: $(echo $o)"; pr_end; pr_result; exit 2; fi
 dryarms || { mn stop all >/dev/null 2>&1; mn restore >/dev/null 2>&1; pr_abort "dry-run arms"; pr_result; exit 1; }
 svcarms || { pr_abort "service arms"; pr_result; exit 1; }
 pr_end

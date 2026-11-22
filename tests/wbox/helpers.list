@@ -20,6 +20,7 @@ radio1-off release same
 chan release same
 helper-flap prov_test helper
 misc-l38 release same
+misc-l38r release same
 misc-l42 release same
 misc-l43 release same
 misc-l51 release same
