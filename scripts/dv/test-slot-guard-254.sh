@@ -1,9 +1,14 @@
 #!/bin/bash
 # scripts/dv/test-slot-guard-254.sh — offline: rb_guarded / reboot_guarded (slot-guard-254.sh) against a stub node, the
 # real call sites that use them (extracted and run), and lints over the harness (review 2026-11-09 B-MAJOR-2, round 5):
-#   - no `batman-slot rollback` outside the guard, except an allowlist (file + text + reason) that must all still exist;
-#   - every guarded call site with its exact (boot, slot, trial, reason, condition): a changed argument FAILs;
-#   - no slot match without the field boundary.
+#   (1) no `batman-slot rollback|commit|reboot` / `batman-autocommit release` outside the guard, except an allowlist
+#       (file + text + reason) that must all still exist;
+#   (2) every guarded call site with its exact (boot, slot, trial, reason, condition, pre-action): a changed argument
+#       FAILs; (2b) pinned lines: the reboot_and_wait precheck and the role deadmen's line;
+#   (3) every plain `reboot` / sysrq line is a row of scripts/dv/data/slot-sites.tsv (exact text, exact count, group);
+#   (4) no slot match without the field boundary.
+# #254 v1.6 group 4 (docs/design/254-v16-group4.md §4, §13, §15): commit_guarded, reboot_guarded's <pre>, every converted
+# call site extracted and run against the stub node, pty-commit's stop_commit, reboot_and_wait's precheck.
 # The incident line is the real one chain1's restore read on 04 at 14:12 on 2026-11-08.
 # ROOT=<tree> tests another checkout (negative control: ROOT=<a232d42 export> must FAIL).
 set -u
@@ -22,6 +27,7 @@ case "$1" in
 	is-trial) exit "$STUB_TRIAL_RC" ;;
 	rollback) exit "${STUB_RB_RC:-0}" ;;
 	reboot) exit 0 ;;
+	commit) echo "batman-slot: committed slot $STUB_ACTIVE as default ([all]=2, [tryboot]=3)" ;;
 esac
 STUB
 cat > "$T/bin/cut" <<'STUB'
@@ -46,7 +52,7 @@ cat > "$T/bin/vcmailbox" <<'STUB'
 case "$1" in
 	0x00038064) echo "disarm" >> "$STUB_LOG"; [ -n "$STUB_DISARM_FAIL" ] || echo 0 > "$STUB_FLAG" ;;
 	# the real format: every word 0x%08x (trybootget-209.log on 04 / 02: "… 0x80000004 0x00000000"); STUB_RESP = word 2
-	0x00030064) printf '0x0000001c %s 0x00030064 0x00000004 %s 0x%08x 0x00000000\n' "${STUB_RESP:-0x80000000}" "${STUB_W5:-0x80000004}" "$(cat "$STUB_FLAG")" ;;
+	0x00030064) echo "get" >> "$STUB_LOG"; printf '0x0000001c %s 0x00030064 0x00000004 %s 0x%08x 0x00000000\n' "${STUB_RESP:-0x80000000}" "${STUB_W5:-0x80000004}" "$(cat "$STUB_FLAG")" ;;
 esac
 STUB
 cat > "$T/bin/mkdir" <<'STUB'
@@ -54,9 +60,18 @@ cat > "$T/bin/mkdir" <<'STUB'
 for d; do case "$d" in */ch1.running) [ -n "$STUB_MKDIR_CANCEL" ] && : > "${d%/ch1.running}/ch1.cancel" ;; esac; done
 exec "$REALMKDIR" "$@"
 STUB
-chmod +x "$T/bin/batman-slot" "$T/bin/cut" "$T/bin/ps" "$T/bin/batman-autocommit" "$T/bin/vcmailbox" "$T/bin/mkdir"
-export REALCUT REALPS REALMKDIR STUB_FLAG=$T/flag STUB_DISARM_FAIL="" STUB_MKDIR_CANCEL=""
-REALCUT=$(command -v cut); REALPS=$(command -v ps); REALMKDIR=$(command -v mkdir); echo 0 > "$T/flag"
+# reboot: a plain reboot reaching the node is logged, never run; sleep: STUB_NOSLEEP=1 makes it instant
+cat > "$T/bin/reboot" <<'STUB'
+#!/bin/sh
+echo "plain-reboot $*" >> "$STUB_LOG"
+STUB
+cat > "$T/bin/sleep" <<'STUB'
+#!/bin/sh
+[ -n "$STUB_NOSLEEP" ] && exit 0; exec "$REALSLEEP" "$@"
+STUB
+chmod +x "$T/bin/batman-slot" "$T/bin/cut" "$T/bin/ps" "$T/bin/batman-autocommit" "$T/bin/vcmailbox" "$T/bin/mkdir" "$T/bin/reboot" "$T/bin/sleep"
+export REALCUT REALPS REALMKDIR REALSLEEP STUB_FLAG=$T/flag STUB_DISARM_FAIL="" STUB_MKDIR_CANCEL="" STUB_NOSLEEP=""
+REALCUT=$(command -v cut); REALPS=$(command -v ps); REALMKDIR=$(command -v mkdir); REALSLEEP=$(command -v sleep); echo 0 > "$T/flag"
 # node <boot> <active> <trial-rc> <rollback-rc>: the stub node's state for nsh
 node(){ NB=$1 NA=$2 NT=$3 NR=$4; : > "$T/log"; }
 nsh(){ PATH="$T/bin:$PATH" STUB_BOOT=$NB STUB_LOG="$T/log" STUB_ACTIVE=$NA STUB_TRIAL_RC=$NT STUB_RB_RC=$NR sh -c "$1"; sleep 0.3; }
@@ -210,6 +225,165 @@ if command -v busybox >/dev/null 2>&1; then
 	[ "$(vm '0x0000001c 0x80000000 0x00030064 0x00000004 0x00000004 0x00000000 0x00000000')" = tryboot_flag=unknown ] && ok "busybox ash: tag not answered -> unknown" || no "busybox DISARM unanswered tag"
 	[ "$(vm '0x0000001c 0x80000001 0x00030064 0x00000004 0x80000004 0x00000000 0x00000000')" = tryboot_flag=unknown ] && ok "busybox ash: error response -> unknown" || no "busybox DISARM error response"
 else no "busybox missing: the node-shell checks cannot run"; fi
+
+# stubs the converted sites need on the node: commit, firstboot (STUB_FB_RC), a plain reboot (logged, never run), logger
+# (logged: the <pre> output), sleep (STUB_NOSLEEP: FI's old `sleep 2; …` lands at once)
+cat > "$T/bin/firstboot" <<'STUB'
+#!/bin/sh
+echo "firstboot $*" >> "$STUB_LOG"; exit "${STUB_FB_RC:-0}"
+STUB
+cat > "$T/bin/logger" <<'STUB'
+#!/bin/sh
+echo "logger $*" >> "$STUB_LOG"; [ $# -le 2 ] && cat >/dev/null 2>&1; exit 0   # reads stdin only without a message, as logger
+STUB
+chmod +x "$T/bin/firstboot" "$T/bin/logger"
+ST=x; PL_NAME=prov-claim; BLE_SSHO=(); BT305_SSHO=()
+
+# ---- #254 v1.6 group 4 §4.1: commit_guarded, reboot_guarded's `-` extra and <pre>
+committed_log(){ grep -q '^commit$' "$T/log"; }
+node 1201bf8a B 0 0; o=$(nsh "$(commit_guarded 1201bf8a B)"); case "$o" in "SENT batman-slot: committed slot B as default"*) committed_log && ! rebooted && ok "commit_guarded: the trial in that boot: SENT + the commit's output, no reboot" || no "commit_guarded: log $(tr '\n' ' ' < "$T/log")";; *) no "commit_guarded matching: [$o]";; esac
+node aaaaaaaa B 0 0; o=$(nsh "$(commit_guarded 1201bf8a B)"); case "$o" in WRONG-STATE*) ! committed_log && ok "commit_guarded: another boot -> WRONG-STATE, no commit" || no "committed in another boot";; *) no "commit_guarded other boot: [$o]";; esac
+node 1201bf8a B 1 0; o=$(nsh "$(commit_guarded 1201bf8a B)"); case "$o" in WRONG-STATE*) ! committed_log && ok "commit_guarded: already committed -> WRONG-STATE, no commit" || no "commit_guarded committed a committed slot";; *) no "commit_guarded committed: [$o]";; esac
+node 1201bf8a A 0 0; o=$(nsh "$(commit_guarded 1201bf8a B)"); case "$o" in WRONG-STATE*) ! committed_log && ok "commit_guarded: a trial on the other slot -> WRONG-STATE, no commit" || no "commit_guarded committed the other slot";; *) no "commit_guarded other slot: [$o]";; esac
+node 1201bf8a B 0 0; o=$(nsh "$(commit_guarded "" B)"); case "$o" in WRONG-STATE*) ! committed_log && ok "commit_guarded: an empty boot -> WRONG-STATE" || no "commit_guarded with an empty boot committed";; *) no "commit_guarded empty boot: [$o]";; esac
+echo 1 > "$T/flag"; node 1201bf8a B 0 0; o=$(STUB_DISARM_FAIL=y; export STUB_DISARM_FAIL; nsh "$(commit_guarded 1201bf8a B)"); case "$o" in "SENT "*) ! grep -q '^disarm$' "$T/log" && ok "commit_guarded: no DISARM (a commit does not reboot), sent with the flag armed" || no "commit_guarded disarmed";; *) no "commit_guarded armed: [$o]";; esac; echo 0 > "$T/flag"
+fb(){ grep -q '^firstboot' "$T/log"; }
+node 1201bf8a A 1 0; o=$(nsh "$(reboot_guarded 1201bf8a A 1 x - 'firstboot -y')"); [ "$o" = SENT ] && fb && rebooted && ok "reboot_guarded <pre>: checks hold -> pre runs, then the reboot: SENT" || no "pre ok: [$o] $(tr '\n' ' ' < "$T/log")"
+grep -q '^logger -t slot-guard pre-action rc=0$' "$T/log" && ok "reboot_guarded <pre>: its rc / output go to logger -t slot-guard" || no "pre not logged: $(tr '\n' ' ' < "$T/log")"
+node aaaaaaaa A 1 0; o=$(nsh "$(reboot_guarded 1201bf8a A 1 x - 'firstboot -y')"); case "$o" in WRONG-STATE*) ! fb && ! rebooted && ok "reboot_guarded <pre>: another boot -> WRONG-STATE, pre NOT run, no reboot" || no "pre ran / rebooted on WRONG-STATE";; *) no "pre other boot: [$o]";; esac
+echo 1 > "$T/flag"; node 1201bf8a A 1 0; o=$(STUB_DISARM_FAIL=y; export STUB_DISARM_FAIL; nsh "$(reboot_guarded 1201bf8a A 1 x - 'firstboot -y')"); case "$o" in *" extra=0") ! fb && ! rebooted && ok "reboot_guarded <pre>: a tryboot that will not disarm -> pre NOT run, no reboot" || no "pre ran with the tryboot armed";; *) no "pre armed: [$o]";; esac; echo 0 > "$T/flag"
+node 1201bf8a A 1 0; o=$(STUB_FB_RC=1; export STUB_FB_RC; nsh "$(reboot_guarded 1201bf8a A 1 x - 'firstboot -y')"); [ "$o" = "PRE-FAILED SENT" ] && rebooted && ok "reboot_guarded <pre> fails -> the reboot still follows: PRE-FAILED SENT" || no "pre fails: [$o] $(tr '\n' ' ' < "$T/log")"
+node 1201bf8a A 1 0; o=$(nsh "$(reboot_guarded 1201bf8a A 1 x - "")"); [ "$o" = SENT ] && ! fb && ok "reboot_guarded: extra '-' = true, empty pre = none" || no "extra '-': [$o]"
+node 1201bf8a A 1 0; o=$(nsh "$(reboot_guarded 1201bf8a A 1 x "[ -e $T/nonexistent ]" 'firstboot -y')"); case "$o" in *" extra=0") ! fb && ok "reboot_guarded: a false extra condition -> pre NOT run" || no "pre ran with a false extra";; *) no "extra false + pre: [$o]";; esac
+
+# ---- the converted call sites (group 4 §4.2 rows 1-12, 15, 19), extracted from ROOT and run against the stub node.
+# Each is cut out between two lines that exist before and after the conversion, so ROOT=<b885a2c> runs the OLD lines
+# (they reboot / commit whatever the state -> FAIL: the negative control).
+# xr <file> <start ERE> <end ERE> [excl]: from the first line matching start to the first (from start on) matching end
+# (ENVIRON, not -v: awk -v would eat the backslashes of the patterns); <file> - = stdin
+xr(){ local f=$ROOT/$1; [ "$1" = - ] && f=/dev/stdin; XA=$2 XB=$3 XX=${4:-} awk 'f == 0 && $0 ~ ENVIRON["XA"] { f = 1 } f == 1 { if ($0 ~ ENVIRON["XB"]) { if (ENVIRON["XX"] == "") print; exit } print }' "$f"; }
+# xf <file> <function header ERE>: the function's lines (to the first line that is exactly "}")
+xf(){ XA=$2 awk '$0 ~ ENVIRON["XA"] { f = 1 } f { print } f && /^}$/ { exit }' "$ROOT/$1"; }
+# the boot id the HOST read (always 1201bf8a): "another boot" = the node (NB) rebooted after that read
+NBF(){ echo "1201bf8a-1111-4222-8333-444455556666"; }
+# the node-command stubs every site uses: q / qr / n / fq / bt305_ssh / ssh run the command on the stub node; a
+# `cat …boot_id` answers the full boot id
+nodecmd(){ case "$1" in *'cat /proc/sys/kernel/random/boot_id'*) NBF ;; *) nsh "$1" ;; esac; }
+stubs(){
+	q(){ nodecmd "$*"; }; qr(){ nodecmd "$*"; }; n(){ nodecmd "$*"; }; bt305_ssh(){ shift 2; nodecmd "$*"; }
+	timeout(){ shift; "$@"; }; ssh(){ local a; for a; do :; done; nodecmd "$a"; }
+	bid(){ [ -n "${BID_EMPTY:-}" ] || NBF; }; bootid(){ NBF; }; slot(){ nsh 'batman-slot active'; }
+	no(){ echo "FAIL $*"; }; ok(){ :; }; say(){ :; }; inv(){ echo "FAIL $*"; }
+	pr_needs_person(){ echo "FAIL person $*"; return 1; }; pr_abort(){ echo "FAIL abort $*"; }; pr_result(){ :; }
+	p5_person(){ echo "FAIL person $*"; }; pr_find(){ return 0; }; waitboot(){ return 0; }; settle(){ return 0; }
+	ledger_has(){ return 0; }
+}
+reb(){ sleep 0.2; grep -qE '^(reboot committed|plain-reboot)' "$T/log"; }   # a guarded or a plain reboot reached the node
+# site <label> <code> <call> <act reboot|commit>: the code defines (or is) the site; <call> runs it, with the stubs, in a
+# subshell (the stubs never leak into this test). Matching state: no FAIL line and the act done; another boot (the node
+# rebooted after the host's read): a FAIL line and nothing done
+site(){ local l=$1 code=$2 call=$3 act=$4 o done
+	[ -n "$code" ] || { no "site $l: not found in $ROOT"; return; }
+	node 1201bf8a "${SA:-A}" "${STR:-1}" 0; o=$(stubs; eval "$code"; eval "$call" 2>&1); if [ "$act" = commit ]; then committed_log; else reb; fi; done=$?
+	if [ $done = 0 ] && ! grep -q '^FAIL' <<< "$o"; then ok "site $l: the matching state -> $act sent, no FAIL"; else no "site $l: matching state: [$(echo $o | cut -c1-160)] $(tr '\n' ' ' < "$T/log")"; fi
+	node aaaaaaaa "${SA:-A}" "${STR:-1}" 0; o=$(stubs; eval "$code"; eval "$call" 2>&1); if [ "$act" = commit ]; then committed_log; else reb; fi; done=$?
+	if [ $done != 0 ] && grep -q '^FAIL' <<< "$o"; then ok "site $l: another boot -> refused (FAIL), nothing sent"; else no "site $l: another boot: $act done=$([ $done = 0 ] && echo YES || echo no) [$(echo $o | cut -c1-160)]"; fi
+}
+export STUB_NOSLEEP=1   # FI's old `setsid sh -c 'sleep 2; …'` must land before the check
+eval "$(sed -n '/^field(){/p' "$ROOT/scripts/dv/prov-254.sh")"
+site "1 addr-defer reboot_c" "$(xr scripts/dv/addr-defer-reconcile-254.sh '^reboot_c\(\)\{' 't=\$SECONDS$'; echo 'return 0; }')" 'reboot_c' reboot
+node 1201bf8a A 1 0; o=$(BID_EMPTY=1; stubs; eval "$(xr scripts/dv/addr-defer-reconcile-254.sh '^reboot_c\(\)\{' 't=\$SECONDS$'; echo 'return 0; }')"; reboot_c 2>&1)
+! reb && grep -q '^FAIL' <<< "$o" && ok "site 1 addr-defer: boot id unreadable on the host -> refused, no reboot (was: no reboot proof)" || no "site 1 empty boot: [$o] $(tr '\n' ' ' < "$T/log")"
+site "2 ble_reboot_committed" "$(xr scripts/dv/ble-254.sh '^ble_reboot_committed\(\) \{' 'sleep 20$'; echo 'return 0; }')" 'sleep(){ [ "$1" = 20 ] || command sleep "$1"; }; ble_reboot_committed 10.0.0.9' reboot
+site "3 bt305_reboot" "$(xr scripts/dv/bt-uart-305.sh '^bt305_reboot\(\) \{' 't0=\$SECONDS'; echo 'return 0; }')" 'bt305_reboot 10.0.0.9 bt305-restore' reboot
+site "4 pr_restore_cycle" "sitef(){ s='slot=A trial_rc=1 boot=1201bf8a'; $(xf scripts/dv/prov-254.sh '^pr_restore_cycle\(\)\{' | xr - 'b0=\$\(field "\$s" boot\)' 'pr_find 900')
+return 0; }" sitef reboot
+site "5 pr_member" "sitef(){ $(xf scripts/dv/prov-254.sh '^pr_member\(\)\{' | xr - 'b0=\$\(field "\$s" boot\)' 'pr_find 900')
+return 0; }" "s='slot=A trial_rc=1 boot=1201bf8a'; qr(){ echo \"\$s\"; }; sitef" reboot
+site "6 leave-ota" "sitef(){ $(xr scripts/dv/prov-leave-ota-254.sh 's=\$\(qr "\$ST"\); b0=\$\(field "\$s" boot\)$' 'pr_find 900')
+return 0; }" "qr(){ echo 'slot=A trial_rc=1 boot=1201bf8a'; }; sitef" reboot
+site "7 pl_restore" "sitef(){ $(xr scripts/dv/prov-lib-254.sh '^b0=\$\(bid\)' 'no "reboot after restore')
+return 0; }" sitef reboot
+site "8 misc L3" "sitef(){ $(xr scripts/dv/prov-misc-254.sh 'b0=\$\(field "\$o" boot\)' 'pr_find 900')
+return 0; }" "qr(){ echo 'slot=A trial_rc=1 boot=1201bf8a'; }; sitef" reboot
+site "9 overlay-corrupt" "sitef(){ ( $(xr scripts/dv/prov-overlay-corrupt-254.sh '^s=\$\(qr "\$ST"\); b0=\$\(field "\$s" boot\)' 'pr_find 900')
+); }" "qr(){ echo 'slot=A trial_rc=1 boot=1201bf8a'; }; sitef" reboot
+WIPE=$(xr scripts/dv/prov-overlay-wipe-254.sh '^s=\$\(qr "\$ST"\); b0=\$\(field "\$s" boot\)$' '^pr_find 900')
+site "10 overlay-wipe" "sitef(){ ( $WIPE
+); }" "qr(){ echo 'slot=A trial_rc=1 boot=1201bf8a'; }; sitef" reboot
+if [ -n "$WIPE" ]; then
+	wipef(){ stubs; eval "sitef(){ ( $WIPE
+); }"; qr(){ echo 'slot=A trial_rc=1 boot=1201bf8a'; }; sitef; }
+	node aaaaaaaa A 1 0; o=$(wipef 2>&1); ! fb && ! reb && ok "site 10 overlay-wipe: another boot -> no firstboot, no reboot (the upper is not wiped)" || no "site 10: wiped / rebooted on WRONG-STATE: $(tr '\n' ' ' < "$T/log")"
+	node 1201bf8a A 1 0; o=$(wipef 2>&1); fb && reb && [ "$(grep -n '^firstboot' "$T/log" | cut -d: -f1)" -lt "$(grep -n '^reboot committed' "$T/log" | cut -d: -f1)" ] && ok "site 10 overlay-wipe: firstboot -y runs after the checks, before the reboot" || no "site 10 order: $(tr '\n' ' ' < "$T/log")"
+	node 1201bf8a A 1 0; o=$(STUB_FB_RC=1; export STUB_FB_RC; wipef 2>&1); reb && grep -q '^FAIL abort firstboot -y failed' <<< "$o" && ok "site 10 overlay-wipe: firstboot fails -> PRE-FAILED SENT: rebooted, the unit FAILs" || no "site 10 pre fails: [$o]"
+	unset -f wipef
+fi
+STR=0; site "11 FI p5 out of the trial" "sitef(){ $(xr scripts/fault-injection.sh 'b2=\$\(bootid\); \[ -n "\$b2" \] \|\| \{ p5_person "P5: AP restore: boot id' 'waitboot "\$b2" 300')
+return 0; }" "s=A; sitef" reboot; unset STR
+site "12 FI p5 placeholder" "sitef(){ set -- x y A; $(xr scripts/fault-injection.sh 'b2=\$\(bootid\); \[ -n "\$b2" \] \|\| \{ p5_person "P5: boot id unreadable before the placeholder' 'waitboot "\$b2" 300')
+return 0; }" sitef reboot
+SA=B STR=0; site "15 FI C2 commit" "sitef(){ $(xr scripts/fault-injection.sh 'ledger_has "crash \$EUDC" \|\| \{ no "C2' 'lim=\$\(\(dl' excl)
+return 0; }" "b0=1201bf8a-1111-4222-8333-444455556666; tr=B; EUDC=x; sitef" commit; unset SA STR
+site "19 FI F1" "sitef(){ local r=1; $(xr scripts/fault-injection.sh 'b=\$\(bootid\); \[ -n "\$b" \] \|\| \{ no "F1 boot_id' 'waitboot "\$b" 400')
+return 0; }" sitef reboot
+unset STUB_NOSLEEP
+
+# ---- pty-commit stop_commit (row 13; §13.2, §15): commits only the held trial of V on TGT in a boot after b0, through
+# commit_guarded, read back; every other outcome a FAIL line + NEEDS-PERSON in $DV_DIR/needs-person.txt
+pc=$(xf scripts/dv/pty-commit-254.sh '^stop_person\(\)\{'; xf scripts/dv/pty-commit-254.sh '^stop_commit\(\)\{')
+pcst=$(sed -n "s/^ST='\(.*\)'$/\1/p" "$ROOT/scripts/dv/pty-commit-254.sh")
+if [ -n "$pc" ] && type commit_guarded >/dev/null 2>&1; then
+	eval "$pc"; mkdir -p "$T/dv"
+	# the state line the node gives (in order: STS1, then STS2 after a commit); the guard command runs on the stub node
+	q(){ if [ "$*" = "$ST" ]; then if [ -e "$T/st2" ]; then printf '%s\n' "$STS2"; else : > "$T/st2"; printf '%s\n' "$STS1"; fi; else nsh "$*"; fi; }
+	say(){ :; }
+	pcrun(){ rm -f "$T/st2" "$T/dv/needs-person.txt"; node "$1" B "$2" 0; ( DV_DIR=$T/dv; NODE=10.0.0.9; V=9.9; TGT=B; b0=c5faffaa-0000-4000-8000-000000000000; ST=x; stop_commit ); }
+	held="slot=B ver=9.9 trial_rc=0 dt_try=00000001 held=1 badslot=[] up=200 boot=1201bf8a"
+	np(){ grep -q '^NEEDS-PERSON pty-commit-254 (10.0.0.9): ' "$T/dv/needs-person.txt" 2>/dev/null; }
+	STS1=$held STS2="slot=B ver=9.9 trial_rc=1 dt_try=00000000 held=0 badslot=[] up=210 boot=1201bf8a"
+	o=$(pcrun 1201bf8a 0); r=$?; [ $r = 0 ] && committed_log && ! np && ok "pty-commit stop: the held trial of V on TGT, landing boot -> commit_guarded SENT, read back, no NEEDS-PERSON" || no "pty-commit stop commit: rc=$r [$o] $(tr '\n' ' ' < "$T/log")"
+	o=$(pcrun aaaaaaaa 0); r=$?; [ $r != 0 ] && ! committed_log && np && grep -q 'FAIL pty-commit: trial not committed (WRONG-STATE)' <<< "$o" && ok "pty-commit stop: the boot changed after the read -> WRONG-STATE: FAIL + NEEDS-PERSON, no commit" || no "pty-commit WRONG-STATE: rc=$r [$o]"
+	STS1=""; o=$(pcrun 1201bf8a 0); r=$?; [ $r != 0 ] && ! committed_log && np && grep -q 'node unreachable' <<< "$o" && ok "pty-commit stop: node unreachable (the settle-failed path) -> FAIL + NEEDS-PERSON" || no "pty-commit unreachable: rc=$r [$o]"
+	STS1="slot=A ver=9.9 trial_rc=1 dt_try=00000000 held=0 badslot=[slot=B version=9.9] up=50 boot=99999999"; o=$(pcrun 99999999 1); r=$?; [ $r != 0 ] && ! committed_log && np && ok "pty-commit stop: already reverted (bad-slot) -> FAIL + NEEDS-PERSON" || no "pty-commit reverted: rc=$r [$o]"
+	STS1="slot=A ver=9.9 trial_rc=0 dt_try=00000001 held=1 badslot=[] up=50 boot=1201bf8a"; o=$(pcrun 1201bf8a 0); r=$?; [ $r != 0 ] && ! committed_log && np && ok "pty-commit stop: a trial on the other slot (not TGT) -> no commit, NEEDS-PERSON" || no "pty-commit wrong slot: rc=$r [$o]"
+	STS1="slot=B ver=9.9 trial_rc=0 dt_try=00000001 held=0 badslot=[] up=50 boot=1201bf8a"; o=$(pcrun 1201bf8a 0); r=$?; [ $r != 0 ] && ! committed_log && np && ok "pty-commit stop: not held -> no commit, NEEDS-PERSON" || no "pty-commit not held: rc=$r [$o]"
+	STS1="slot=B ver=9.8 trial_rc=0 dt_try=00000001 held=1 badslot=[] up=50 boot=1201bf8a"; o=$(pcrun 1201bf8a 0); r=$?; [ $r != 0 ] && ! committed_log && np && ok "pty-commit stop: another version -> no commit, NEEDS-PERSON" || no "pty-commit other version: rc=$r [$o]"
+	STS1="slot=B ver=9.9 trial_rc=0 dt_try=00000001 held=1 badslot=[] up=50 boot=c5faffaa"; o=$(pcrun c5faffaa 0); r=$?; [ $r != 0 ] && ! committed_log && np && ok "pty-commit stop: the boot before the OTA (b0) -> no commit, NEEDS-PERSON" || no "pty-commit b0: rc=$r [$o]"
+	STS1=$held STS2=$held; o=$(pcrun 1201bf8a 0); r=$?; [ $r != 0 ] && np && grep -q 'no read-back' <<< "$o" && ok "pty-commit stop: SENT but not read back as committed -> FAIL + NEEDS-PERSON" || no "pty-commit no read-back: rc=$r [$o]"
+	STS1="slot=B ver=9.9 trial_rc=1 dt_try=00000000 held=0 badslot=[] up=50 boot=1201bf8a"; o=$(pcrun 1201bf8a 1); r=$?; [ $r = 0 ] && ! committed_log && ! np && ok "pty-commit stop: TGT already committed (a stop after step 3) -> nothing to do, no NEEDS-PERSON" || no "pty-commit already committed: rc=$r [$o]"
+	case "$pcst" in *' boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"') ok "pty-commit: its state line ends with boot= (what stop_commit binds to)";; *) no "pty-commit ST has no trailing boot=: [${pcst: -60}]";; esac
+	unset -f q say stop_commit stop_person pcrun np
+else no "pty-commit stop_commit / stop_person not found in $ROOT/scripts/dv/pty-commit-254.sh"; fi
+grep -q '^	DV_DIR=$DIR V=$v PAY=$DV_OTA_PAYLOAD PSH16=.* bash "$REPO/scripts/dv/pty-commit-254.sh"' "$ROOT/scripts/dv/claim-lock-254.sh" \
+	&& ok "claim-lock passes DV_DIR to pty-commit (its NEEDS-PERSON reaches needs-person.txt)" || no "claim-lock-254.sh does not pass DV_DIR=\$DIR to pty-commit-254.sh"
+
+# ---- reboot_and_wait (daily-validation.sh; §4.2 rows 24-31, §13.7, §15): the trigger runs only when the tryboot GET
+# answers and the flag reads 0, in the same ssh command; else a FAIL naming the case + needs-person.txt, no trigger.
+# fssh runs the command on the stub node (vcmailbox reads $T/flag; `reboot` logs plain-reboot); bootid changes after it
+raw=$(sed -n '/^reboot_and_wait() {/,/echo "rebooted: boot_id/p' "$ROOT/scripts/daily-validation.sh")
+if [ -n "$raw" ]; then
+	eval "${raw//\/proc\/device-tree\/compatible/$T/compatible}"
+	DIR=$T/rw; mkdir -p "$DIR"
+	fssh(){ nsh "$3"; }; bootid(){ if reb; then echo b-after; else echo b-before; fi; }; dwait(){ return 0; }
+	rw(){ rm -f "$DIR/needs-person.txt"; node 1201bf8a A 1 0; ( sleep(){ :; }; reboot_and_wait 10.0.0.9 "${1:-reboot}" 240 ); }
+	rwnp(){ grep -q "^NEEDS-PERSON reboot_and_wait (10.0.0.9): tryboot flag $1" "$DIR/needs-person.txt" 2>/dev/null; }
+	printf 'raspberrypi,4-model-b\0brcm,bcm2711\0' > "$T/compatible"
+	echo 1 > "$T/flag"; o=$(rw); r=$?; [ $r != 0 ] && ! reb && grep -q '^FAIL tryboot flag armed on 10.0.0.9 — not rebooting' <<< "$o" && rwnp armed && ok "reboot_and_wait: flag armed (0x00000001) -> FAIL 'armed', no trigger, needs-person.txt" || no "reboot_and_wait armed: rc=$r reb=$(reb && echo y) [$(echo $o | cut -c1-200)]"
+	echo 0 > "$T/flag"; o=$(STUB_W5=0x00000004; export STUB_W5; rw); r=$?; [ $r != 0 ] && ! reb && grep -q '^FAIL tryboot flag not answered (Pi 4) on' <<< "$o" && rwnp 'not answered (Pi 4)' && ok "reboot_and_wait: tag not answered on a Pi 4 -> FAIL 'not answered (Pi 4)', no trigger" || no "reboot_and_wait unanswered Pi 4: rc=$r [$(echo $o | cut -c1-200)]"
+	printf 'raspberrypi,3-model-b\0brcm,bcm2837\0' > "$T/compatible"
+	o=$(STUB_W5=0x00000004; export STUB_W5; rw); r=$?; [ $r != 0 ] && ! reb && grep -q '^FAIL tryboot flag not answered (Pi 3 firmware) on' <<< "$o" && ok "reboot_and_wait: tag not answered on a Pi 3 -> FAIL 'not answered (Pi 3 firmware)', no trigger" || no "reboot_and_wait unanswered Pi 3: rc=$r [$(echo $o | cut -c1-200)]"
+	printf 'raspberrypi,4-model-b\0brcm,bcm2711\0' > "$T/compatible"
+	o=$(STUB_RESP=0x80000001; export STUB_RESP; rw); r=$?; [ $r != 0 ] && ! reb && grep -q '^FAIL tryboot flag not answered' <<< "$o" && ok "reboot_and_wait: an error response with value 0 -> not 'clear', no trigger" || no "reboot_and_wait error response: rc=$r [$(echo $o | cut -c1-200)]"
+	o=$(rw); r=$?; [ $r = 0 ] && reb && grep -q '^rebooted: boot_id b-before -> b-after' <<< "$o" && ! [ -e "$DIR/needs-person.txt" ] && ok "reboot_and_wait: flag clear (0x00000000, compared numerically) -> the trigger runs, rebooted" || no "reboot_and_wait clear: rc=$r [$(echo $o | cut -c1-200)] $(tr '\n' ' ' < "$T/log")"
+	o=$(rw 'sync; echo c > /dev/null; echo trigger-said-hello'); r=$?; [ $r != 0 ] && grep -q 'trigger: trigger-said-hello' <<< "$o" && grep -q '^FAIL reboot did not happen' <<< "$o" && ! grep -q 'tryboot flag' <<< "$o" && ok "reboot_and_wait: the trigger's output is printed; a trigger that does not reboot is not blamed on the flag" || no "reboot_and_wait trigger output: rc=$r [$(echo $o | cut -c1-240)]"
+	echo 1 > "$T/flag"; o=$(DV_TEST_NOREBOOT=1; rw); r=$?; [ $r != 0 ] && ! reb && ! grep -q '^disarm\|tryboot' "$T/log" && grep -q '^FAIL reboot did not happen' <<< "$o" && ok "reboot_and_wait: DV_TEST_NOREBOOT=1 replaces the whole command (no GET, no trigger) -> 'reboot did not happen'" || no "reboot_and_wait NOREBOOT: rc=$r [$(echo $o | cut -c1-200)]"; echo 0 > "$T/flag"
+	if command -v busybox >/dev/null 2>&1; then
+		pcl=$(sed -n "s/^  local pc='\(.*\)'$/\1/p" "$ROOT/scripts/daily-validation.sh")
+		[ -n "$pcl" ] && busybox ash -n -c "$pcl; if [ \$a = 1 ] && [ \"\$f\" = 0 ]; then reboot; else echo x; fi" 2>/dev/null && ok "busybox ash parses the reboot_and_wait precheck" || no "busybox ash cannot parse the precheck [$pcl]"
+	fi
+	unset -f fssh bootid dwait rw rwnp reboot_and_wait
+else no "reboot_and_wait not found in $ROOT/scripts/daily-validation.sh"; fi
 unset -f fq
 
 # ---- find_base (fresh-254.sh): a restore finds the node on the base version V, or on VB when bench-s0 unclaimed put
@@ -258,42 +432,74 @@ STATE="$A badslot=[] up=1 boot=c5faffaa"; FIP=""; find04 "slot=A " c5faffaa && n
 STATE="$A badslot=[] up=1 boot=c5faffaa"; find04 "slot=A " faffaa && [ "$FIP" = 10.0.0.9 ] && ok "find04: a boot id that only ends the same is not excluded" || no "find04: suffix boot id excluded [$FIP]"
 unset -f ping timeout ssh sweep macips
 
-# ---- lints. Scope: the #254 harness (scripts/dv) and fault-injection.sh. ab-selftest.sh / negctl-old-slot-254.sh keep
-# their own rollback paths (checklist on #254). A missing scope is a FAIL, never a clean lint.
-LS=("$ROOT/scripts/dv" "$ROOT/scripts/fault-injection.sh")
-for p in "${LS[@]}"; do [ -e "$p" ] || no "lint: scope $p missing"; done
-nf=$(find "${LS[@]}" -name '*.sh' 2>/dev/null | wc -l); [ "$nf" -ge 10 ] && ok "lint: $nf files in scope" || no "lint: only $nf files in scope"
-rel(){ sed "s#^$ROOT/##"; }
-nocomment(){ grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; }
-# (1) any `batman-slot rollback` (any quoting, any position) outside the guard and this test, minus the allowlist
+# ---- lints (#254 v1.6 group 4 §4.3, §13.8, §15). Scope: scripts/dv, scripts/node, fault-injection.sh, ab-selftest.sh,
+# negctl-old-slot-254.sh, daily-validation.sh; *.sh only; not test-*.sh, slot-guard-254.sh (the guard) nor
+# gen-slot-sites.sh (the inventory's generator). A missing or empty scope is a FAIL, never a clean lint.
+# Every line a lint names is also printed as "NAMED <lint> <file><TAB><text>" (text trimmed, tabs as \t): the negative
+# control (test-slot-lint-negctl-254.sh) compares those with scripts/dv/data/slot-sites-converted.txt, which this test
+# does not read. The allowlists below and the inventory are this checkout's ($H); the scanned tree is ROOT.
+LS=(scripts/dv scripts/node scripts/fault-injection.sh scripts/ab-selftest.sh scripts/negctl-old-slot-254.sh scripts/daily-validation.sh)
+for p in "${LS[@]}"; do [ -e "$ROOT/$p" ] || no "lint: scope $p missing"; done
+LF=$(cd "$ROOT" && find "${LS[@]}" -name '*.sh' ! -name 'test-*.sh' ! -name slot-guard-254.sh ! -name gen-slot-sites.sh -type f 2>/dev/null | LC_ALL=C sort)
+nf=$(grep -c . <<< "$LF"); [ "$nf" -ge 50 ] && ok "lint: $nf files in scope" || no "lint: only $nf files in scope"
+named(){ printf 'NAMED %s %s\t%s\n' "$1" "$2" "$3"; }
+# hits <ERE>: "<file><TAB><trimmed text>" for every non-comment line of the scope that matches (tabs in it as \t)
+hits(){ (cd "$ROOT" && while IFS= read -r f; do
+	grep -E "$1" "$f" | grep -vE '^[[:space:]]*#' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/\t/\\t/g' | awk -v f="$f" '{ print f "\t" $0 }'
+done <<< "$LF"); }
+# (1) every command that rolls back, commits, reboots through batman-slot or releases a trial, sent outside the guard:
+# allowlisted with a reason (file | text that must be in the line | reason; the text may contain "|"), or a FAIL. Every
+# entry must still match a line (a stale entry FAILs).
+L1RE=$(cat <<'RE'
+(batman-slot["']?|"\$BS")[[:space:]]+["']?(rollback|commit|reboot)|batman-autocommit[[:space:]]+["']?release
+RE
+)
 ALLOW="$T/allow"; cat > "$ALLOW" <<'AL'
-scripts/dv/chain1-254.sh|batman-slot rollback >> |the dead-man's own node script: slot B only, one-shot, marker + cancel check first
+scripts/dv/chain1-254.sh|batman-slot rollback >> |the dead-man's own node script: slot B only, one-shot, marker + cancel check first, disarm + flag 0 required before it
+scripts/dv/chain1-254.sh|batman-slot reboot committed ch1-deadman >> |the same dead-man script, after its disarm check (group 4 §4.2 row 35)
 scripts/dv/prov-bench-s0-254.sh|RESULT="FAIL ($fails) — $NN is on A committed|text for a person (RESULT line)
 scripts/dv/prov-wbox-nocommit-254.sh|pr_needs_person "wbox slot B committed|text for a person (NEEDS-PERSON line)
 scripts/dv/prov-254.sh|pr_needs_person "the $tgt slot was committed|text for a person (NEEDS-PERSON line)
 scripts/fault-injection.sh|echo "    NOTE: R1 broke runc|text for a person (NOTE line)
 scripts/fault-injection.sh|HELDWHY="held for operator acceptance (batman-autocommit release)"|the product's log text the R-tests match
-scripts/dv/pty-commit-254.sh|'batman-slot commit' < <(sleep 90)|the command under test (#305: a commit from a PTY)
+scripts/dv/pty-commit-254.sh|'batman-slot commit' < <(sleep 90)|the command under test (#305: a commit from a PTY; group 4 row 14)
 scripts/dv/pty-commit-254.sh|say "sleep 90 | ssh -tt root@$NODE batman-slot commit"|text (the step printed)
-scripts/dv/pty-commit-254.sh|batman-slot is-trial >/dev/null 2>&1 && batman-slot commit|the unit's own landed trial, ended (checklist #254: bind to its boot)
-scripts/fault-injection.sh|n 'batman-slot commit' 2>&1|the command under test (C2: a manual commit after a crash in the trial)
 scripts/fault-injection.sh|c2(){ echo "== C2 trial-crash-274: a manual 'batman-slot commit'|text (the test's title)
+scripts/ab-selftest.sh|sshn 'batman-slot rollback' >/dev/null|the A/B self-test owns its node and its tryboot (group 4 row 16)
+scripts/negctl-old-slot-254.sh|then v=\$(sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build)|one-off PR evidence tool, slot checked node-side in the same command (group 4 row 17)
+scripts/negctl-old-slot-254.sh|say "FAIL batman-slot rollback refused on B|text for a person
+scripts/daily-validation.sh|suite pty-commit-254 "\`ssh -tt node batman-slot commit\`|text (suite description)
+scripts/daily-validation.sh|c2) echo "trial-crash-274: a manual batman-slot commit|text (suite description)
+scripts/node/prov-rbarm-254.sh|o=$("$BS" rollback 2>&1); rc=$?|the command under test: the rollback must be refused (group 4 row 39)
+scripts/node/prov-rbarm-254.sh|do "$R/usr/sbin/batman-slot" commit >/dev/null 2>&1 && break|recovery on the running committed slot, same process, no reboot (row 40)
+scripts/node/prov-rbarm-254.sh|r "FAIL-NEEDS-PERSON rc=$rc|text for a person
+scripts/node/prov-rbfix-254.sh|do "$R/usr/sbin/batman-slot" commit >/dev/null 2>&1 && break|boot-bound on the node (row 41)
+scripts/node/prov-p9-254.sh|on the release slot run: batman-slot commit"|text for a person
+scripts/node/ble-central-254.sh|dm_disarmed || { dm_log "$1" "$DM_NOCLEAR"; mark_set dm-refused "$1"; echo "RECOVER-REFUSED $DM_NOCLEAR"; exit 3; }; rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"; batman-slot reboot committed ble-dm-254; exit 0|role deadman: the disarm check first on the line, exit 3 before any rm (group 4 §15; pinned in lint 2)
+scripts/node/ble-periph-254.sh|dm_disarmed || { dm_log "$1" "$DM_NOCLEAR"; mark_set dm-refused "$1"; echo "RECOVER-REFUSED $DM_NOCLEAR"; exit 3; }; rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"; batman-slot reboot committed ble-dm-254; exit 0|role deadman (as ble-central)
+scripts/node/bt-uart-305.sh|dm_disarmed || { dm_log "$1" "$DM_NOCLEAR"; mark_set dm-refused "$1"; echo "RECOVER-REFUSED $DM_NOCLEAR"; exit 3; }; rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"; batman-slot reboot committed bt305-dm; exit 0|role deadman (as ble-central)
 AL
-# the slot-changing commands sent from the host: a rollback, a release and a commit (both commit the running trial)
-raw=$(grep -rnE "batman-slot[[:space:]]+[\"']?(rollback|commit)|batman-autocommit[[:space:]]+[\"']?release" "${LS[@]}" --include='*.sh' | rel | nocomment | grep -vE '^scripts/dv/(slot-guard-254|test-slot-guard-254)\.sh:' || true)
+raw=$(hits "$L1RE")
+[ -n "$raw" ] || no "lint (1): no slot command found in scope at all (the scan is broken)"
 left=$raw
-while IFS='|' read -r f txt why; do
-	n=$(printf '%s\n' "$raw" | awk -v f="$f:" -v t="$txt" 'index($0, f) == 1 && index($0, t) > 0' | grep -c .)
-	[ "$n" -ge 1 ] || no "lint: allowlist entry no longer found: $f [$txt] ($why)"
+while IFS= read -r line; do
+	[ -n "$line" ] || continue
+	f=${line%%|*}; rest=${line#*|}; why=${rest##*|}; txt=${rest%|*}
+	n=$(printf '%s\n' "$raw" | F=$f TX=$txt awk 'BEGIN { FS = "\t" } $1 == ENVIRON["F"] && index($0, ENVIRON["TX"]) > 0' | grep -c .)
+	[ "$n" -ge 1 ] || { no "lint (1): allowlist entry no longer found: $f [$txt] ($why)"; named 1 "$f" "$txt"; }
 	# per file: an allowlisted text hides nothing in another file (round 6 A-MINOR-1 / B-MINOR-1)
-	left=$(printf '%s\n' "$left" | awk -v f="$f:" -v t="$txt" '!(index($0, f) == 1 && index($0, t) > 0)')
+	left=$(printf '%s\n' "$left" | F=$f TX=$txt awk 'BEGIN { FS = "\t" } !($1 == ENVIRON["F"] && index($0, ENVIRON["TX"]) > 0)')
 done < "$ALLOW"
 left=$(printf '%s\n' "$left" | grep . || true)
-[ -z "$left" ] && ok "lint: every host-sent 'batman-slot rollback' / 'batman-autocommit release' in scope is the guard or allowlisted ($(printf '%s\n' "$raw" | grep -c .) allowlisted lines)" || no "lint: unguarded rollback / release: $(echo "$left" | cut -d: -f1-2 | tr '\n' ' ')"
-# (2) every guarded call site, arguments pinned (a changed slot / trial / condition is a deliberate edit of this table).
-# Any use of a guard word counts, quoted or not (round 6 A-MINOR-1: `rb_guarded $b A 1 x` was not pinned).
+if [ -z "$left" ]; then ok "lint (1): every slot command in scope is the guard or allowlisted ($(grep -c . <<< "$raw") allowlisted lines)"
+else no "lint (1): slot command outside the guard: $(cut -c1-160 <<< "$left" | tr '\t\n' ': ')"; while IFS=$'\t' read -r f t; do named 1 "$f" "$t"; done <<< "$left"; fi
+# (2) every guarded call site, arguments pinned (a changed slot / trial / condition / pre-action is a deliberate edit of
+# this table). Any use of a guard word counts, quoted or not (round 6 A-MINOR-1: `rb_guarded $b A 1 x` was not pinned).
 cat > "$T/sites.want" <<'SITES'
+scripts/dv/addr-defer-reconcile-254.sh:reboot_guarded "${b0:0:8}" "$sl" 1 adr-254
+scripts/dv/ble-254.sh:reboot_guarded "${b0:0:8}" "$sl" 1 ble-254
 scripts/dv/brewrite-254.sh:rb_guarded "${b0:0:8}" B any e3-254
+scripts/dv/bt-uart-305.sh:reboot_guarded "${b0:0:8}" "$sl" 1 "$2"
 scripts/dv/chain1-254.sh:rb_guarded "$BA" A 0 ch1-b
 scripts/dv/chain1-254.sh:rb_guarded "$BA" A 0 ch1-b
 scripts/dv/chain1-254.sh:release_guarded "$BT" B
@@ -301,6 +507,8 @@ scripts/dv/fresh-254.sh:rb_guarded "$b" B 1 ch1-restore "[ ! -e $BASE/ch1.fired 
 scripts/dv/fresh-254.sh:reboot_guarded "$b" "$sl" 0 ch1-restore
 scripts/dv/fresh-254.sh:reboot_guarded "$b" A 1 ch1-restore
 scripts/dv/prov-254.sh:rb_guarded "$b0" B any prov-dv-254
+scripts/dv/prov-254.sh:reboot_guarded "$b0" A 1 prov-dv-254
+scripts/dv/prov-254.sh:reboot_guarded "$b0" A 1 prov-dv-254
 scripts/dv/prov-254.sh:release_guarded "$rb0" A
 scripts/dv/prov-ac-fleetchan-254.sh:rb_guarded "$b0" B any prov-dv-254
 scripts/dv/prov-bench-s0-254.sh:rb_guarded "$BA" A 1 s0-slota
@@ -311,20 +519,80 @@ scripts/dv/prov-bench-s0-254.sh:release_guarded "$BT" B
 scripts/dv/prov-chain0-254.sh:rb_guarded "$b0" B any prov-dv-254
 scripts/dv/prov-chain0-254.sh:reboot_guarded "$b0" B any prov-dv-254
 scripts/dv/prov-legacy-upgrade-254.sh:release_guarded "$rb0" "$1" nowait
+scripts/dv/prov-leave-ota-254.sh:reboot_guarded "$b0" A 1 prov-dv-254
+scripts/dv/prov-lib-254.sh:reboot_guarded "${b0:0:8}" "$sl" 1 "$PL_NAME"
+scripts/dv/prov-misc-254.sh:reboot_guarded "$b0" A 1 prov-dv-254
+scripts/dv/prov-overlay-corrupt-254.sh:reboot_guarded "$b0" A 1 prov-dv-254
+scripts/dv/prov-overlay-wipe-254.sh:reboot_guarded "$b0" A 1 prov-dv-254 - 'firstboot -y'
 scripts/dv/prov-wbox-nocommit-254.sh:rb_guarded "$b0" B any prov-dv-254
+scripts/dv/pty-commit-254.sh:commit_guarded "$b" "$TGT"
+scripts/fault-injection.sh:commit_guarded "${b0:0:8}" "$tr"
+scripts/fault-injection.sh:reboot_guarded "${b2:0:8}" "$3" 1 p5-ap-placeholder
+scripts/fault-injection.sh:reboot_guarded "${b2:0:8}" "$s" 0 p5-ap-restore
+scripts/fault-injection.sh:reboot_guarded "${b:0:8}" "$sl" 1 fi-f1
 scripts/fault-injection.sh:release_guarded "${HB:0:8}" "$tr"
 scripts/fault-injection.sh:release_guarded "${HB:0:8}" "$tr" nowait
 scripts/fault-injection.sh:release_guarded "${HB:0:8}" "$tr" nowait
 scripts/fault-injection.sh:rb_guarded "${b1:0:8}" B 1 p5-back-to-A
 SITES
-grep -rnE '((rb|reboot|release)_guarded|_sg_cmd)[[:space:]]' "${LS[@]}" --include='*.sh' | rel | nocomment | grep -vE '^scripts/dv/(slot-guard-254|test-slot-guard-254)\.sh:' \
-	| while IFS= read -r l; do f=${l%%:*}; c=${l#*:*:}; printf '%s\n' "$c" | grep -oE '((rb|reboot|release)_guarded|_sg_cmd)[[:space:]]+[^)]*' | sed -E 's/[[:space:]]+$//; s#^#'"$f"':#'; done | sort > "$T/sites.got"
-sort -o "$T/sites.want" "$T/sites.want"
+GW='((rb|reboot|release|commit)_guarded|_sg_cmd)'
+hits "${GW}[[:space:]]" | while IFS=$'\t' read -r f c; do printf '%s\n' "$c" | grep -oE "${GW}[[:space:]]+[^)]*" | sed -E 's/[[:space:]]+$//; s#^#'"$f"':#'; done | LC_ALL=C sort > "$T/sites.got"
+LC_ALL=C sort -o "$T/sites.want" "$T/sites.want"
 d=$(diff "$T/sites.want" "$T/sites.got")
-[ -z "$d" ] && ok "lint: $(wc -l < "$T/sites.got") guarded call sites, arguments as pinned" || no "lint: guarded call sites differ (< pinned, > found): $(echo "$d" | grep '^[<>]' | tr '\n' ' ')"
-# (3) the field boundary: no *"slot=A / *slot=B (quoted or not), no "mac=$MAC "*"slot=
-ua=$(grep -rnE '\*"?slot=[AB]|"mac=\$MAC "\*"slot=' "${LS[@]}" --include='*.sh' | rel | grep -v '^scripts/dv/test-slot-guard-254.sh:' || true)
-[ -z "$ua" ] && ok "lint: no unanchored slot pattern" || no "lint: unanchored slot patterns: $(echo "$ua" | cut -d: -f1-2 | tr '\n' ' ')"
+if [ -z "$d" ]; then ok "lint (2): $(wc -l < "$T/sites.got") guarded call sites, arguments as pinned"
+else no "lint (2): guarded call sites differ (< pinned, > found): $(echo "$d" | grep '^[<>]' | tr '\n' ' ')"
+	echo "$d" | sed -n 's/^[<>] //p' | while IFS= read -r l; do named 2 "${l%%:*}" "${l#*:}"; done; fi
+# (2b) pinned lines, exact text and count: the reboot_and_wait precheck (§13.7) and the role deadmen's line (§15: the
+# disarm check first, dm_log to p6, the dm-refused marker, exit 3, then the lease goes, then the reboot)
+cat > "$T/lines.want" <<'LINES'
+scripts/daily-validation.sh|1|local pc='r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null); set -- $r; a=0; f=unread; if [ "${2:-}" = 0x80000000 ] && [ "${5:-}" = 0x80000004 ]; then case "${6:-}" in 0x[0-9a-fA-F]*) a=1; f=$(( $6 )) ;; esac; fi; soc=$(tr "\0" " " < /proc/device-tree/compatible 2>/dev/null)'
+scripts/daily-validation.sh|1|local full="$pc; if [ \$a = 1 ] && [ \"\$f\" = 0 ]; then $cmd; else echo \"TRYBOOT-NOT-CLEAR answered=\$a flag=\$f soc=\$soc\"; fi"
+scripts/node/ble-central-254.sh|1|dm_disarmed || { dm_log "$1" "$DM_NOCLEAR"; mark_set dm-refused "$1"; echo "RECOVER-REFUSED $DM_NOCLEAR"; exit 3; }; rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"; batman-slot reboot committed ble-dm-254; exit 0
+scripts/node/ble-periph-254.sh|1|dm_disarmed || { dm_log "$1" "$DM_NOCLEAR"; mark_set dm-refused "$1"; echo "RECOVER-REFUSED $DM_NOCLEAR"; exit 3; }; rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"; batman-slot reboot committed ble-dm-254; exit 0
+scripts/node/bt-uart-305.sh|1|dm_disarmed || { dm_log "$1" "$DM_NOCLEAR"; mark_set dm-refused "$1"; echo "RECOVER-REFUSED $DM_NOCLEAR"; exit 3; }; rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"; batman-slot reboot committed bt305-dm; exit 0
+LINES
+pl=0
+while IFS= read -r line; do
+	f=${line%%|*}; rest=${line#*|}; c=${rest%%|*}; txt=${rest#*|}
+	n=$( (cd "$ROOT" && [ -f "$f" ] && sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' "$f") | grep -cxF -- "$txt")
+	if [ "$n" = "$c" ]; then pl=$((pl + 1)); else no "lint (2b): $f: pinned line found $n times, want $c: [${txt:0:100}…]"; named 2 "$f" "$txt"; fi
+done < "$T/lines.want"
+[ "$pl" = "$(grep -c . "$T/lines.want")" ] && ok "lint (2b): $pl pinned lines (reboot_and_wait precheck, role deadmen) exact"
+grep -q 'TRYBOOT-NOT-CLEAR' <<< "$(sed -n '/^reboot_and_wait() {/,/echo "rebooted: boot_id/p' "$ROOT/scripts/daily-validation.sh")" \
+	&& ok "lint (2b): the precheck is inside reboot_and_wait" || { no "lint (2b): no precheck inside reboot_and_wait"; }
+# (3) plain reboots: every line in scope with `reboot` as a word or `sysrq-trigger` (minus comment lines) is a row of the
+# inventory scripts/dv/data/slot-sites.tsv: same file, the EXACT trimmed text, the EXACT count, and a group
+# (allowlisted:<reason> | prechecked | text). A hit with no row, a row with no hit, a count that differs, an unknown
+# group or an empty inventory / scan FAILs. The guard words (reboot_guarded …) do not hit `\breboot\b`.
+INV=$H/scripts/dv/data/slot-sites.tsv
+L3RE='\breboot\b|sysrq-trigger'
+if [ ! -s "$INV" ] || [ "$(grep -vc '^#' "$INV")" = 0 ]; then no "lint (3): inventory $INV missing or empty"
+else
+	bad=$(awk -F'\t' '!/^#/ { if (NF != 4 || $2 !~ /^[1-9][0-9]*$/ || $4 == "") print "malformed: " $0
+		else if ($3 != "text" && $3 != "prechecked" && $3 !~ /^allowlisted:./) print "group: " $0
+		else if ($3 == "prechecked" && !($1 == "scripts/daily-validation.sh" && (index($4, "reboot_and_wait ") || index($4, "cmd=${2:-reboot}")))) print "prechecked is only reboot_and_wait: " $0
+		else if (seen[$1 FS $4]++) print "duplicate: " $0 }' "$INV")
+	[ -z "$bad" ] && ok "lint (3): inventory well-formed ($(grep -vc '^#' "$INV") rows)" || no "lint (3): inventory rows: $(head -5 <<< "$bad" | cut -c1-160 | tr '\n' '|')"
+	h3=$(hits "$L3RE" | LC_ALL=C sort | uniq -c | sed -E 's/^ *([0-9]+) /\1\t/')
+	nh=$(awk -F'\t' '{ s += $1 } END { print s + 0 }' <<< "$h3")
+	[ "$nh" -gt 0 ] || no "lint (3): zero reboot hits in scope (the scan is broken)"
+	# <kind> TAB <file> TAB <text> TAB <detail>: unlisted (a hit with no row), count, norow (a row with no hit)
+	diffs=$(awk -F'\t' 'FNR == NR { if (!/^#/) { k = $1 FS $4; cnt[k] = $2; grp[k] = $3 }; next }
+		{ k = $2 FS $3; seen[k] = 1
+		  if (!(k in cnt)) print "unlisted\t" $2 "\t" $3 "\thit " $1 "x, no row"
+		  else if (cnt[k] != $1) print "count\t" $2 "\t" $3 "\thit " $1 "x, row says " cnt[k] }
+		END { for (k in cnt) if (!(k in seen)) { split(k, a, FS); print (grp[k] == "text" ? "norow-text" : "norow") "\t" a[1] "\t" a[2] "\trow (" grp[k] ") with no hit" } }' "$INV" <(printf '%s\n' "$h3"))
+	if [ -z "$diffs" ]; then ok "lint (3): $nh reboot / sysrq hits in scope, every one an inventory row (exact text and count)"
+	else
+		no "lint (3): $(grep -c . <<< "$diffs") inventory differences: $(cut -f1,2,4 <<< "$diffs" | head -8 | tr '\t\n' ' |')"
+		while IFS=$'\t' read -r k f t dd; do case "$k" in norow-text) named 3t "$f" "$t" ;; *) named 3 "$f" "$t" ;; esac; done <<< "$diffs"
+	fi
+fi
+# (4) the field boundary: no *"slot=A / *slot=B (quoted or not), no "mac=$MAC "*"slot=. Its scope stays scripts/dv and
+# fault-injection.sh, as before group 4 (negctl-old-slot-254.sh, a one-off tool outside daily-validation, has unanchored
+# patterns and is not in it)
+ua=$(hits '\*"?slot=[AB]|"mac=\$MAC "\*"slot=' | grep -E $'^(scripts/dv/|scripts/fault-injection\\.sh\t)')
+[ -z "$ua" ] && ok "lint (4): no unanchored slot pattern" || no "lint (4): unanchored slot patterns: $(cut -c1-120 <<< "$ua" | tr '\t\n' ': ')"
 
 echo "================ test-slot-guard: $pass passed, $fail failed ================"
 [ "$fail" = 0 ]

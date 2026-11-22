@@ -20,7 +20,7 @@ FORGOT=${FORGOT//@@KEYH@@/"$KEYH"}   # quoted: bash 5.2 patsub_replacement would
 MARK='echo "exp=$([ -e /opt/batdata/state/mesh-expected ] && echo 1 || echo 0) joined=$([ -e /opt/batdata/state/mesh-joined ] && echo 1 || echo 0)"'
 # half <negative 0|1>: join, leave, markers, reboot, OTA V, trial judgement, back to A
 half(){
-	local neg=$1 r i m s b0 want t
+	local neg=$1 r i m s b0 want t o
 	pr_keys && pr_pc_place && pr_claim || return 1
 	r=$(pr_pc owner.pem FD3="$FD3" -- net-apply --first "$OWNER"); grep -q "RESULT net.apply code=0 " <<< "$r" || { no "join: $r"; return 1; }
 	i=$(pr_info); case " $i " in *" state=member "*) ;; *) no "not member after the join: $i"; return 1 ;; esac
@@ -36,7 +36,7 @@ half(){
 		c=$(qr 'batman-config-save --check >/dev/null 2>&1; echo rc=$?'); [ "$c" = rc=0 ] && ok "after leave: --check rc 0 (p5 holds the placeholder)" || no "after leave: --check $c"
 	else [ "$m" = "exp=1 joined=1" ] && ok "negative control: helper-noleave leaves the markers ($m)" || { no "negative control: the markers went anyway ($m) — the mutant had no effect"; return 1; }; fi
 	s=$(qr "$ST"); b0=$(field "$s" boot)
-	q "(batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &)"
+	o=$(q "$(reboot_guarded "$b0" A 1 prov-dv-254)"); [ "$o" = SENT ] || { no "leave: reboot refused [${o:-no answer}]"; return 1; }
 	pr_find 900 "$b0" || return 1
 	pr_ota_b "$PR_V" B || return 1
 	want="mesh join required: 0 (prov=claimed mesh_expect=0"; [ "$neg" = 1 ] && want="mesh join required: 1 "

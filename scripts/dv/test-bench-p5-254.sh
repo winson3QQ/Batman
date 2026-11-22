@@ -37,21 +37,27 @@ q(){ echo "q $*" >> "$T/calls"
 		*'wireless.default_radio0.key'*) if [ -e "$T/rebooted" ]; then echo "$POSTKEY"; else echo "$KEY"; fi ;;
 		*'batman-config-save --check'*) if [ -e "$T/rebooted" ]; then echo "batman-config-save: p5 fresh"; echo "ifs=2 apif=0 radio0=false"; else echo "$P5CHK"; fi ;;
 	esac; }
-n(){ echo "n $*" >> "$T/calls"; touch "$T/rebooted"; }
+# n: the reboots are guarded (#254 v1.6 group 4 §4.2 rows 11, 12): the node's answer is NANS (default SENT); only a
+# SENT reboots (out of the trial: trialback; the placeholder reboot: rebooted). The command is logged and checked below
+n(){ echo "n $*" >> "$T/calls"; echo "${NANS:-SENT}"; [ "${NANS:-SENT}" = SENT ] || return 0
+	case "$*" in *p5-ap-restore*) touch "$T/trialback" ;; *) touch "$T/rebooted" ;; esac; return 0; }
 ssh(){ echo "ssh-write" >> "$T/calls"; cat >/dev/null; echo "$WRITE"; }
 # p5_ap_back writes with `timeout 240 ssh ...`: timeout(1) would exec the real ssh, not the stub above (a first draft
 # of this test "passed" its refused / negative cases on a real ssh error) -> run the stub; no real ssh may be reached
 timeout(){ shift; "$@"; }
 command -v ssh >/dev/null 2>&1 && [ "$(type -t ssh)" = function ] || { echo "FAIL the ssh stub is not in place"; exit 1; }
 slot(){ echo "$SLOT"; }
-committed(){ return "$IT"; }
-bootid(){ echo b1; }
+committed(){ [ -e "$T/trialback" ] && return 0; return "$IT"; }   # a trial (IT=1) is committed after its reboot
+bootid(){ echo 1201bf8a-0000-4000-8000-000000000000; }
 waitboot(){ return 0; }
 settle(){ return 0; }
 ok(){ echo "PASS $*"; }; no(){ echo "FAIL $*"; }
 # DV_DIR: the run dir the suite passes; needs-person.txt there is what blocks the run's later D suites
 export DV_DIR=$T/dv; mkdir -p "$DV_DIR"
-run(){ rm -f "$T/calls" "$T/rebooted" "$DV_DIR/needs-person.txt"; touch "$T/calls"; p5_ap_back CHANGE-ME-NOW "$PH" A; }
+run(){ rm -f "$T/calls" "$T/rebooted" "$T/trialback" "$DV_DIR/needs-person.txt"; touch "$T/calls"; p5_ap_back CHANGE-ME-NOW "$PH" A; }
+# sent <reason> <slot> <trial>: a reboot_guarded command was sent with this reason, this boot (8 hex), slot and trial
+sent(){ local l; l=$(grep '^n ' "$T/calls" | grep -F "batman-slot reboot committed $1 ")
+	[ -n "$l" ] && grep -qF "= '1201bf8a' ]" <<< "$l" && grep -qF "\"\$a\" = '$2' ]" <<< "$l" && grep -qF "[ '$3' = any ]" <<< "$l"; }
 np(){ grep -q '^NEEDS-PERSON reflash-survives-config-202' "$DV_DIR/needs-person.txt" 2>/dev/null; }
 base(){ SUP=0 SLOT=A IT=0 STAT="ap   default_radio0   ssid=x key=set disabled=0" KEY=fi202-abc POSTSTAT="ap   default_radio0   ssid=x key=PLACEHOLDER disabled=1" POSTKEY=CHANGE-ME-NOW
 	WRITE=$'pre_ifs=2 pre_apif=1 pre_ssid=0 pre_hostapd=0\nsave_rc=0' P5CHK="batman-config-save: p5 fresh"; }
@@ -62,6 +68,10 @@ base; STAT="ap   default_radio0   ssid=x key=PLACEHOLDER disabled=1" KEY=CHANGE-
 base; STAT="ap   default_radio0   ssid=x key=PLACEHOLDER disabled=1" KEY=CHANGE-ME-NOW P5CHK="batman-config-save: p5 STALE"; o=$(run); ! grep -q 'nothing written' <<< "$o" && ! nw && tok "p5_ap_back: live at baseline but p5 stale -> written (the test key in p5 would come back)" || tbad "stale p5 no-op: $o"
 base; WRITE="REFUSED setkey lock busy"; o=$(run); grep -q 'FAIL.*not rebooting' <<< "$o" && nr && np && tok "p5_ap_back: write refused -> FAIL, no reboot" || tbad "refused write: $o"
 base; o=$(run); [ "$(grep -c '^PASS' <<< "$o")" = 2 ] && ! grep -q '^FAIL' <<< "$o" && ! nr && ! np && tok "p5_ap_back: write + AP gone before the reboot + baseline after -> 2 PASS, rebooted once" || tbad "positive: $o"
+sent p5-ap-placeholder A 1 && ! grep -q 'sleep 2' "$T/calls" && tok "p5_ap_back: the placeholder reboot is reboot_guarded (this boot, slot A, committed, no sleep 2)" || tbad "placeholder reboot not guarded: $(grep '^n ' "$T/calls" | cut -c1-200)"
+base; NANS="WRONG-STATE boot=aaaaaaaa active=A trial=1 extra=-"; o=$(run); NANS=""; grep -q 'FAIL.*placeholder reboot was refused \[WRONG-STATE' <<< "$o" && nr && np && ! grep -q '^PASS P5 AP key back' <<< "$o" && tok "p5_ap_back: the guard refuses the placeholder reboot -> FAIL + needs-person.txt, no wait for a reboot" || tbad "placeholder refused: $o"
+base; IT=1; o=$(run); sent p5-ap-restore A 0 && sent p5-ap-placeholder A 1 && [ "$(grep -c '^PASS' <<< "$o")" = 2 ] && ! np && tok "p5_ap_back: a trial -> reboot_guarded out of it (this boot, slot A, trial 0), then the placeholder reboot" || tbad "trial: $o | $(grep '^n ' "$T/calls" | cut -c1-120)"
+base; IT=1; NANS="WRONG-STATE boot=1201bf8a active=A trial=1 extra=-"; o=$(run); NANS=""; grep -q 'FAIL.*reboot out of the trial was refused' <<< "$o" && nw && [ ! -e "$T/trialback" ] && np && tok "p5_ap_back: the guard refuses the reboot out of the trial -> FAIL + needs-person.txt, nothing written" || tbad "trial refused: $o"
 base; WRITE=$'pre_ifs=2 pre_apif=1 pre_ssid=1 pre_hostapd=1\nsave_rc=0'; o=$(run); grep -q 'FAIL.*AP is still up' <<< "$o" && tok "p5_ap_back negative control: AP still up after the write -> FAIL (keyguard's reboot would hide it)" || tbad "negative control: $o"
 base; WRITE=$'pre_ifs=2 pre_apif=1 pre_ssid=0 pre_hostapd=1
 save_rc=0'; o=$(run); grep -q 'FAIL.*AP is still up' <<< "$o" && tok "p5_ap_back: no SSID but hostapd still holds the interface -> FAIL" || tbad "hostapd left: $o"

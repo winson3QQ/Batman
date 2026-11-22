@@ -15,6 +15,8 @@ BT305_LOAD_SECS=${BT305_LOAD_SECS:-1800}
 BT305_BOOTS=${BT305_BOOTS:-20}
 
 bt305_ssh() { local n=$1 t=$2; shift 2; timeout "$t" ssh "${BT305_SSHO[@]}" "root@$n" "$@"; }
+# shellcheck source=slot-guard-254.sh
+. "$(dirname "${BASH_SOURCE[0]}")/slot-guard-254.sh"   # the slot guard (#254 v1.6 group 4 §4.2 row 3)
 bt305_fw() { bt305_ssh "$1" 20 'sed -n "s/^BATMAN_FW_COMMIT=//p" /etc/batman-build' | tr -d '\r'; }
 bt305_run_id() { echo "bt305-$(date +%H%M%S)-$RANDOM"; }
 
@@ -50,9 +52,11 @@ bt305_n() {
 bt305_drop() { bt305_ssh "$1" 20 "rm -rf /tmp/run/batman-dv/bt/$2"; }	# a run dir that never took the lease
 # bt305_reboot <node> <reason>: back onto the committed slot, wait for a new boot and uptime >= 90 s
 bt305_reboot() {
-	local n=$1 b0 b t0
-	b0=$(bt305_ssh "$n" 15 'cat /proc/sys/kernel/random/boot_id')
-	bt305_ssh "$n" 15 "batman-slot reboot committed $2 </dev/null >/dev/null 2>&1 &" >/dev/null 2>&1
+	local n=$1 b0 b t0 sl o
+	b0=$(bt305_ssh "$n" 15 'cat /proc/sys/kernel/random/boot_id' | tr -d '\r'); sl=$(bt305_ssh "$n" 15 'batman-slot active' | tr -d '\r')
+	# guarded: this boot, its slot, committed, tryboot disarmed (an empty boot id is refused); a refusal keeps the dirty UART
+	o=$(bt305_ssh "$n" 15 "$(reboot_guarded "${b0:0:8}" "$sl" 1 "$2")" 2>/dev/null | tr -d '\r')
+	[ "$o" = SENT ] || { echo "FAIL $n: reboot refused [${o:-no answer}] — not rebooted"; return 1; }
 	t0=$SECONDS
 	while [ $((SECONDS - t0)) -lt 600 ]; do sleep 10; b=$(bt305_ssh "$n" 10 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null); [ -n "$b" ] && [ "$b" != "$b0" ] && break; done
 	[ -n "$b" ] && [ "$b" != "$b0" ] || { echo "FAIL $n did not come back within 600 s"; return 1; }

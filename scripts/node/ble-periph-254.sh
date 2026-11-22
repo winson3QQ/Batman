@@ -193,8 +193,8 @@ role_fire_restore() {	# deadman on 04: stop recorders, drop snoops + adv; leaked
 	[ -n "$(provd_pid)" ] || lim 20 bm rm-adv 1 >/dev/null 2>&1	# never provd's instance
 	if mark_here irk-exposed; then
 		dm_log "$1" "deadman: IRK was exposed and not verified as voided — reboot (H-U6)"
-		rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"
-		batman-slot reboot committed ble-dm-254; exit 0
+		# the disarm check first, then the lease goes, then the reboot (#254 v1.6 group 4 §15): a refusal exits 3 before any rm
+		dm_disarmed || { dm_log "$1" "$DM_NOCLEAR"; mark_set dm-refused "$1"; echo "RECOVER-REFUSED $DM_NOCLEAR"; exit 3; }; rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"; batman-slot reboot committed ble-dm-254; exit 0
 	fi
 	lim 20 bm power off >/dev/null 2>&1; lim 60 /etc/init.d/bluetoothd restart >/dev/null 2>&1
 	wait_bluetoothd "" >/dev/null && mark_clear flipped

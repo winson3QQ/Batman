@@ -166,11 +166,13 @@ f2(){ echo "== F2 offline-copy recovery =="
 
 f1(){ echo "== F1 bad-tar quarantine + anti-wedge (decoy tenant, 3 reboots) =="
   need_tenant F1 || return
-  local D=$APPS/faulttest/images b r
+  local D=$APPS/faulttest/images b r sl o
   q "mkdir -p $D; head -c 400000 /dev/urandom > $D/bad.tar; rm -f $D/.fail-bad.tar; rm -rf $D/failed $D/loaded" >/dev/null
   for r in 1 2 3; do
     b=$(bootid); [ -n "$b" ] || { no "F1 boot_id unreadable before reboot $r — not verified"; return; }
-    n 'sync; reboot' 2>/dev/null
+    # guarded (#254 v1.6 group 4 §4.2 row 19): this boot, its slot, committed, tryboot disarmed
+    sl=$(slot); o=$(n "$(reboot_guarded "${b:0:8}" "$sl" 1 fi-f1)" 2>/dev/null | tr -d '\r')
+    [ "$o" = SENT ] || { no "F1 reboot $r refused [${o:-no answer}] — not rebooted"; return; }
     waitboot "$b" 400 || { no "F1 node did not reboot/return (reboot $r)"; return; }
     settle 300 || { no "F1 node not stably reachable after reboot $r"; return; }; sleep 15
   done
@@ -347,7 +349,7 @@ r4(){ echo "== R4 healthy held trial that nobody releases is reverted at the dea
   else no "R4 did not end on the committed slot (pre=$pre post=$post committed=$([ $cm = 0 ] && echo y || echo n) $(otsword)=$([ $ou = 0 ] && echo y || echo n))"; fi; }
 
 # ---- #274 §12 (v8.2): the OTA start and the trial policy for a crash ----
-HERE=$(cd "$(dirname "$0")" && pwd)
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # BASH_SOURCE: also when sourced (FI_SOURCE_ONLY; $0 is then the caller)
 . "$HERE/dv/slot-guard-254.sh"   # rb_guarded: every rollback checks boot / slot / trial on the node
 # wait until the tenant's verdict is OK on this boot (the start-up converge is done), max $1 s
 verdict_ok(){ local max=${1:-300} t0=$SECONDS
@@ -423,7 +425,10 @@ c2(){ echo "== C2 trial-crash-274: a manual 'batman-slot commit' after a crash i
   crash_ctr $EUDC
   for _ in $(seq 1 12); do ledger_has "crash $EUDC" && break; sleep 5; done
   ledger_has "crash $EUDC" || { no "C2: crash not recorded within 60 s"; return; }
-  n 'batman-slot commit' 2>&1 | sed 's/^/    /'
+  # guarded (group 4 §4.2 row 15): the commit reaches only this held trial, in this boot (the product sees the same
+  # `batman-slot commit`; C2 tests that the commit stands, not how it was typed)
+  o=$(n "$(commit_guarded "${b0:0:8}" "$tr")" 2>&1 | tr -d '\r'); echo "$o" | sed 's/^/    /'
+  case "$o" in "SENT "*) ;; *) no "C2: the commit was refused [${o:-no answer}] — not committed"; return ;; esac
   lim=$((dl + DEFER_MAX + 60)); echo "    committed by hand; watching until uptime ${lim}s (deadline ${dl}s + deferral)"
   while :; do
     o=$(timeout 30 ssh $S -o ConnectTimeout=6 "root@$NODE" 'echo "$(cat /proc/sys/kernel/random/boot_id) $(cut -d. -f1 /proc/uptime)"' 2>/dev/null | tr -d '\r')
@@ -459,7 +464,9 @@ p5_ap_back(){ local o apn b2 st s it
   s=$(slot); committed; it=$?
   if [ "$it" = 1 ]; then   # a trial: back to the committed slot, not committing the trial
     b2=$(bootid); [ -n "$b2" ] || { p5_person "P5: AP restore: boot id unreadable on the trial — AP key NOT restored, needs a person"; return; }
-    n "setsid sh -c 'sleep 2; batman-slot reboot committed p5-ap-restore' </dev/null >/dev/null 2>&1 &"
+    # guarded (group 4 §4.2 row 11): this boot, the trial slot, uncommitted -> the one-shot tryboot returns it
+    o=$(n "$(reboot_guarded "${b2:0:8}" "$s" 0 p5-ap-restore)" 2>/dev/null | tr -d '\r')
+    [ "$o" = SENT ] || { p5_person "P5: AP restore: the reboot out of the trial was refused [${o:-no answer}] — AP key NOT restored, needs a person"; return; }
     waitboot "$b2" 300 && settle 180 >/dev/null 2>&1 || { p5_person "P5: AP restore: the node did not come back from the trial — AP key NOT restored"; return; }
     s=$(slot); committed; it=$?
   fi
@@ -500,7 +507,9 @@ p5_ap_back(){ local o apn b2 st s it
     grep -q '^save_rc=0$' <<< "$o" || { p5_person "P5: placeholder restore not done or not persisted [$(echo $o)] — not rebooting; AP state: $(q 'halow-setkey --status 2>/dev/null | grep "^ap "' | tr -d '\r')"; return; }
     # keyguard at boot is the product's own check of the same state (it re-blocks a placeholder AP every boot)
     b2=$(bootid); [ -n "$b2" ] || { p5_person "P5: boot id unreadable before the placeholder reboot"; return; }
-    n "setsid sh -c 'sleep 2; batman-slot reboot committed p5-ap-placeholder' </dev/null >/dev/null 2>&1 &"
+    # guarded (group 4 §4.2 row 12): this boot, the baseline slot, committed
+    o=$(n "$(reboot_guarded "${b2:0:8}" "$3" 1 p5-ap-placeholder)" 2>/dev/null | tr -d '\r')
+    [ "$o" = SENT ] || { p5_person "P5: the placeholder reboot was refused [${o:-no answer}] — the placeholder is saved, the node is not rebooted"; return; }
     waitboot "$b2" 300 && settle 180 >/dev/null 2>&1 || { p5_person "P5: the node did not come back after the placeholder reboot"; return; }
     st=$(q 'halow-setkey --status 2>/dev/null | grep "^ap "' | tr -d '\r'); apn=$(q 'uci -q get wireless.default_radio0.key' | tr -d '\r' | md5sum | cut -c1-8)
     o=$(q 'batman-config-save --check 2>&1; echo "ifs=$(iw dev 2>/dev/null | grep -c "Interface") apif=$(iw dev 2>/dev/null | grep -c "type AP") radio0=$(ubus call network.wireless status 2>/dev/null | jsonfilter -e @.radio0.up 2>/dev/null)"' | tr -d '\r')
