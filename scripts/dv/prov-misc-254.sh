@@ -164,7 +164,7 @@ svcarms(){
 	rm -rf "$k"
 	# L3
 	o=$(qr "$ST"); b0=$(field "$o" boot)
-	q '(batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &)'
+	o=$(q "$(reboot_guarded "$b0" A 1 prov-dv-254)"); [ "$o" = SENT ] || { no "L3: reboot refused [${o:-no answer}]"; return 1; }
 	pr_find 900 "$b0" || return 1
 	o=$(qr 'tail -1 /opt/batdata/log/boot-reasons.log'); say "boot-reasons: $o"
 	case "$o" in *"prev=CLEAN"*"trigger=prov-dv-254"*) ok "L3: clean reboot -> prev=CLEAN (trigger prov-dv-254)" ;; *) no "L3: boot-reasons [$o]" ;; esac

@@ -293,8 +293,8 @@ cmd_stage_check() {
 role_fire_restore() {	# deadman / recover: stop every group; a raw CNTL write or a swapped module => reboot
 	if mark_here bt305-dirty; then
 		dm_log "$1" "deadman: $(cut -d' ' -f2- "$ST/bt305-dirty") — reboot to restore (#305)"
-		rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"
-		batman-slot reboot committed bt305-dm; exit 0
+		# the disarm check first, then the lease goes, then the reboot (#254 v1.6 group 4 §15): a refusal exits 3 before any rm
+		dm_disarmed || { dm_log "$1" "$DM_NOCLEAR"; mark_set dm-refused "$1"; echo "RECOVER-REFUSED $DM_NOCLEAR"; exit 3; }; rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"; batman-slot reboot committed bt305-dm; exit 0
 	fi
 	grep -q '^r305raw ' /proc/modules && rmmod r305raw
 	[ -e /sys/class/bluetooth/hci0 ] || { echo serial0-0 > "$DRV/bind" 2>/dev/null; sleep 15; }

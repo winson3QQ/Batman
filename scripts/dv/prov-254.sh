@@ -477,7 +477,9 @@ $o"; echo "$o" | grep -E "EXTRA-|OVERLAY|SKIP" | tail -10 | sed 's/^/    /'
 		v=$(qr "[ \"\$(ls -A /$d)\" = \"\$(ls -A /rom/$d)\" ] && echo same || echo differs")
 		[ "$v" = same ] && ok "restore: kept dir /$d lists as /rom (before the reboot)" || no "restore: kept dir /$d lists differently from /rom [$v] before the reboot"
 	done
-	b0=$(field "$s" boot); q "(batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &)"
+	# guarded (group 4 §4.2 row 4): p5 and the overlay are already restored, so a refusal is a person's (fail-closed)
+	b0=$(field "$s" boot); o=$(q "$(reboot_guarded "$b0" A 1 prov-dv-254)")
+	[ "$o" = SENT ] || { pr_needs_person "restore: reboot refused [${o:-no answer}] — p5 and the overlay are restored, the node is not rebooted"; return 1; }
 	pr_find 900 "$b0" || { pr_needs_person "restore: no node after the reboot"; return 1; }
 	return 0
 }
@@ -866,7 +868,7 @@ pr_keys_drop(){ wsl_ rm -rf "$WSLK"; q "rm -rf $PCD"; }
 # pr_member: claim + net-apply --first (key made on the node) -> member; then, as every member -> OTA (§4.3 F33),
 # batman-slot reboot committed. Sets PR_MEMBER_GEN (the generation after the join).
 pr_member(){
-	local mesh r i s b0
+	local mesh r i s b0 o
 	mesh="dvm-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 	# net_config key 5 = radio1.country: P3's join refuses any other (254-p3 D9); unread -> provclient's default
 	PR_FD3="umask 077; s=\$(head -c 16 /dev/urandom | hexdump -v -e '1/1 \"%02x\"'); printf 'mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\n' '$mesh' \"\$(uci -q get wireless.radio1.channel)\" \"\$s\"; c=\$(uci -q get wireless.radio1.country); [ -n \"\$c\" ] && printf 'country=%s\n' \"\$c\""
@@ -877,7 +879,7 @@ pr_member(){
 	PR_NETCFG=$(sed -n 's/^NETCFG //p' <<< "$r")   # the signed v1 net_config: the prev of a later network/update
 	ok "member of the test mesh $mesh (gen $PR_MEMBER_GEN)"
 	s=$(qr "$ST"); b0=$(field "$s" boot)
-	q "(batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &)"
+	o=$(q "$(reboot_guarded "$b0" A 1 prov-dv-254)"); [ "$o" = SENT ] || { no "member: reboot refused [${o:-no answer}]"; return 1; }
 	pr_find 900 "$b0" || return 1
 	pr_pc_place || return 1
 	return 0

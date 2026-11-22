@@ -16,6 +16,8 @@ set -u
 NODE=${1:?node}; MODE=${2:?normal|flip}; case "$MODE" in normal|flip) ;; *) echo "mode?"; exit 2;; esac
 V=${V:?version}; PAY=${PAY:-/opt/batdata/ota-1.5.13-wsl.1.tar.gz}; PSH16=${PSH16:?payload sha16}
 SSHO="-o BatchMode=yes -o ConnectTimeout=6 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o LogLevel=ERROR"
+# shellcheck source=scripts/dv/slot-guard-254.sh
+. "$(dirname "${BASH_SOURCE[0]}")/slot-guard-254.sh"   # the slot guard (#254 v1.6 group 4 §4.2 row 13)
 say(){ echo "[$(date +%H:%M:%S) pty-commit $MODE $NODE] $*"; }
 fails=0; ok(){ echo "PASS $*"; }; no(){ echo "FAIL $*"; fails=$((fails + 1)); }
 q(){ local o rc; for _ in 1 2 3 4 5 6; do o=$(timeout 120 ssh $SSHO root@$NODE "$@" 2>/dev/null); rc=$?; case $rc in 255|124) sleep 10;; *) printf '%s' "$o" | tr -d '\r'; [ -n "$o" ] && echo; return $rc;; esac; done; return 255; }
@@ -23,7 +25,7 @@ bid(){ timeout 20 ssh $SSHO root@$NODE 'cat /proc/sys/kernel/random/boot_id' 2>/
 waitboot(){ local b0=$1 t0=$SECONDS b; while [ $((SECONDS-t0)) -lt 900 ]; do b=$(bid); [ -n "$b" ] && [ "$b" != "$b0" ] && return 0; sleep 10; done; return 1; }
 settle(){ local t0=$SECONDS u; while [ $((SECONDS-t0)) -lt 600 ]; do u=$(q 'cut -d. -f1 /proc/uptime'); [ "${u:-0}" -ge 90 ] && return 0; sleep 10; done; return 1; }
 FP='echo "apkey=$(uci -q get wireless.default_radio0.key | sha256sum | cut -c1-12) meshkey=$(uci -q get wireless.default_radio1.key | sha256sum | cut -c1-12) lock=$(cat /opt/batdata/state/lock-status) ak=$(sha256sum < /etc/dropbear/authorized_keys | cut -c1-12) host=$(uci -q get system.@system[0].hostname) ip=$(uci -q get network.ahwlan.ipaddr) prov=$(sed -n "s/.*state=\([a-z]*\).*/\1/p" /etc/batman-prov/prov.meta)"'
-ST='echo "slot=$(batman-slot active) ver=$(sed -n s/^BATMAN_VERSION=//p /etc/batman-build) trial_rc=$(batman-slot is-trial >/dev/null 2>&1; echo $?) dt_try=$(hexdump -v -e "1/1 \"%02x\"" /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null) held=$(. /usr/lib/batman/rundir.sh; ls $RUNDIR/autocommit.ctl/hold-commit 2>/dev/null | wc -l) badslot=[$(cat /opt/batdata/state/bad-slot 2>/dev/null)] up=$(cut -d. -f1 /proc/uptime)"'
+ST='echo "slot=$(batman-slot active) ver=$(sed -n s/^BATMAN_VERSION=//p /etc/batman-build) trial_rc=$(batman-slot is-trial >/dev/null 2>&1; echo $?) dt_try=$(hexdump -v -e "1/1 \"%02x\"" /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null) held=$(. /usr/lib/batman/rundir.sh; ls $RUNDIR/autocommit.ctl/hold-commit 2>/dev/null | wc -l) badslot=[$(cat /opt/batdata/state/bad-slot 2>/dev/null)] up=$(cut -d. -f1 /proc/uptime) boot=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"'
 AD='/usr/libexec/batman-addr-defer status'
 # joinwatch running? from procd's own record (pgrep -f would match the ssh `sh -c` line itself, review B1)
 # ubus failure = JW-UNKNOWN (never "down"); ps with the [/] pattern cross-checks (review round 2 m2)
@@ -34,10 +36,39 @@ cleanup_node(){	# never leaves a bind mount or a stopped joinwatch behind
 	q "$JW"
 }
 LANDED=0
-# a stop after the landing commits the trial with the NORMAL batman-slot (both slots carry V): a deadline revert would
-# leave bad-slot behind and block every later run (review M3); before the landing, the unused hold flag is removed
+# stop_person <msg>: a stop that leaves the node to a person: the line, and the NEEDS-PERSON line daily-validation's
+# dnode_blocked reads ($DV_DIR, passed by claim-lock-254.sh; the format of prov-254.sh pr_needs_person)
+stop_person(){ local m="NEEDS-PERSON pty-commit-254 ($NODE): $*"; echo "$m"; [ -n "${DV_DIR:-}" ] && echo "$m" >> "$DV_DIR/needs-person.txt"; return 0; }
+# stop_commit: a stop after the landing commits the landed trial with the NORMAL batman-slot (both slots carry V): a
+# deadline revert would leave bad-slot behind and block every later run (review M3). Bound (#254 v1.6 group 4 §13.2,
+# §15): only the held trial of V on TGT, in a boot after b0, read in one call; the commit goes through commit_guarded
+# with that boot in the next call and is read back. Every other outcome (no answer, not that trial, already reverted,
+# WRONG-STATE, not read back) is a FAIL line + NEEDS-PERSON: the trial is left to its deadline revert and bad-slot.
+stop_commit(){ local s b o
+	s=$(q "$ST"); b=$(sed -n 's/.* boot=\([0-9a-f]\{8\}\)$/\1/p' <<< "$s"); say "state at stop: ${s:-no answer}"
+	case "$s" in
+		*"slot=$TGT ver=$V trial_rc=1 "*"badslot=[] "*) say "stop: $TGT already committed (nothing to do)"; return 0 ;;
+		*"slot=$TGT ver=$V trial_rc=0 "*" held=1 "*) ;;
+		"") echo "FAIL pty-commit: trial not committed (node unreachable)"
+			stop_person "the trial on $TGT is not committed (node unreachable at the stop) — its autocommit deadline will revert it and leave bad-slot; check $NODE by hand"; return 1 ;;
+		*) echo "FAIL pty-commit: trial not committed (not the held trial of $V on $TGT: $s)"
+			stop_person "the landed trial is not committed (state $s) — a reverted trial leaves bad-slot; check $NODE by hand"; return 1 ;;
+	esac
+	if [ -z "$b" ] || [ "$b" = "${b0:0:8}" ]; then
+		echo "FAIL pty-commit: trial not committed (landing boot [$b] unknown or the boot before the OTA)"
+		stop_person "the trial on $TGT is not committed (landing boot [$b]) — its autocommit deadline will revert it and leave bad-slot"; return 1
+	fi
+	o=$(q "$(commit_guarded "$b" "$TGT")"); say "stop-commit: $o"
+	case "$o" in "SENT "*"committed slot $TGT as default"*) ;; *)
+		echo "FAIL pty-commit: trial not committed ($(head -1 <<< "${o:-no answer}" | cut -d' ' -f1))"
+		stop_person "the trial on $TGT is not committed [${o:-no answer}] — its autocommit deadline will revert it and leave bad-slot"; return 1 ;; esac
+	s=$(q "$ST"); case "$s" in *"slot=$TGT ver=$V trial_rc=1 "*) say "stop-commit read back: $TGT committed"; return 0 ;; esac
+	echo "FAIL pty-commit: trial not committed (no read-back: ${s:-no answer})"
+	stop_person "the commit of $TGT was sent but not read back [${s:-no answer}] — check $NODE by hand"; return 1
+}
+# before the landing, the unused hold flag is removed
 stop(){ say "STOP: $*"; cleanup_node
-	if [ "$LANDED" = 1 ]; then q 'batman-slot is-trial >/dev/null 2>&1 && batman-slot commit 2>&1 | tail -1' | sed 's/^/    stop-commit: /'; else q 'rm -f /opt/batdata/state/autocommit-hold-commit'; fi
+	if [ "$LANDED" = 1 ]; then stop_commit; else q 'rm -f /opt/batdata/state/autocommit-hold-commit'; fi
 	s=$(q "$ST"); say "state at stop: $s"; echo "RESULT pty-commit $MODE FAIL ($*)"; exit 1; }
 trap 'echo "host interrupted"; stop "interrupted"' INT TERM
 

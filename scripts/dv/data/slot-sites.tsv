@@ -1,0 +1,175 @@
+# scripts/dv/data/slot-sites.tsv — lint (3) of scripts/dv/test-slot-guard-254.sh (#254 v1.6 group 4 §4.3, §15).
+# file<TAB>count<TAB>group<TAB>line text (trimmed, tabs as \t). group: allowlisted:<reason> | prechecked | text
+# Drafted by scripts/dv/gen-slot-sites.sh --draft; every non-text row set and every text row checked by hand.
+scripts/ab-selftest.sh	1	text	bad "node did not come back after a plain reboot ($RB_T)"
+scripts/ab-selftest.sh	1	text	bad "slot B BOOTED without $STARTFS — the firmware used another start file, so this case tested nothing; B is still an uncommitted trial, a plain reboot returns to A"
+scripts/ab-selftest.sh	1	text	elif [ "$S" = "$SLOT0" ]; then ok "plain reboot returned to the committed slot $S (${T}s)"
+scripts/ab-selftest.sh	1	text	rb plain || bad "plain reboot after the B boot did not come back ($RB_T)" ;;
+scripts/ab-selftest.sh	1	allowlisted:the A/B self-test's own reboot: armed tryboot entry or plain reboot under test (group 4 row 18)	sshn '(sleep 1; reboot) >/dev/null 2>&1 &' >/dev/null
+scripts/ab-selftest.sh	1	text	warn "raw tryboot no-op on this Pi 4 EEPROM (armed tryboot=$TB but booted committed partition=$P) — known #209 EEPROM wrong-slot bug; production switches via batman-slot explicit-partition reboot (covered by autocommit/OTA suites)"
+scripts/daily-validation.sh	1	text	0) echo "UNCOMMITTED TRIAL — autocommit did not commit (reboot would revert)"; exit 1 ;;
+scripts/daily-validation.sh	1	text	BLE_B="ble-rpa-254 ble-pair-sc-only-254 prov-sec-bond-254 ble-privacy-reboot-254"
+scripts/daily-validation.sh	1	text	[ "$(( ${6:-1} ))" -eq 0 ] || { echo "tryboot flag is ARMED on a normal boot — the next reboot will trial the other slot"; exit 1; }'; }
+scripts/daily-validation.sh	1	text	[ "$k8" -lt 15 ] && [ "$k9" -lt 15 ] && echo "ok reboot during the hold: both stop halves ran (k08=${k8}.x s, k09=${k9}.x s, each < 15 s)" || { echo "FAIL a stop half over procd's 15 s (k08=$k8 k09=$k9)"; rc=1; }
+scripts/daily-validation.sh	1	text	[ "$l" = OK ] && echo "ok verdict OK" || { echo "FAIL verdict not OK within 120 s after OTS ready (reboot -f)"; rc=1; }
+scripts/daily-validation.sh	1	text	[ "$s" -ge "$t0" ] || { echo "FAIL shutdown save did not happen: saved bound $s < pre-reboot clock $t0"; rc=1; }
+scripts/daily-validation.sh	1	text	[ -e /etc/rc.d/K90batman-reboot ] || { echo "K90batman-reboot hook not enabled"; exit 1; }
+scripts/daily-validation.sh	1	text	[ -n "$b1" ] && [ "$b1" != "$b0" ] || { echo "FAIL $n did not reboot within 15 min — check it by hand"; return 1; }
+scripts/daily-validation.sh	1	text	[ -n "$b1" ] && [ "$b1" != "$b0" ] || { echo "FAIL reboot did not happen (boot_id $b0 -> ${b1:-unreadable})"; return 1; }
+scripts/daily-validation.sh	1	text	[ -x /usr/sbin/batman-reboot ] || { echo "batman-reboot missing"; exit 1; }
+scripts/daily-validation.sh	1	text	b0=$(bootid "$n"); [ -n "$b0" ] || { echo "FAIL boot_id unreadable before the reboot — not verified"; return 1; }
+scripts/daily-validation.sh	1	text	bchk_174() {   # #174 faketime: the offline clock only moves forward across a reboot (#268 A6 — checks the MECHANISM)
+scripts/daily-validation.sh	1	text	bchk_192() {   # clear the guardian from the overlay (as an A/B flash does), reboot, assert it auto-returns
+scripts/daily-validation.sh	1	text	bchk_cleanstop_274() {   # a clean reboot stops the tenant GRACEFULLY (tiered, recorded) and the next boot STARTS it (no rebuild)
+scripts/daily-validation.sh	1	text	echo "$l" | grep -qE '^FAIL (1|2|5) ' && { echo "FAIL the start after reboot -f was not clean (see above)"; rc=1; } || echo "ok one start per container, ordered, empty ledger after reboot -f"
+scripts/daily-validation.sh	1	text	echo "NEGATIVE CONTROL: payload stop links removed for this reboot"
+scripts/daily-validation.sh	1	text	echo "NEGATIVE CONTROL: shutdown save link removed for this reboot"
+scripts/daily-validation.sh	1	text	echo "guardian auto-restored after overlay-clear+reboot: $r"; [ "$r" = yes ]; }
+scripts/daily-validation.sh	1	text	echo "launched on $n (boot $b0); waiting for its reboot"
+scripts/daily-validation.sh	1	text	fssh "$n" 10 "$RDR"'ls "$R"/batman-firstload-*.latch 2>/dev/null' | grep -q . && { echo "FAIL a firstload latch is still present after the cleanup reboot"; rc=1; }
+scripts/daily-validation.sh	1	text	if [ "$NODE" = "$OTS_NODE" ]; then ots_wait && echo "PASS step4b OTS back after the -F reboot" || { echo "FAIL OTS not back after the -F reboot"; exit 1; }; fi
+scripts/daily-validation.sh	1	text	if up "$DNODE"; then suite setkey-persists-202 "halow-setkey persists to p5 at once; a stale p5 refuses an OTA, also under -F, on DNODE $DNODE (#202 D2, DESTRUCTIVE: off-mesh twice + one refused-OTA reboot)" "bchk_setkey_202 $DNODE" D
+scripts/daily-validation.sh	1	prechecked	local n=$1 cmd=${2:-reboot} max=${3:-220} b0 b1
+scripts/daily-validation.sh	1	text	ots_ready "$n" || { echo "FAIL OTS not ready within 300 s after reboot -f"; rc=1; }
+scripts/daily-validation.sh	1	text	ots_ready "$n" || { echo "FAIL OTS not ready within 300 s after the reboot"; return 1; }
+scripts/daily-validation.sh	1	prechecked	reboot_and_wait "$1" 'echo 1 > /proc/sys/kernel/sysrq; sync; echo c > /proc/sysrq-trigger' 240 || return 1
+scripts/daily-validation.sh	1	prechecked	reboot_and_wait "$1" reboot 240 || return 1
+scripts/daily-validation.sh	1	prechecked	reboot_and_wait "$n" 'sync; reboot -f' 300 || rc=1
+scripts/daily-validation.sh	2	prechecked	reboot_and_wait "$n" reboot 240 || rc=1
+scripts/daily-validation.sh	1	prechecked	reboot_and_wait "$n" reboot 300 || { echo "FAIL node did not return from reboot 1"; rc=1; }
+scripts/daily-validation.sh	1	prechecked	reboot_and_wait "$n" reboot 300 || { echo "FAIL node did not return from reboot 2"; rc=1; }
+scripts/daily-validation.sh	1	prechecked	reboot_and_wait "$n" reboot 300 || { echo "FAIL node did not return from the cleanup reboot"; rc=1; }
+scripts/daily-validation.sh	1	text	reboot_and_wait() {   # $1 node, $2 the command that reboots it (default: reboot), $3 dwait budget s
+scripts/daily-validation.sh	1	text	sleep 15   # let a panicking peer reboot far enough to bump its boot-reasons PANIC count
+scripts/daily-validation.sh	1	text	suite ble-privacy-reboot-254 "bluetoothd restart keeps the IRK (new pid, batman-sc mode 2); a reboot generates a new one via getrandom (#254 PR-F F26)" "bchk_ble_reboot_254 $BLE_PERIPH" D
+scripts/daily-validation.sh	1	text	suite bt-uart-close-305 "stuck TX (CNTL 0xcd) then unbind on $BLE_PERIPH: close < 5 s (P2), then reboot + witness (#305 T3b)" "bchk_bt_uart_close_305 $BLE_PERIPH" D
+scripts/daily-validation.sh	1	text	suite cleanstop-274 "clean reboot stop/start (#274) — OTS node unreachable" "echo 'FAIL OTS_NODE $OTS_NODE not reachable within 300 s after the destructive tier'; false"
+scripts/daily-validation.sh	1	text	suite cleanstop-274 "clean reboot: tiered graceful stop recorded before the shutdown capture, postgres clean, same containers started in order, boot-to-ready <= 90 s (#274, destructive)" "bchk_cleanstop_274 $OTS_NODE" D
+scripts/daily-validation.sh	1	text	suite faketime-174 "offline clock moves only forward across a reboot: shutdown save + boot restore happened (#174, destructive)" "bchk_174 $DNODE" D
+scripts/daily-validation.sh	1	text	suite guardian-192 "guardian auto-restores after an overlay-clear+reboot (#192, destructive)"     "bchk_192 $DNODE" D
+scripts/daily-validation.sh	1	text	suite hold-274 "firstload hold (a tar docker load rejects): guardian started for the boot, K09 kept; a reboot during the hold stops both halves (#274 §12, destructive)" "bchk_hold_274 $OTS_NODE" D
+scripts/daily-validation.sh	1	text	suite unclean-boot-274 "reboot -f (as on power loss): nothing revives by itself, one ordered start by the guardian; a planted p6 .init never runs — the stub is generated (#274 §12, destructive)" "bchk_unclean_274 $OTS_NODE" D
+scripts/daily-validation.sh	1	text	waitboot "$b0" 600 || { echo "FAIL node did not reboot after sysupgrade -F (stage 2 should refuse and reboot; log: $(q 'tail -2 /opt/batdata/sysup-f.log' | tr '\n' ' '))"; exit 1; }
+scripts/dv/addr-defer-reconcile-254.sh	1	text	. "$REPO/scripts/dv/slot-guard-254.sh"   # reboot_guarded: the reboot checks boot / slot / committed / tryboot on the node
+scripts/dv/addr-defer-reconcile-254.sh	1	text	[ -n "$b" ] && [ "$b" != "$b0" ] || { no "reboot did not happen within 900 s"; return 1; }
+scripts/dv/addr-defer-reconcile-254.sh	1	text	o=$(q "$(reboot_guarded "${b0:0:8}" "$sl" 1 adr-254)"); [ "$o" = SENT ] || { no "reboot refused [${o:-no answer}] — not rebooted"; return 1; }; t=$SECONDS
+scripts/dv/ble-254.sh	1	text	[ "$o" = SENT ] || { echo "FAIL $n: reboot refused [${o:-no answer}] — not rebooted"; return 1; }; sleep 20
+scripts/dv/ble-254.sh	1	text	[ -n "$b1" ] && [ "$b1" != "$b0" ] || { echo "FAIL $n did not come back from reboot within ~5 min (reboot did not happen?)"; return 1; }
+scripts/dv/ble-254.sh	1	text	ble_reboot_committed() {\t# explicit-partition reboot (E30), wait for the new boot
+scripts/dv/ble-254.sh	1	text	case "$b0" in ????????-*) ;; *) echo "FAIL $n: boot_id unreadable before the reboot [$b0] — not rebooting blind"; return 1 ;; esac
+scripts/dv/ble-254.sh	1	text	echo "=== 02 reboot (H-U7: its IRK may have been derived from the legacy flip pairing)"
+scripts/dv/ble-254.sh	1	text	echo "=== cleanup: canary, rekey 04 (verified), release, 02 + 04 reboot"
+scripts/dv/ble-254.sh	1	text	echo "after reboot: $o"
+scripts/dv/ble-254.sh	1	text	grep -q ' match=yes' <<< "$o" || { echo "FAIL rekey: the advertised RPA does not resolve with the NEW IRK — the kernel kept the old one (irk-exposed kept; reboot $p)"; return 1; }
+scripts/dv/ble-254.sh	1	text	h2=${2:-}; [ -n "$h2" ] && [ "$h2" != "$h1" ] || { echo "FAIL the IRK did not change across the reboot ($h1 -> $h2)"; rc=1; }
+scripts/dv/brewrite-254.sh	1	text	waitboot "$b0" 600 || stop "no reboot within 600 s (sysup: $(q 'tail -2 /opt/batdata/sysup-e3.log'))"
+scripts/dv/bt-uart-305.sh	1	text	BT305_LOAD_SECS=60 bt305_leased "$n" 900 load 60 >/dev/null 2>&1\t\t# busy controller before the reboot (#305 trigger)
+scripts/dv/bt-uart-305.sh	1	text	[ "$o" = SENT ] || { echo "FAIL $n: reboot refused [${o:-no answer}] — not rebooted"; return 1; }
+scripts/dv/bt-uart-305.sh	1	text	[ "$r" = 0 ] || { echo "$o"; return 1; }\t\t# a pre-#305 image: one KNOWN line, no reboot
+scripts/dv/bt-uart-305.sh	1	text	bt305_reboot "$n" "bt305-restore" || rc=1\t\t# tmpfs (lease, run dir, markers) goes with the reboot
+scripts/dv/chain1-254.sh	1	allowlisted:the chain1 dead-man, after its disarm + flag-0 check (row 35)	batman-slot reboot committed ch1-deadman >> \$L 2>&1
+scripts/dv/chain1-254.sh	1	text	fq 'grep -c " /lib/upgrade/platform.sh " /proc/mounts' | grep -qx 0 && ok "7.1 bind gone after the reboot" || no "7.1 bind still present"
+scripts/dv/chain1-254.sh	1	allowlisted:enters the tryboot that apply armed, on purpose (row 20)	q '(/etc/init.d/dockerd stop >/dev/null 2>&1; sync; sleep 1; reboot -f) </dev/null >/dev/null 2>&1 &'; t0=$SECONDS
+scripts/dv/chain1-254.sh	1	text	say "trial: 02's reader judges STATUS at step 9 (window from the reboot, host +$t0 s, to the release)"
+scripts/dv/chain1-254.sh	1	text	say "trial: fresh serial last 4 = $L4N (before the reboot: $LAST4)"
+scripts/dv/chain1-254.sh	1	text	wait_find 600 "slot=B ver=$V trial_rc=1 " "$BT" || abort "B not found after the reservation reboot"
+scripts/dv/eeprom-sbx-254.sh	1	text	[ "$(cat /proc/sys/kernel/random/boot_id)" = "$b0" ] && ok "sanity: reboot -f in the sandbox did not reboot WSL" || bad "sanity: boot_id changed"
+scripts/dv/eeprom-sbx-254.sh	1	allowlisted:inside a host sandbox, asserted NOT to reboot (sites §4)	b0=$(cat /proc/sys/kernel/random/boot_id); sbx "$SR" strict /bin/busybox reboot -f >/dev/null 2>&1
+scripts/dv/fresh-254.sh	1	text	[ "$o" = SENT ] || { say "RESTORE: the reboot on A not sent ($o): a tryboot may be armed — needs a person"; return 1; }
+scripts/dv/known-failures.sh	1	text	NEVER_KNOWN='restore|cleanup|CONNECTION-LOST|CONNLOST|reboot did not happen|unreadable|not verified|rc=3 without|NEEDS-PERSON|blocked: DNODE'
+scripts/dv/prov-254.sh	1	text	PRD=/tmp/run/batman-dv/bt/$RUN          # node: staged scripts (root 0700); gone with every reboot -> pr_find re-stages
+scripts/dv/prov-254.sh	1	text	[ "$o" = SENT ] || { pr_needs_person "restore: reboot refused [${o:-no answer}] — p5 and the overlay are restored, the node is not rebooted"; return 1; }
+scripts/dv/prov-254.sh	1	text	[ "$v" = same ] && ok "restore: kept dir /$d lists as /rom (before the reboot)" || no "restore: kept dir /$d lists differently from /rom [$v] before the reboot"
+scripts/dv/prov-254.sh	1	text	grep -qiE 'panic|watchdog' <<< "$o" && { inv "trial panic (hard reboot, no TRIAL-REVERTED of boot $b0): $o"; return 1; }
+scripts/dv/prov-254.sh	1	text	if [ "$(qr 'batman-slot is-trial >/dev/null 2>&1; echo $?')" = 0 ]; then back_to_a; else pr_needs_person "the $tgt slot was committed after a discarded hold — run: batman-slot rollback; batman-slot reboot committed"; fi
+scripts/dv/prov-254.sh	1	text	o=$(q "$(reboot_guarded "$b0" A 1 prov-dv-254)"); [ "$o" = SENT ] || { no "member: reboot refused [${o:-no answer}]"; return 1; }
+scripts/dv/prov-254.sh	1	text	pr_find 900 "$b0" || { pr_needs_person "no node after the OTA reboot"; return 1; }
+scripts/dv/prov-254.sh	1	text	pr_find 900 "$b0" || { pr_needs_person "restore: no node after the reboot"; return 1; }
+scripts/dv/prov-254.sh	1	text	pr_peer_after(){\t# 02: a neighbour of 04 again (180 s window) and not rebooted (in a run over 3600 s a joinwatch reboot = WARN)
+scripts/dv/prov-ac-ble-254.sh	1	text	[ "$(qr "[ -e $BOK ] && echo present || echo absent")" = absent ] && say "ble-ok dropped, helper stopped until the OTA reboot" || { no "ble-ok still there"; return 1; }
+scripts/dv/prov-ac-fleetchan-254.sh	1	text	PR_PEER_BOOT=$(field "$PS" boot)   # pr_peer_after: 02 must not reboot again from here
+scripts/dv/prov-ac-fleetchan-254.sh	1	text	pwait 900 "$b0" || { pr_needs_person "02 not back after its OTA reboot"; return 1; }
+scripts/dv/prov-ac-noarm-254.sh	1	allowlisted:enters the armed tryboot on purpose (row 23)	q '(sync; reboot) </dev/null >/dev/null 2>&1 &'
+scripts/dv/prov-base-254.sh	1	text	else no "prov-boot-254 after reboot $boots: $(grep '^FAIL' <<< "$o" | head -5 | tr '\n' '|')"; fi
+scripts/dv/prov-base-254.sh	1	text	grep -q "^P5-RESTORED" <<< "$o" && inv "the dd finished before the sysrq reboot (no power loss in the middle)"
+scripts/dv/prov-base-254.sh	1	text	grep -qi sysrq <<< "$br" && ok "the reboot was the sysrq one (boot-reasons)" || no "boot-reasons does not show the sysrq reboot: $br"
+scripts/dv/prov-base-254.sh	1	text	if [ -n "$o" ] && ! grep -q '^FAIL' <<< "$o"; then ok "prov-boot-254 after reboot $boots: $(grep -c '^PASS' <<< "$o") PASS, 0 FAIL"
+scripts/dv/prov-base-254.sh	1	allowlisted:deliberate power-loss proxy: sysrq b while the p5 dd runs (row 32)	o=$(timeout 600 ssh $SSHO root@$NODE "(n=0; while ! pidof dd >/dev/null && [ \$n -lt 120 ]; do sleep 1; n=\$((n+1)); done; sleep 3; pidof dd >/dev/null && echo b > /proc/sysrq-trigger) </dev/null >/dev/null 2>&1 & sh -s -- p5-restore $RUN" < "$PB" 2>&1 | tr -d '\r')
+scripts/dv/prov-base-254.sh	1	text	pr_find 900 "$b0" || { pr_needs_person "no node after the sysrq reboot"; pr_result; exit 1; }
+scripts/dv/prov-base-254.sh	1	text	prov_boot(){\t# the tier-A judge after a reboot
+scripts/dv/prov-bench-s0-254.sh	1	text	[ "${d%% *}" = 1 ] && [ "${d##* }" -ge 150 ] && ok "B stable: dhcpconfigured=1, uptime ${d##* } s" || abort "B not stable after the reservation reboot: dhcpconfigured/uptime=[$d]"
+scripts/dv/prov-bench-s0-254.sh	1	text	[ "${u:-0}" -ge 150 ] || abort "node not stable after the post-join reboot"
+scripts/dv/prov-bench-s0-254.sh	1	text	else RESULT="FAIL ($fails) — $NN is on A committed at $FIP (back to B: batman-slot rollback; batman-slot reboot committed)"; fi
+scripts/dv/prov-bench-s0-254.sh	1	text	else say "no reboot in 240 s after the join (boot $BJ)"; fi
+scripts/dv/prov-bench-s0-254.sh	1	text	fq "mkdir -m 0711 $PCD && echo MADE" | grep -q MADE || abort "dvpc dir pre-exists after the reboot: $PCD"
+scripts/dv/prov-bench-s0-254.sh	1	text	if [ "$(bootof "$FOUND_STATE")" != "$BJ" ]; then\t# a real reboot: let it settle; the tmpfs provclient dir went with it
+scripts/dv/prov-bench-s0-254.sh	1	allowlisted:enters the tryboot that apply armed, on purpose (row 21)	q '(/etc/init.d/dockerd stop >/dev/null 2>&1; sync; sleep 1; reboot -f) </dev/null >/dev/null 2>&1 &'; t0=$SECONDS
+scripts/dv/prov-bench-s0-254.sh	1	text	wait_find 600 "slot=B ver=$VB trial_rc=1 " "$BT" || abort "B not found after the reservation reboot"
+scripts/dv/prov-chain0-254.sh	1	text	REFUSED) say "rollback refused on the bypass boot — reboot only (the tryboot is one-shot)"
+scripts/dv/prov-chain0-254.sh	1	allowlisted:enters the armed bypass trial on purpose (row 22)	q '(sync; reboot) </dev/null >/dev/null 2>&1 &'
+scripts/dv/prov-chain0-254.sh	1	text	r=$(fq "$(reboot_guarded "$b0" B any prov-dv-254)"); [ "$r" = SENT ] || { pr_needs_person "04 bypass boot: reboot not sent [$r]"; return 1; } ;;
+scripts/dv/prov-leave-after-join-254.sh	1	text	[ $try -lt 3 ] && say "try $try: retrying after another B-trial rollback reboot (the node is Left: claimed, no network)"
+scripts/dv/prov-leave-after-join-254.sh	1	text	try=$((try + 1)); say "try $try: the OLD image into B, then back to A (the reboot that opened the window 4/5)"
+scripts/dv/prov-leave-ota-254.sh	1	text	o=$(q "$(reboot_guarded "$b0" A 1 prov-dv-254)"); [ "$o" = SENT ] || { no "leave: reboot refused [${o:-no answer}]"; return 1; }
+scripts/dv/prov-lib-254.sh	1	text	if [ "$o" = SENT ]; then waitboot "$b0" && settle || no "reboot after restore"; else no "reboot after restore refused [${o:-no answer}] — not rebooted"; fi
+scripts/dv/prov-misc-254.sh	1	text	case "$o" in *"prev=CLEAN"*"trigger=prov-dv-254"*) ok "L3: clean reboot -> prev=CLEAN (trigger prov-dv-254)" ;; *) no "L3: boot-reasons [$o]" ;; esac
+scripts/dv/prov-misc-254.sh	1	text	if o=$(pr_trial_line 'batman-provhelper.*boot rc=' 6); then ok "L3: helper ${o##*]: }"; else no "L3: no helper 'boot rc=' line after the reboot"; fi
+scripts/dv/prov-misc-254.sh	1	text	o=$(q "$(reboot_guarded "$b0" A 1 prov-dv-254)"); [ "$o" = SENT ] || { no "L3: reboot refused [${o:-no answer}]"; return 1; }
+scripts/dv/prov-netupdate-254.sh	1	text	say "first --on-join tick after the reboot: $(echo $o)"
+scripts/dv/prov-overlay-corrupt-254.sh	1	text	[ "$o" = SENT ] || { pr_abort "reboot refused [${o:-no answer}]"; pr_result; exit 1; }
+scripts/dv/prov-overlay-corrupt-254.sh	1	text	pr_find 900 "$b0" || { pr_abort "reboot"; pr_result; exit 1; }
+scripts/dv/prov-overlay-wipe-254.sh	1	text	"PRE-FAILED SENT") pr_find 900 "$b0"; pr_abort "firstboot -y failed (the reboot was sent anyway)"; pr_result; exit 1 ;;
+scripts/dv/prov-overlay-wipe-254.sh	1	text	*) pr_abort "wipe + reboot refused [${o:-no answer}] — nothing wiped"; pr_result; exit 1 ;;
+scripts/dv/prov-overlay-wipe-254.sh	1	text	pr_find 900 "$b0" || { pr_abort "reboot after the wipe"; pr_result; exit 1; }
+scripts/dv/prov-sshkeys-cut-254.sh	1	text	[ "$(field "$w" p5new)" = 0 ] || inv "p5's authorized_keys was rewritten after the reboot, before the judgement"
+scripts/dv/prov-sshkeys-cut-254.sh	1	allowlisted:deliberate power-loss proxy from the save wrapper (row 33)	cut) logger -t batman-dv \"dv-cut $RUN: sysrq instead of --save\"; echo b > /proc/sysrq-trigger; sleep 30 ;;
+scripts/dv/prov-sshkeys-cut-254.sh	1	text	pr_pc_place || fail_out "provclient after the reboot"
+scripts/dv/prov-wbox-nocommit-254.sh	1	text	[ "$o" = SENT ] || { pr_needs_person "wbox slot B committed and the rollback to A was refused — run on 04: batman-slot rollback; batman-slot reboot committed"; return 1; }
+scripts/dv/pty-commit-254.sh	1	text	settle || { LANDED=1; stop "not reachable after the OTA reboot"; }
+scripts/dv/pty-commit-254.sh	1	text	waitboot "$b0" || stop "no reboot (sysup: $(q 'tail -3 /opt/batdata/sysup-ptyc.log'))"
+scripts/fault-injection.sh	1	text	&& ok "P5 AP key back to the placeholder (md5 $apn), blocked (disabled=1), p5 fresh, no AP interface after the reboot" \
+scripts/fault-injection.sh	1	text	[ "$o" = SENT ] || { no "F1 reboot $r refused [${o:-no answer}] — not rebooted"; return; }
+scripts/fault-injection.sh	1	text	[ "$o" = SENT ] || { p5_person "P5: AP restore: the reboot out of the trial was refused [${o:-no answer}] — AP key NOT restored, needs a person"; return; }
+scripts/fault-injection.sh	1	text	[ "$o" = SENT ] || { p5_person "P5: the placeholder reboot was refused [${o:-no answer}] — the placeholder is saved, the node is not rebooted"; return; }
+scripts/fault-injection.sh	1	text	[ "$w" = 0 ] || { no "$tag: no revert reboot within the budget"; return; }
+scripts/fault-injection.sh	1	text	[ "$w" = 0 ] || { no "R1: no revert reboot within the budget — trial still up"; return; }
+scripts/fault-injection.sh	1	text	[ "$w" = 0 ] || { no "R4: no revert reboot within the budget — held trial still up"; return; }
+scripts/fault-injection.sh	1	text	b2=$(bootid); [ -n "$b2" ] || { p5_person "P5: boot id unreadable before the placeholder reboot"; return; }
+scripts/fault-injection.sh	1	text	b=$(bootid); [ -n "$b" ] || { no "F1 boot_id unreadable before reboot $r — not verified"; return; }
+scripts/fault-injection.sh	1	text	if grep -q 'pre_ifs=[1-9][0-9]* pre_apif=[0-9]* pre_ssid=0 pre_hostapd=0$' <<< "$o"; then ok "P5 AP off right after the placeholder + block write (no SSID, no hostapd interface; before any reboot)"
+scripts/fault-injection.sh	1	text	settle 300 || { no "F1 node not stably reachable after reboot $r"; return; }; sleep 15
+scripts/fault-injection.sh	1	text	waitboot "$b" 400 || { no "F1 node did not reboot/return (reboot $r)"; return; }
+scripts/fault-injection.sh	1	text	waitboot "$b0" 600 || { no "$tag: node did not reboot into the new image within 600 s (sysupgrade log: $(q 'tail -2 /opt/batdata/sysup.log' | tr '\n' ' '))"; return 1; }
+scripts/fault-injection.sh	1	text	waitboot "$b2" 300 && settle 180 >/dev/null 2>&1 || { p5_person "P5: the node did not come back after the placeholder reboot"; return; }
+scripts/negctl-old-slot-254.sh	1	allowlisted:one-off PR evidence tool, slot checked node-side in the same command (row 17)	o=$(q "if [ \"\$(batman-slot active)\" = B ]; then v=\$(sed -n 's/^BATMAN_VERSION=//p' /etc/batman-build); [ \"\$v\" = '$V2' ] || echo \"UNEXPECTED VERSION \$v\"; i=0; while :; do batman-slot rollback; r=\$?; [ \$r = 14 ] && [ \$i -lt 5 ] || break; i=\$((i + 1)); sleep 2; done; if [ \$r = 0 ]; then (batman-slot reboot committed negctl-254 </dev/null >/dev/null 2>&1 &); echo SENT; else echo ROLLBACK-RC=\$r; fi; else echo NOT-ON-B; fi" | tr -d '\r')
+scripts/negctl-old-slot-254.sh	1	text	say "FAIL batman-slot rollback refused on B ($(grep -o 'ROLLBACK-RC=[0-9]*' <<< "$o")) — the node is still on B; a plain reboot returns it to A (held trial)"; RC=1; return 1
+scripts/negctl-old-slot-254.sh	1	text	waitboot "$b0" 600 || { say "FAIL node did not reboot after back_to_a"; RC=1; return 1; }
+scripts/node/addr-defer-reconcile-254.sh	1	text	[ ! -e "$RUNDIR/addr-defer.said.hung" ] || { no "HUNG already said this boot (reboot first)"; fin; exit 1; }
+scripts/node/ble-central-254.sh	1	allowlisted:role deadman: the disarm check first on this line, exit 3 before any rm (row 36, §15; pinned in lint 2)	dm_disarmed || { dm_log "$1" "$DM_NOCLEAR"; mark_set dm-refused "$1"; echo "RECOVER-REFUSED $DM_NOCLEAR"; exit 3; }; rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"; batman-slot reboot committed ble-dm-254; exit 0
+scripts/node/ble-central-254.sh	1	text	dm_log "$1" "deadman: 02 IRK may have leaked in the flip segment — reboot (H-U7)"
+scripts/node/ble-central-254.sh	1	text	role_fire_restore() {\t# deadman on 02: kill the sessions; a possibly leaked IRK => reboot (H-U7), else restart bluetoothd
+scripts/node/ble-lib-254.sh	1	text	DM_NOCLEAR="deadman: tryboot not cleared — no reboot, lease kept, provd stays stopped; clear the flag by hand (vcmailbox 0x00038064 4 4 0, then word 6 of vcmailbox 0x00030064 4 4 0 must read 0x00000000), then ble-recover"
+scripts/node/ble-lib-254.sh	1	text	dm_log() {\t# one line on p6 before a deadman reboot (design §4.7): root dir, no symlink, link count 1
+scripts/node/ble-lib-254.sh	1	text	mark_here bt305-dirty && { fail "leftover: bt305-dirty marker of this boot ($(cut -d' ' -f2- "$ST/bt305-dirty")): the #305 UART is not restored; ble-recover (bt-uart-305.sh) or reboot"; r=1; }
+scripts/node/ble-lib-254.sh	1	text	mark_here dm-refused && { fail "leftover: dm-refused marker (run $(cut -d' ' -f2 "$ST/dm-refused")): a deadman / ble-recover could not clear the tryboot flag and did not reboot (lease kept, provd stopped) — clear the flag by hand (vcmailbox 0x00038064 4 4 0; word 6 of vcmailbox 0x00030064 4 4 0 must read 0x00000000), then ble-recover"; r=1; }
+scripts/node/ble-lib-254.sh	1	text	mark_here irk-exposed && { fail "leftover: irk-exposed marker of this boot (the IRK leaked in a tier-B run and was not voided; run ble-recover or reboot)"; r=1; }
+scripts/node/ble-lib-254.sh	1	text	role_fire_restore "$run"\t\t# role-specific; may reboot (irk-exposed)
+scripts/node/ble-periph-254.sh	1	text	cmd_rekey() {\t# void the IRK without a reboot: power off, stop, delete identity + peer dirs, start (E8, E27)
+scripts/node/ble-periph-254.sh	1	allowlisted:role deadman: the disarm check first on this line, exit 3 before any rm (row 37, §15; pinned in lint 2)	dm_disarmed || { dm_log "$1" "$DM_NOCLEAR"; mark_set dm-refused "$1"; echo "RECOVER-REFUSED $DM_NOCLEAR"; exit 3; }; rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"; batman-slot reboot committed ble-dm-254; exit 0
+scripts/node/ble-periph-254.sh	1	text	dm_log "$1" "deadman: IRK was exposed and not verified as voided — reboot (H-U6)"
+scripts/node/ble-periph-254.sh	1	text	role_fire_restore() {\t# deadman on 04: stop recorders, drop snoops + adv; leaked IRK => reboot (H-U6), else restore
+scripts/node/bt-uart-305.sh	1	allowlisted:role deadman: the disarm check first on this line, exit 3 before any rm (row 38, §15; pinned in lint 2)	dm_disarmed || { dm_log "$1" "$DM_NOCLEAR"; mark_set dm-refused "$1"; echo "RECOVER-REFUSED $DM_NOCLEAR"; exit 3; }; rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"; batman-slot reboot committed bt305-dm; exit 0
+scripts/node/bt-uart-305.sh	1	text	dm_log "$1" "deadman: $(cut -d' ' -f2- "$ST/bt305-dirty") — reboot to restore (#305)"
+scripts/node/bt-uart-305.sh	1	text	role_fire_restore() {\t# deadman / recover: stop every group; a raw CNTL write or a swapped module => reboot
+scripts/node/halow-fi-263.sh	1	allowlisted:the #263 fault-injection driver must be unloaded by a reboot whatever the flag; a refusal would leave it loaded (row 42)	[ -f $P/fi263_put_delay_ms ] || { log "loaded module has no fi263 knobs -> reboot"; reboot; exit 1; }
+scripts/node/halow-fi-263.sh	1	allowlisted:the #263 fault-injection driver must be unloaded by a reboot whatever the flag; a refusal would leave it loaded (row 42)	insmod "$KO" $PARAMS enable_watchdog=0 || { log "insmod failed -> reboot"; reboot; exit 1; }
+scripts/node/halow-fi-263.sh	1	text	log "END -> reboot"; sync
+scripts/node/halow-fi-263.sh	1	allowlisted:the #263 fault-injection driver must be unloaded by a reboot whatever the flag; a refusal would leave it loaded (row 42)	reboot
+scripts/node/halow-fi-263.sh	1	allowlisted:the #263 fault-injection driver must be unloaded by a reboot whatever the flag; a refusal would leave it loaded (row 42)	rmmod mm6108_sdio || { log "rmmod failed -> reboot"; reboot; exit 1; }
+scripts/node/halow-fi-263.sh	1	allowlisted:the #263 fault-injection driver must be unloaded by a reboot whatever the flag; a refusal would leave it loaded (row 42)	trap 'log "aborted -> reboot"; reboot' INT TERM
+scripts/node/ota-start-274.sh	1	text	grep "boot_id=$B " /opt/batdata/log/boot-reasons.log 2>/dev/null | grep -q "SYSUPGRADE-REBOOT" && echo "ok 6 this boot is the sysupgrade's reboot (no watchdog reset)" || { echo "FAIL 6 boot-reasons does not say SYSUPGRADE-REBOOT for boot $B"; fail=1; }
+scripts/node/prov-base-254.sh	1	text	say "OVERLAY-RESTORED $RUN (reboot now)"
+scripts/node/prov-rbarm-254.sh	1	text	r "FAIL-NEEDS-PERSON rc=$rc a0=$a0 a1=$a1 a2=$a2 tryboot=$t0>$t1 — [all] points at the wbox slot: rule out power first, then on A: /usr/sbin/batman-slot commit; do NOT reboot before that"
+scripts/node/prov-undo-lib-254.sh	1	text	rm-shutdown-reason)\t# the trial label `batman-slot apply` leaves in the run dir (E-H13 pre-step: no reboot follows)
+scripts/node/tmp-trust-280.sh	1	text	CAND="/tmp/batman-autocommit.hold /tmp/batman-fw-override /tmp/autocommit.committed /tmp/batman-reboot.want /tmp/batman-slot.busy /tmp/autocommit.decided /tmp/autocommit.wd /tmp/sysupgrade.tt280"
+scripts/node/tmp-trust-280.sh	1	text	for p in /tmp/batman-autocommit.hold /tmp/batman-fw-override /tmp/autocommit.committed /tmp/batman-reboot.want /tmp/batman-slot.busy; do

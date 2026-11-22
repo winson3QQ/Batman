@@ -2291,14 +2291,27 @@ bootid() { fssh "$1" 10 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null | tr -
 reboot_and_wait() {   # $1 node, $2 the command that reboots it (default: reboot), $3 dwait budget s
   local n=$1 cmd=${2:-reboot} max=${3:-220} b0 b1
   b0=$(bootid "$n"); [ -n "$b0" ] || { echo "FAIL boot_id unreadable before the reboot — not verified"; return 1; }
-  [ "${DV_TEST_NOREBOOT:-0}" = 1 ] && cmd=true
+  # #254 v1.6 group 4 §4.2 / §13.7: the trigger runs only when the one-shot tryboot flag reads 0, checked in the SAME ssh
+  # command (no second session, no window): an armed flag makes any reboot / panic boot the tryboot slot. The GET is
+  # chk_trybootget_209's; answered = word 2 0x80000000 and word 5 0x80000004; word 6 is 0x%08x, so it is compared
+  # numerically, as slot-guard-254.sh DISARM (a string compare with 0 never held on a real node). if/else: a failing
+  # trigger is never reported as the flag's fault. DV_TEST_NOREBOOT=1 replaces the whole command with `true`.
+  local pc='r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null); set -- $r; a=0; f=unread; if [ "${2:-}" = 0x80000000 ] && [ "${5:-}" = 0x80000004 ]; then case "${6:-}" in 0x[0-9a-fA-F]*) a=1; f=$(( $6 )) ;; esac; fi; soc=$(tr "\0" " " < /proc/device-tree/compatible 2>/dev/null)'
+  local full="$pc; if [ \$a = 1 ] && [ \"\$f\" = 0 ]; then $cmd; else echo \"TRYBOOT-NOT-CLEAR answered=\$a flag=\$f soc=\$soc\"; fi"
+  [ "${DV_TEST_NOREBOOT:-0}" = 1 ] && full=true
   # #270: the trigger's ssh outcome is evidence, not noise. A reboot/panic cuts the session (rc 255 is the normal
   # signature of a successful `echo c`); a node that was already wedged never takes the command at all, and the
   # boot_id change that follows then came from somewhere else (watchdog, brown-out). Record it so a later FAIL
-  # can say "the trigger was not delivered" instead of blaming the capture.
-  local trc t0 t1
-  t0=$(date +%s); fssh "$n" 15 "$cmd" >/dev/null 2>&1; trc=$?; t1=$(date +%s)
+  # can say "the trigger was not delivered" instead of blaming the capture. Its output is captured and printed.
+  local trc t0 t1 to why
+  t0=$(date +%s); to=$(fssh "$n" 15 "$full" 2>&1); trc=$?; t1=$(date +%s)
   echo "trigger '$cmd' ssh rc=$trc in $((t1-t0))s (255/cut = the node went down under it; 0 with a delay = command returned first)"
+  [ -n "$to" ] && printf '%s\n' "$to" | tr -d '\r' | sed 's/^/    trigger: /'
+  case "$to" in *TRYBOOT-NOT-CLEAR*)
+    case "$to" in *"answered=1 "*) why="armed" ;; *bcm2837*|*bcm2710*) why="not answered (Pi 3 firmware)" ;; *) why="not answered (Pi 4)" ;; esac
+    echo "FAIL tryboot flag $why on $n — not rebooting; the node is left as is (clear it by hand: vcmailbox 0x00038064 4 4 0, then word 6 of vcmailbox 0x00030064 4 4 0 must read 0x00000000; a firmware that does not answer the GET is chk_trybootget_209's FAIL)"
+    echo "NEEDS-PERSON reboot_and_wait ($n): tryboot flag $why — not rebooted" >> "$DIR/needs-person.txt"
+    return 1 ;; esac
   sleep 20
   dwait "$n" "$max" || { echo "FAIL node did not come back within ${max}s"; return 1; }
   b1=$(bootid "$n")

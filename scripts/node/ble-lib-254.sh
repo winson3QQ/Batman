@@ -164,6 +164,21 @@ dm_log() {	# one line on p6 before a deadman reboot (design §4.7): root dir, no
 	[ -e "$DMLOG" ] && ! file_ok "$DMLOG" && return 0
 	echo "$(date) boot=$(bootid | cut -c1-8) run=$1 $2" >> "$DMLOG"; sync
 }
+# dm_disarmed: the role deadmen's reboot (`batman-slot reboot committed`) is a plain reboot INTO the tryboot slot while
+# the one-shot flag is armed (batman-slot cmd_reboot): clear it, then read it back exactly as slot-guard-254.sh DISARM /
+# bootfacts.sh bf_get do (word 2 0x80000000, word 5 0x80000004 = the tag was answered, word 6 hex via $(( ))). rc 0 only
+# when it reads 0 (#254 v1.6 group 4 §4.2 rows 36-38, §13.1, §15). A firmware that does not answer = not disarmed.
+dm_disarmed() {
+	vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1
+	# shellcheck disable=SC2046
+	set -- $(vcmailbox 0x00030064 4 4 0 2>/dev/null)
+	[ "${2:-}" = 0x80000000 ] && [ "${5:-}" = 0x80000004 ] || return 1
+	case "${6:-}" in 0x[0-9a-fA-F]*) [ "$(( $6 ))" = 0 ] ;; *) return 1 ;; esac
+}
+# the refusal line of a role deadman / ble-recover that could not clear the flag (dm_log to p6, the dm-refused marker
+# and stdout: ble-recover prints it as RECOVER-REFUSED; the deadman's stdout is /dev/null). The lease and the dirty
+# markers stay, provd stays stopped (cmd_acquire stopped it); on the recover path the dm records are already gone.
+DM_NOCLEAR="deadman: tryboot not cleared — no reboot, lease kept, provd stays stopped; clear the flag by hand (vcmailbox 0x00038064 4 4 0, then word 6 of vcmailbox 0x00030064 4 4 0 must read 0x00000000), then ble-recover"
 
 # ---- batman-provd (254-p2-impl §3, L83): provd owns advertising instance 1 while it runs. The harness stops it only
 # under a BLE lease (acquire) and starts it again at release / deadman / recover; whatever may have removed provd.env
@@ -251,6 +266,10 @@ ble_state() {
 	r=0
 	mark_here flipped && { fail "leftover: flipped marker (an interrupted tier-B run left SC-only off?)"; r=1; }
 	mark_here irk-exposed && { fail "leftover: irk-exposed marker of this boot (the IRK leaked in a tier-B run and was not voided; run ble-recover or reboot)"; r=1; }
+	# a role deadman / ble-recover that could not clear the tryboot flag (group 4 §13.1, §15): a plain reboot now would
+	# boot the tryboot slot
+	mark_here dm-refused && { fail "leftover: dm-refused marker (run $(cut -d' ' -f2 "$ST/dm-refused")): a deadman / ble-recover could not clear the tryboot flag and did not reboot (lease kept, provd stopped) — clear the flag by hand (vcmailbox 0x00038064 4 4 0; word 6 of vcmailbox 0x00030064 4 4 0 must read 0x00000000), then ble-recover"; r=1; }
+	mark_here bt305-dirty && { fail "leftover: bt305-dirty marker of this boot ($(cut -d' ' -f2- "$ST/bt305-dirty")): the #305 UART is not restored; ble-recover (bt-uart-305.sh) or reboot"; r=1; }
 	if [ -f "$BT/lease" ]; then
 		set -- $(lease_read)
 		if [ "$2" = "$(bootid)" ]; then fail "leftover: BLE lease of run $1 (expires at uptime $3, now $(up_s))"; r=1; fi

@@ -11,6 +11,8 @@ NODE=${NODE:-10.41.1.3}
 RUN=${RUN:-${PL_NAME#prov-}$(date +%m%d%H%M)}
 HT=$(mktemp -d); RUNLOG=$HT/out.log; exec > >(tee "$RUNLOG") 2>&1
 H=$(cd "$(dirname "$0")/../.." && pwd)
+# shellcheck source=scripts/dv/slot-guard-254.sh
+. "$H/scripts/dv/slot-guard-254.sh"   # the slot guard (#254 v1.6 group 4 §4.2 row 7)
 TOOLS=${DV_PROV_TOOLS:?DV_PROV_TOOLS = host dir with provclient-arm64 (pushed to the node)}
 TOOLS_WSL=${DV_PROV_TOOLS_WSL:-/home/yello/batman-dv-tools/prov}
 PROBE=${DV_CRYPTPROBE:?DV_CRYPTPROBE = host dir from scripts/dv-cryptprobe-tools.sh (cryptprobe-arm64, MUSL, SHA256SUMS)}
@@ -96,7 +98,9 @@ pl_restore(){
 # --- 10. restore S0 (the node is LOCKED: publickey still works, proven above)
 o=$(nb p5-restore "$RUN"); echo "$o" | tail -1; grep -q "^P5-RESTORED" <<< "$o" || no "p5 restore"
 o=$(nb overlay-restore "$RUN"); echo "$o" | grep -E "EXTRA-REMOVED|OVERLAY" | tail -8; grep -q "^OVERLAY-RESTORED" <<< "$o" || no "overlay restore"
-b0=$(bid); q "(batman-slot reboot committed $PL_NAME </dev/null >/dev/null 2>&1 &)"; waitboot "$b0" && settle || no "reboot after restore"
+# guarded: this boot, the slot it runs (either), committed, tryboot disarmed; an empty boot id is refused
+b0=$(bid); sl=$(q 'batman-slot active'); o=$(q "$(reboot_guarded "${b0:0:8}" "$sl" 1 "$PL_NAME")")
+if [ "$o" = SENT ]; then waitboot "$b0" && settle || no "reboot after restore"; else no "reboot after restore refused [${o:-no answer}] — not rebooted"; fi
 q "mkdir -p -m 0700 /tmp/run/batman-dv"; scp -q $SSHO "$H/tests/prov-p1/overlay-allow.txt" root@$NODE:/tmp/run/batman-dv/overlay-allow.txt
 q "/etc/init.d/joinwatch stop >/dev/null 2>&1"
 o=""; for _ in 1 2 3; do nb manifest "$RUN" after >/dev/null; o=$(nb compare "$RUN" after); grep -q "p5 unreadable" <<< "$o" || break; sleep 10; done
