@@ -48,6 +48,11 @@ rows(){
 		n=$((n + 1))
 		c=$(caseof "$name") || { echo "FAIL $name: $c"; bad=$((bad + 1)); continue; }
 		o=$(derive_misc "$base" "$pd/$name.patch" "$T/out/$name") || { echo "FAIL $name: $o"; bad=$((bad + 1)); continue; }
+		# prov-misc-254 checks SHA256SUMS with sha256sum -c: exactly one line "<sha>  batman-autocommit"; provenance apart
+		[ "$(cat "$T/out/$name/SHA256SUMS")" = "$(sha256sum < "$T/out/$name/batman-autocommit" | cut -c1-64)  batman-autocommit" ] \
+			&& grep -qx "base_sha256=$(sha256sum < "$base" | cut -c1-64)" "$T/out/$name/PROVENANCE" \
+			&& grep -qx "patch_blob=$(cd "$T" && env -u GIT_DIR -u GIT_WORK_TREE git hash-object --no-filters "$pd/$name.patch")" "$T/out/$name/PROVENANCE" \
+			|| { echo "FAIL $name: SHA256SUMS / PROVENANCE not as specified: [$(cat "$T/out/$name/SHA256SUMS" "$T/out/$name/PROVENANCE" 2>&1 | tr '\n' '|')]"; bad=$((bad + 1)); continue; }
 		o=$(bash "$MA" "$T/out/$name/batman-autocommit" 2>&1); rc=$?
 		if [ "$rc" != 0 ] && grep -qF -- "FAIL $c —" <<< "$o"; then echo "ok   $name: derived, and FAILs its case [$c] ($(tail -1 <<< "$o"))"
 		else echo "FAIL $name: autocommit-mesh-arm rc $rc, its case [$c] did not FAIL: $(grep -E '^FAIL|AUTOCOMMIT-MESH-ARM' <<< "$o" | tr '\n' '|' | cut -c1-300)"; bad=$((bad + 1)); fi

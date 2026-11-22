@@ -76,8 +76,8 @@ while read -r name tag kind <&3; do
 		grep -q "WBOX-$name-" "$T/$name.d/batman-autocommit" || { no "$name: its autocommit has no witness WBOX-$name-"; continue; }
 		[ "$h" != "$RELAC" ] || { no "$name: its autocommit == release"; continue; }
 		case "$seenac" in *" $h "*) no "$name: autocommit ${h:0:16} equals another variant's"; continue ;; esac; seenac="$seenac$h "
-		mkdir -p "$DEST/$V/$name" && cp "$T/$name.d/batman-autocommit" "$T/$name.d/PROVENANCE" "$DEST/$V/$name/" \
-			&& (cd "$DEST/$V/$name" && sha256sum batman-autocommit > SHA256SUMS && sha256sum -c --quiet SHA256SUMS) \
+		mkdir -p "$DEST/$V/$name" && cp "$T/$name.d/batman-autocommit" "$T/$name.d/SHA256SUMS" "$T/$name.d/PROVENANCE" "$DEST/$V/$name/" \
+			&& (cd "$DEST/$V/$name" && sha256sum -c --quiet SHA256SUMS) \
 			&& echo "ok   $name (autocommit mutant, derived): ${h:0:16} -> $DEST/$V/$name" || no "$name: write to $DEST/$V/$name"
 		continue ;; esac
 	n=$((n + 1)); v="$V.dirty.wbox-$name"

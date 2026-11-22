@@ -55,7 +55,8 @@ derive_misc(){
 		blob=$(g hash-object --no-filters "$patch") && [ -n "$blob" ] || { echo "derive_misc: FAIL git hash-object of the patch"; exit 1; }
 		sb=$(sha256sum < "$base" | cut -c1-64); so=$(sha256sum < "$f" | cut -c1-64)
 		cp "$f" "$out/batman-autocommit.new" && mv -f "$out/batman-autocommit.new" "$out/batman-autocommit" \
-			&& (cd "$out" && sha256sum batman-autocommit > SHA256SUMS && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1 \
+			&& printf '%s  batman-autocommit\n' "$so" > "$out/SHA256SUMS" \
+			&& (cd "$out" && sha256sum -c --quiet SHA256SUMS) >/dev/null 2>&1 \
 			&& printf 'base_sha256=%s\npatch=%s\npatch_blob=%s\noutput_sha256=%s\n' "$sb" "$2" "$blob" "$so" > "$out/PROVENANCE" \
 			|| { echo "derive_misc: FAIL write to $out"; exit 1; }
 		echo "derive_misc: ok ${so:0:16} (base ${sb:0:16}, patch $(basename "$2") blob ${blob:0:12})"
