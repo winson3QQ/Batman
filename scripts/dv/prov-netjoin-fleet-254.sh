@@ -16,7 +16,7 @@
 # reboots.
 set -u
 PR_UNIT=prov-netjoin-fleet-254
-PR_USES_02=1   # as02 / restore02 restore 02 (reboot committed from A): pr_begin requires 02 A committed on V (254-v16-group4 §13.3)
+PR_USES_02=1   # as02 / restore02 put 02 back on slot A: pr_begin requires 02 A committed on V (254-v16-group4 §13.3)
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
 RUN04=$RUN; RUN02=${RUN}p; NODE04=$NODE; MAC04=$MAC; MAC02=""; WLH04=""; SNAP02=0; IN02=0; NETCFG04=""; NETID04=""
