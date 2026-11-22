@@ -28,5 +28,9 @@ for m in netobj nodecert blebridge httprelay benchstore signrel; do t "$m" "$m s
 t "bench_ip + p5_ap_back (stubbed node)" '^[1-9][0-9]* passed, 0 failed$' bash "$REPO/scripts/dv/test-bench-p5-254.sh"
 t "rollback guard + field-anchored slot match + lint" '^================ test-slot-guard: [1-9][0-9]* passed, 0 failed' bash "$REPO/scripts/dv/test-slot-guard-254.sh"
 t "restore / finish path (nodes.txt line, A found by MAC, finish NEEDS-PERSON)" '^================ test-restore: [1-9][0-9]* passed, 0 failed' bash "$REPO/scripts/dv/test-restore-254.sh"
+# 254-v16-group4 §3, §13.3, §13.6, §15: the 02 slot contract (pr_begin stub, the helpers' refusal, the PR_USES_02 lint)
+# and the node p5 restore with p5 left mounted, run unmodified in a mount namespace (FAILs where none can be made)
+t "02 slot contract (pr_begin before pr_acquire, as02 / restore02 / part 1 refusal, PR_USES_02 lint)" '^================ test-pr02: [1-9][0-9]* passed, 0 failed' bash "$REPO/scripts/dv/test-pr02-254.sh"
+t "p5 restore with p5 mounted (mount namespace, harness mounts only)" '^p5-restore-ns: [1-9][0-9]* passed, 0 failed$' bash "$REPO/tests/prov-p1/p5-restore-ns.sh"
 t "P3 unit table (gen-p3-units --check)" '^gen-p3-units: ok, [1-9][0-9]* rows in [1-9][0-9]* units' python3 "$REPO/scripts/dv/gen-p3-units.py" --check
 echo "$P passed, $F failed"; [ $F = 0 ]

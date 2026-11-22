@@ -216,11 +216,28 @@ p5-restore)
 	svc stop joinwatch batman-provhelper batman-provd
 	if [ "${PROV_BASE_SKIP:-}" = p5 ]; then say "SKIP p5 write (PROV_BASE_SKIP=p5, negative control)"; say "P5-RESTORED $RUN sha=SKIPPED"; exit 0; fi
 	lock_take
-	grep -q "^$P5 " /proc/mounts && { lock_drop; die "p5 is mounted"; }
+	# p5 mounts (254-v16-group4 §3.2 / §13.6 / §15): every p5 line of /proc/mounts is printed. Only the harness's own
+	# mountpoints are unmounted, with a plain umount: the mktemp dirs under the literal /tmp/run/batman-dv/ (= $DVD on
+	# every node) and chk_202's /mnt/dv-p5. Anything else (autocommit.p5, cfgsave-mnt.*, ...) is named and left alone,
+	# and then nothing is unmounted: FAIL, which the host makes a NEEDS-PERSON. Every die here drops the lock first.
+	set -f   # /proc/mounts escapes blanks (\040), so split on whitespace is exact; no globbing of the names
+	mps=$(awk -v d="$P5" '$1 == d {print $2}' /proc/mounts); other=""; busy=""
+	for mp in $mps; do
+		say "P5-MOUNTED $mp"
+		case "$mp" in *\\*|*/../*|*/..|*/./*|*/.) other="$other $mp" ;; /tmp/run/batman-dv/?*|/mnt/dv-p5) ;; *) other="$other $mp" ;; esac
+	done
+	[ -z "$other" ] || { for mp in $other; do say "P5-NOT-HARNESS $mp"; done; lock_drop; die "p5 is mounted outside the harness:$other — nothing unmounted, a person checks it"; }
+	for mp in $mps; do
+		if e=$(umount "$mp" 2>&1); then say "P5-UNMOUNTED $mp"; else say "P5-BUSY $mp: $e"; busy="$busy $mp"; fi
+	done
+	set +f
+	[ -z "$busy" ] || { lock_drop; die "p5 harness mount(s) not unmounted:$busy"; }
+	mps=$(awk -v d="$P5" '$1 == d {print $2}' /proc/mounts | tr '\n' ' ')
+	[ -z "$mps" ] || { lock_drop; die "p5 is still mounted: $mps"; }
 	dd if="$D/p5.img" of="$P5" bs=1M conv=fsync 2>/dev/null || { lock_drop; die "p5 dd write failed"; }
 	sz=$(wc -c < "$D/p5.img"); mb=$(( sz / 1048576 ))
 	# uncached read-back, same method as batman-slot raw_read_mb (direct I/O, else drop caches first)
-	got=$( { dd if="$P5" bs=1M count="$mb" iflag=direct 2>/dev/null || { echo 3 > /proc/sys/vm/drop_caches; dd if="$P5" bs=1M count="$mb" 2>/dev/null; }; } | sha256sum | cut -c1-64)
+	got=$( { dd if="$P5" bs=1M count="$mb" iflag=direct 2>/dev/null || { [ -n "${PROV_BASE_TEST_ROOT:-}" ] || echo 3 > /proc/sys/vm/drop_caches; dd if="$P5" bs=1M count="$mb" 2>/dev/null; }; } | sha256sum | cut -c1-64)
 	lock_drop
 	[ "$got" = "$want" ] || die "p5 read-back sha $got != $want"
 	say "P5-RESTORED $RUN sha=$(echo "$want" | cut -c1-16)"
