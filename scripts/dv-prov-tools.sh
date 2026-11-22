@@ -16,6 +16,8 @@ REPO=${REPO:-$(cd "$(dirname "$0")/.." && pwd)}
 OUT=${PR_OUT:-//wsl.localhost/Ubuntu-24.04/home/yello/out}; OUTW=${PR_OUT_WSL:-/home/yello/out}
 DEST=${DV_PROV_TEST:-$HOME/batman-dv-tools/prov-test}
 REPO_WSL=${REPO#//wsl.localhost/Ubuntu-24.04}   # scripts/dv/wsl-rootfs.sh as WSL sees it
+# a Windows checkout (/c/src/...) is /mnt/c/src/... to WSL (as prov-254.sh; 2026-11-22: "wsl-rootfs.sh: No such file")
+case "$REPO_WSL" in /[a-zA-Z]/*) REPO_WSL=/mnt/$(printf %s "${REPO_WSL:1:1}" | tr 'A-Z' 'a-z')${REPO_WSL:2} ;; esac
 fails=0; no(){ echo "FAIL $*"; fails=$((fails + 1)); }
 wslx(){ if command -v wsl.exe >/dev/null 2>&1; then MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -u yello -- "$@"; else "$@"; fi; }
 # file_of <version> <rootfs path> <file>: one file of the payload's rootfs into <file>; rc 1 when the payload / sums /
