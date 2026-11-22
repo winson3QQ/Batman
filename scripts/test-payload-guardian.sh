@@ -81,6 +81,11 @@ GP=""
 gstart(){ sh "$G" t >> "$T/glog" 2>&1 & GP=$!; }   # sh = busybox ash in BUSYBOX=1 mode
 gstop(){ [ -n "$GP" ] && kill "$GP" 2>/dev/null; wait "$GP" 2>/dev/null; GP=""; }
 tick(){ rm -f "$DF"; adv "${1:-1}"; waitfor '[ -s "$DF" ]' 10; }
+# fresh: wait for a guardian poll that STARTS after the caller's state change (the loop's own `docker ps … {{.State}}`;
+# the tick also runs `docker ps`, so only that format counts). The poll in flight
+# may still be in its tick, computing the verdict from the state it read before the change; its drift.json would
+# land after tick()'s rm and be read as the new verdict (CI 2026-11-22: case 4 "verdict DRIFT", app NOT running).
+fresh(){ fn=$(wc -l < "$S/calls"); waitfor "tail -n +$((fn + 1)) \"\$S/calls\" | grep -qF '{{.Names}} {{.State}}'"; }
 mkc(){ mkdir -p "$S/c/$1"; echo "${2:-running}" > "$S/c/$1/status"; echo "${3:-CFG1}" > "$S/c/$1/label"; echo "${4:-t}" > "$S/c/$1/tenant"
 	echo "${5:-no}" > "$S/c/$1/policy"; echo 0 > "$S/c/$1/rcount"; echo "s$1" > "$S/c/$1/started"; }
 
@@ -115,7 +120,7 @@ rm -f "$S/pr-rc"; echo running > "$S/c/app/status"
 # 4 rc 4/5 (stopping, lock busy) is cancelled, not counted
 adv 700; : > "$LED"; echo 5 > "$S/pr-rc"; echo exited > "$S/c/app/status"
 waitfor 'grep -q cancel "$LED"' && ok "4 lock busy (rc 5): a cancel line follows the record" || no "4 no cancel: $(cat "$LED")"
-rm -f "$S/pr-rc"; echo running > "$S/c/app/status"; tick 1
+rm -f "$S/pr-rc"; echo running > "$S/c/app/status"; fresh || no "4 no guardian poll after the cancel"; tick 1
 [ "$(status)" = OK ] && ok "4 a cancelled attempt does not make the tenant DRIFT" || { no "4 verdict $(status)"; cat "$VL"; }
 
 # 5 .stopping / shutdown marker: an exited container is neither restarted nor recorded
