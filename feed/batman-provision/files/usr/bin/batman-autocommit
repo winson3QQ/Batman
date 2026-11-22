@@ -272,7 +272,9 @@ if [ "$DRY" = 1 ]; then
 	if ! mkdir "$DLOCK" 2>/dev/null; then
 		{ [ -d "$DLOCK" ] && [ ! -L "$DLOCK" ] && [ -O "$DLOCK" ]; } || { echo "batman-autocommit: dry run: $DLOCK is not our directory" >&2; exit 1; }
 		dry_alive && { echo "batman-autocommit: dry run: another dry run is running (pids $(cat "$DLOCK/pids" 2>/dev/null))" >&2; exit 1; }
-		# take-over = remove, then mkdir again: of two dry runs taking over at once only one mkdir wins (code review A m3)
+		# take-over = remove, then mkdir again. Two dry runs that BOTH see a stale lock can still both pass (B's rm may
+		# remove the lock A just made; code review A2 m1): accepted — a test seam only, the harness runs one dry run
+		# at a time; the window is the two commands below
 		log "dry run: taking over a stale lock (pids $(cat "$DLOCK/pids" 2>/dev/null))"
 		rm -rf "$DLOCK"
 		mkdir "$DLOCK" 2>/dev/null || { echo "batman-autocommit: dry run: lost the take-over of $DLOCK" >&2; exit 1; }

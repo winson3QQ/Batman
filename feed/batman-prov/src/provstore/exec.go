@@ -144,7 +144,8 @@ const BulkDir = "/tmp/run/batman-provd-bulk"
 // code review A-M1 / B m2). If nothing is cleaning up after that round, stopGroup returns (an unkillable member is then
 // the caller's abandoned case, 10 + 10 s as before); else 30 s after the TERM every member still there gets SIGKILL.
 // Kills go to the pids just seen, never to -pgid, so a group id reused after the group emptied is never hit. Returns
-// how many members were killed.
+// how many members were killed. Worst case per deadline: 30 s here (a handler that never ends) + the caller's 10 s
+// wait = the helper mutex held ~40 s past the deadline (code review A2 m4; §13).
 func stopGroup(pgid int) int {
 	syscall.Kill(-pgid, syscall.SIGTERM)
 	t0, killed, soft := time.Now(), 0, false
