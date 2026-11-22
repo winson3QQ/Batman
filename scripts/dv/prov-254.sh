@@ -467,7 +467,7 @@ pr_restore_cycle(){
 	pl restoring set >/dev/null
 	o=$(pw unbind-all); say "unbind: $(echo $o)"
 	q "rm -f $HOLDF $PR_PAY; rm -rf /tmp/run/batman-prov-test"
-	o=$(PB_ENV=${skip:+PROV_BASE_SKIP=$skip} nb p5-restore "$RUN"); PR_RCYCLE_OUT=$o; say "$(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { no "p5 restore"; return 1; }
+	o=$(PB_ENV=${skip:+PROV_BASE_SKIP=$skip} nb p5-restore "$RUN"); PR_RCYCLE_OUT=$o; grep -E '^(P5-|FAIL)' <<< "$o" | while IFS= read -r l; do say "p5-restore: $l"; done; grep -qE '^(P5-|FAIL)' <<< "$o" || say "p5-restore: $(echo "$o" | tail -1)"; grep -q "^P5-RESTORED $RUN " <<< "$o" || { no "p5 restore"; return 1; }
 	o=$(PB_ENV=${skip:+PROV_BASE_SKIP=$skip} nb overlay-restore "$RUN"); PR_RCYCLE_OUT="$PR_RCYCLE_OUT
 $o"; echo "$o" | grep -E "EXTRA-|OVERLAY|SKIP" | tail -10 | sed 's/^/    /'
 	grep -q "^OVERLAY-RESTORED $RUN" <<< "$o" || { no "overlay restore"; return 1; }
@@ -655,6 +655,30 @@ pr_p9(){	# the P9 subset of pr_begin: S0 slot condition, nothing left of an earl
 	nb02 || { echo "FAIL 02 ($PEERMAC) is not a mesh neighbour of 04 (neighbours: $(field "$o" peers))"; r=1; }
 	return $r
 }
+# The 02 slot contract (254-v16-group4 §3.1 / §13.3 / §15). A unit that changes or needs 02's slot sets PR_USES_02=1
+# BEFORE pr_begin; pr_begin then requires 02 A committed on V and FAILs before the lease otherwise. Any other unit gets
+# a NOTE, except a 02 in a trial: that FAILs every unit (a later "02 rebooted" would be blamed on the unit).
+# PR_02_ENFORCED=1 records that the contract held; as02 / restore02 / fleetchan part 1 refuse without it (pr_need_02).
+pr_02_check(){
+	local s sl tr v m="" u=${PR_USES_02:-0}
+	PR_02_ENFORCED=0
+	s=$(qp "$ST"); sl=$(field "$s" slot); tr=$(field "$s" trial_rc); v=$(field "$s" ver)
+	say "02: ${s:-no answer}"
+	[ "$tr" = 0 ] && { no "02 not settled (in a trial, slot ${sl:-?}): wait or check it by hand"; return 1; }
+	case "$sl/$tr" in
+	A/1|B/1)
+		if [ "$v" != "$PR_V" ]; then m="02 runs ${v:-?}, not V ($PR_V): upgrade 02 to V: twice if it is on A now, once if it is on B, then it is on A"
+		elif [ "$sl" = B ]; then m="02 on B committed on V: one more OTA of V to 02 lands it on A (the owner approves each OTA; procedure as Desktop/Batman/v16/g4/ota36.log)"; fi ;;
+	*) m="02 not settled (unreachable or unreadable: slot=[$sl] trial_rc=[$tr]): wait or check it by hand" ;;
+	esac
+	if [ -z "$m" ]; then [ "$u" = 1 ] && PR_02_ENFORCED=1; say "02: A committed on V"; return 0; fi
+	[ "$u" = 1 ] && { no "$m"; return 1; }
+	echo "NOTE 02: $m (not enforced: this unit does not set PR_USES_02=1)"; return 0
+}
+pr_need_02(){	# <step>: a step on 02's slot runs only when pr_begin enforced the 02 contract
+	[ "${PR_02_ENFORCED:-0}" = 1 ] && return 0
+	no "$1 acts on 02's slot, but pr_begin did not enforce the 02 contract (set PR_USES_02=1 before pr_begin)"; return 1
+}
 # pr_begin <secs> [upper=<variant-file>:<sha>] [helper=<variant-file>:<sha>[:killpoint=<p>]]
 pr_begin(){
 	local secs=$1 o a; shift
@@ -668,6 +692,7 @@ pr_begin(){
 	PR_PROTB_LS=$(qr "$PROTB_LS")
 	[ -n "$PR_PEER_BOOT" ] || { PR_BEGUN=0; pr_unlock; no "02 unreachable at $PEER"; return 1; }
 	o=$(qp "cat /sys/class/net/wlh0/address"); [ "$o" = "$PEERMAC" ] || { PR_BEGUN=0; pr_unlock; no "02 wlh0 is [$o], not PEERMAC $PEERMAC: the neighbour checks would test the wrong node"; return 1; }
+	pr_02_check || { PR_BEGUN=0; pr_unlock; return 1; }
 	PR_DEADLINE=$(( $(mono) + secs )); o=$(pr_acquire "$secs") || { echo "$o"; PR_BEGUN=0; pr_unlock; no "lease"; return 1; }; echo "$o"
 	q "mkdir -p -m 0700 /tmp/run/batman-dv"; scp -q $SSHO "$REPO/tests/prov-p1/overlay-allow.txt" root@$NODE:/tmp/run/batman-dv/overlay-allow.txt
 	# the start state, read BEFORE the snapshot until it is one of the four: a failed read must not switch the end check

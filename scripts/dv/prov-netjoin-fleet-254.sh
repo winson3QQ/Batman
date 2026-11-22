@@ -16,6 +16,7 @@
 # reboots.
 set -u
 PR_UNIT=prov-netjoin-fleet-254
+PR_USES_02=1   # as02 / restore02 restore 02 (reboot committed from A): pr_begin requires 02 A committed on V (254-v16-group4 §13.3)
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
 RUN04=$RUN; RUN02=${RUN}p; NODE04=$NODE; MAC04=$MAC; MAC02=""; WLH04=""; SNAP02=0; IN02=0; NETCFG04=""; NETID04=""
@@ -28,6 +29,7 @@ back04(){ NODE=$NODE04; MAC=$MAC04; RUN=$RUN04; PRD=/tmp/run/batman-dv/bt/$RUN; 
 G_DL=0; G_RS=0; G_SN=0
 as02(){
 	local rc
+	pr_need_02 as02 || return 1
 	G_DL=$PR_DEADLINE; G_RS=$PR_RESTORING; G_SN=$PR_SNAPPED; IN02=1
 	NODE=$PEER; MAC=$MAC02; RUN=$RUN02; PRD=/tmp/run/batman-dv/bt/$RUN; PR_RESTORING=0; PR_SNAPPED=$SNAP02
 	"$@"; rc=$?
@@ -73,6 +75,7 @@ fleet(){
 }
 restore02(){
 	local o
+	pr_need_02 restore02 || return 1
 	PR_FINAL=1 as02 pr_restore || { pr_needs_person "02 restore failed (run $RUN02) — 02 is LOCKED + member with this run's owner key; keys kept in $WSLK"; return 1; }
 	# 02's start state is legacy (checked before pr_begin): finish only when it is legacy again and the finish answers
 	# FINISHED; anything else keeps 02's snapshot for a person (review 2026-11-09 A-MINOR-4)
