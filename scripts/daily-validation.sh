@@ -744,7 +744,7 @@ chk_trybootget_209() { fssh "$1" 12 '                          # #209 v4.3 D5: t
   echo "tryboot GET: ${r:-no answer}"
   # Both SoCs must answer: batman-slot only WARNs on a silent Pi 4 firmware (armed blind) — that is a
   # degraded OTA, so the daily run flags it, with a SoC-specific message.
-  # #254 L175: word 5 = 0x80000004 = the firmware handled the tag (an unhandled tag leaves the request's 0 in word 6)
+  # #254 L175: word 5 = 0x80000004 = the firmware handled the tag (an unhandled tag leaves the request value 0 in word 6)
   if [ "${2:-}" != 0x80000000 ] || [ "${5:-}" != 0x80000004 ]; then
     case "$(cat /proc/device-tree/compatible)" in
       *bcm2837*) echo "Pi 3 firmware does not answer the tryboot GET — batman-slot apply will REFUSE every OTA" ;;
