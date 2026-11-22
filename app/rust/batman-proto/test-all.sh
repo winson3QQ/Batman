@@ -61,31 +61,29 @@ else
 	else echo "FAIL flutter analyze lib: rc=$rc"; grep -E "error|warning|info" <<< "$out" | head -5; fail=1; fi
 	# flutter test's JSON events: every passed test by its full name (a progress reporter skips names of fast tests).
 	# 254-app-update (r2 A-m11): the update page tests must be among them, and no test skipped.
-	js=$("$FLUTTER" test -r json 2>/dev/null); rc=$?
-	jf=$(mktemp); printf '%s\n' "$js" > "$jf"
-	summary=$(python3 - "$jf" "M17 SAS screens" "D8: the Specifier path" "r1 A-M2 / B-M1: one upload stage joins the node AP once" <<'PY'
-import json, sys
-names, done = {}, []
-for line in open(sys.argv[1], encoding="utf-8"):
-    line = line.strip()
-    if not line.startswith("{"):
-        continue
-    e = json.loads(line)
-    if e.get("type") == "testStart":
-        names[e["test"]["id"]] = e["test"]["name"]
-    elif e.get("type") == "testDone" and not e.get("hidden"):
-        done.append((names.get(e["testID"], ""), e.get("result"), e.get("skipped")))
-passed = [n for n, r, s in done if r == "success" and not s]
-miss = [m for m in sys.argv[2:] if not any(m in n for n in passed)]
-skipped = [n for n, r, s in done if s]
-failed = [n for n, r, s in done if r != "success"]
-print(len(passed), len(failed), "|".join(miss + ["skipped: " + n for n in skipped]))
-PY
-)
-	rm -f "$jf"
-	read -r n nfail miss <<< "$summary"
+	# #254 L220: the judge (tools/flutter-test-summary.py) prints the summary on line 1, then one "FAILED: <name>" line
+	# per failed test; first it must name the one failure of its fixture, else it is blind and FAILs.
+	SUM=tools/flutter-test-summary.py
+	st=$(python3 "$SUM" tools/testdata/flutter-test-one-failure.json); rc=$?
+	read -r n nfail miss <<< "$(head -1 <<< "$st")"
+	if [ "$rc" = 0 ] && [ "$n" = 1 ] && [ "$nfail" = 1 ] && [ -z "$miss" ] \
+		&& [ "$(grep '^FAILED: ' <<< "$st")" = "FAILED: fixture: the one failing test" ]; then
+		echo "PASS flutter test judge: names the fixture's failed test"
+	else echo "FAIL flutter test judge: rc=$rc, fixture output:"; head -5 <<< "$st"; fail=1; fi
+	jf=$(mktemp); ef=$(mktemp)
+	"$FLUTTER" test -r json > "$jf" 2> "$ef"; rc=$?
+	summary=$(python3 "$SUM" "$jf" "M17 SAS screens" "D8: the Specifier path" "r1 A-M2 / B-M1: one upload stage joins the node AP once")
+	read -r n nfail miss <<< "$(head -1 <<< "$summary")"
 	if [ "$rc" = 0 ] && [ "${n:-0}" -gt 0 ] && [ "${nfail:-1}" = 0 ] && [ -z "$miss" ]; then echo "PASS flutter test: $n tests"
-	else echo "FAIL flutter test: rc=$rc passed=${n:-?} failed=${nfail:-?}${miss:+ missing: $miss}"; fail=1; fi
+	else
+		echo "FAIL flutter test: rc=$rc passed=${n:-?} failed=${nfail:-?}${miss:+ missing: $miss}"; fail=1
+		names=$(grep '^FAILED: ' <<< "$summary")
+		if [ -n "$names" ]; then
+			head -20 <<< "$names"
+			k=$(wc -l <<< "$names"); [ "$k" -gt 20 ] && echo "... and $((k - 20)) more failed tests"
+		elif [ "$rc" != 0 ] && [ "${nfail:-0}" = 0 ]; then echo "no test failed but flutter test rc=$rc; its stderr (last 20 lines):"; tail -20 "$ef"; fi
+	fi
+	rm -f "$jf" "$ef"
 fi
 [ "$fail" = 0 ] && echo "ALL PASS" || echo "SUITE FAIL"
 exit "$fail"

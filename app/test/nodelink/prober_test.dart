@@ -62,9 +62,15 @@ class FakeSession implements OwnerSession {
   final List<OwnerStep> script;
   final String statusRow, color;
   final signs = <int>[];
+  /// When each frame reached the session, on [clock] (#329 L196: a timing test proves a fragment arrived in time).
+  final frameAtMs = <int>[];
+  static final clock = Stopwatch()..start();
 
   @override
-  OwnerStep? onFrame({required List<int> frame}) => script.isEmpty ? null : script.removeAt(0);
+  OwnerStep? onFrame({required List<int> frame}) {
+    frameAtMs.add(clock.elapsedMilliseconds);
+    return script.isEmpty ? null : script.removeAt(0);
+  }
   @override
   OwnerStep? signed({required List<int> der}) {
     signs.add(der.length);
@@ -142,10 +148,16 @@ void main() {
           signOwner: (input) async => Uint8List(70),
         );
     final f = p.probe(link, 'Y1', due: Future<void>.delayed(msg2), cancelled: cancelled ?? Completer<void>().future);
-    for (var i = 0; i < frames; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 1));
-      radio.tx.add([1]);
-    }
+    // #329 L196: the feeder runs beside the probe and stops when it ends, so the caller times the prober, not the
+    // feeder (awaiting 99 x 1 ms took ~1 s on Windows)
+    var ended = false;
+    unawaited(f.whenComplete(() => ended = true));
+    unawaited(() async {
+      for (var i = 0; i < frames && !ended; i++) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+        if (!ended) radio.tx.add([1]);
+      }
+    }());
     return f;
   }
 
@@ -273,9 +285,15 @@ void main() {
   });
   test('r2 D-2: fragments that never make a msg2 end at the msg2 budget, not at the 20 s answer limit', () async {
     final sw = Stopwatch()..start();
+    final t0 = FakeSession.clock.elapsedMilliseconds;
     final o = await probe([], frames: 99, msg2: const Duration(milliseconds: 50)); // every frame: no step yet
     expect(o.res, Res.noResponse);
-    expect(sw.elapsedMilliseconds, lessThan(1000));
+    expect(sw.elapsedMilliseconds, lessThan(1000), reason: 'the 50 ms msg2 budget ends it, not the 20 s answer limit');
+    // #329 L196 (review v1 A-m11): a fragment reached the session before the budget ran out, else a stalled timer
+    // would let this pass without testing anything (and the prober.dart:228 mutant would pass too)
+    final at = rust.session.frameAtMs;
+    expect(at, isNotEmpty, reason: 'no fragment reached the session');
+    expect(at.first - t0, lessThan(50), reason: 'the first fragment arrived after the 50 ms budget');
   });
 
   test('r2 D21: after msg2, silence ends the attempt at answerMax', () async {
