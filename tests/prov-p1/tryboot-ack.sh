@@ -21,19 +21,18 @@ STUB
 chmod 755 "$T/bin/vcmailbox"
 fx(){ awk -v f="$1" '$0 ~ "^"f"\\(\\) *\\{" {p=1} p {print} p && /^\}/ {exit}' "$BS"; }
 for f in disarm_tryboot arm_tryboot; do [ -n "$(fx $f)" ] || { no "$f() missing from $BS"; echo "TRYBOOT-ACK cases=0 fails=1"; exit 1; }; done
-# the library loader as batman-slot defines it (BATLIB from BATMAN_LIB, bf_lib); absent on an old batman-slot
-loader=$(sed -n '/^BATLIB=/,/^bf_lib()/p' "$BS")   # BATLIB=, lib_ok(), the BATMAN_LIB check, bf_lib()
+# the library loader as batman-slot defines it (bf_lib, a fixed /usr/lib/batman path); absent on an old batman-slot.
+# Each run points that path at its lib dir by sed (no env seam in the product)
+loader=$(grep '^bf_lib()' "$BS")
 # run <what: get|disarm|arm> <layout> <lib dir> -> one line: the result / DIE msg / WARN msg + "ARMED"/"CLEARED"
 run(){
 	(
-		export PATH="$T/bin:$PATH" BATMAN_LIB="$3" RUNDIR="$T/run"; mkdir -p "$T/run"
+		export PATH="$T/bin:$PATH" RUNDIR="$T/run"; mkdir -p "$T/run"
 		die(){ echo "DIE $*" >&2; exit 1; }; warn(){ echo "WARN $*" >&2; }
 		st(){ :; }; otalog_k(){ :; }; fault(){ return 1; }; ota_thr(){ :; }; fw_part(){ :; }; ab_section(){ :; }; sync(){ :; }
 		layout(){ echo "$L"; }; L=$2; T=B
 		if [ "$1" = get ]; then . "$3/bootfacts.sh" 2>/dev/null; type bf_get >/dev/null 2>&1 || { echo "NOLIB"; exit 0; }; bf_get; exit 0; fi
-		eval "$loader"
-		# "no lib" rows: never fall back to a host /usr/lib/batman (code review A2 m2)
-		[ "$3" = "$T/nolib" ] && BATLIB=$3
+		eval "$(printf '%s\n' "$loader" | sed "s#/usr/lib/batman#$3#g")"   # never the host's /usr/lib/batman (A2 m2)
 		eval "$(fx disarm_tryboot)"; eval "$(fx arm_tryboot)"
 		if [ "$1" = disarm ]; then disarm_tryboot && echo CLEARED; else arm_tryboot >/dev/null && echo ARMED; fi
 	) 2>&1 | tr '\n' ' ' | sed 's/ *$//'
@@ -72,15 +71,8 @@ check "pi3 disarm code not ok"  disarm pi3 "$T/nolib" "$BAD" '^DIE cannot read t
 check "pi3 arm answered 1"      arm pi3 "$T/nolib" "$A1" '^ARMED$'
 check "pi3 arm unacked"         arm pi3 "$T/nolib" "$UN" '^DIE tryboot flag did not arm \(GET returned 0x00000000\)'
 check "pi3 arm code not ok"     arm pi3 "$T/nolib" "$BAD" '^DIE cannot read the tryboot flag back'
-# BATMAN_LIB is honoured only for a directory writable by nobody else: a group-writable one falls back to the default
-chmod 775 "$T/lib"; cases=$((cases+1))
-o=$(BATMAN_LIB="$T/lib" sh -c "$loader"'; echo "$BATLIB"')
-[ "$o" = /usr/lib/batman ] && ok "BATMAN_LIB group-writable -> ignored ($o)" || no "BATMAN_LIB group-writable honoured ($o)"
-chmod 755 "$T/lib"
-# … and so is a directory whose bootfacts.sh is group-writable (the sourced file is checked too; code review A m7 / B m6)
-chmod 664 "$T/lib/bootfacts.sh"; cases=$((cases+1))
-o=$(BATMAN_LIB="$T/lib" sh -c "$loader"'; echo "$BATLIB"')
-[ "$o" = /usr/lib/batman ] && ok "BATMAN_LIB with a group-writable bootfacts.sh -> ignored ($o)" || no "BATMAN_LIB with a group-writable bootfacts.sh honoured ($o)"
-chmod 644 "$T/lib/bootfacts.sh"
+# batman-slot sources bootfacts.sh only by its fixed absolute path (s5-lock-lint resolves every sourced file; no env seam)
+cases=$((cases+1))
+if grep -q 'BATMAN_LIB\|\$BATLIB' "$BS"; then no "batman-slot still has a library env seam"; else ok "bootfacts.sh is sourced by its fixed path only"; fi
 echo "TRYBOOT-ACK cases=$cases fails=$fails"
 [ $cases -gt 0 ] && [ $fails = 0 ]
