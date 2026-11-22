@@ -6,7 +6,7 @@
 #   precond                 prints what forbids a dry run: sysupgrade-running / fw-override / hold-flag / hold-once /
 #                           acrun (a batman-autocommit run alive); nothing = ok
 #   save                    snapshot (§19.1 / §20.1): p6 prov-state, ota-armed.mesh; run dir autocommit.{wd,decided,why,
-#                           hold-consumed,hold-discarded,ctl.dry}, autocommit-dryrun.log, canary-ok (presence + content);
+#                           hold-consumed,hold-discarded,ctl.dry,dry.d,dry.lock,canary-ok}, autocommit-dryrun.log (presence + content);
 #                           the helper pid; ota-trace line count
 #   setps this|other <writer> <verdict> <mesh_expect>   white-box prov-state: fields 3 and 5 copied from the snapshot
 #   setarm ab|other|none [<mode>]   white-box ota-armed.mesh "<boot8> <active slot> <mode>" (ab = the arm boot: the
@@ -32,7 +32,10 @@
 set -u
 W=$(cd "$(dirname "$0")" && pwd); R=${PRM_ROOT:-}; ST=$R/opt/batdata/state; LG=$R/opt/batdata/log; P=${PRM_PROC:-/proc}
 . "$R/usr/lib/batman/rundir.sh" || { echo "FAIL no rundir.sh"; exit 1; }
-RDF="autocommit.wd autocommit.decided autocommit.why autocommit.hold-consumed autocommit.hold-discarded autocommit.ctl.dry autocommit-dryrun.log canary-ok"
+# #254 L96: a dry run keeps its markers in autocommit.dry.d (its lock is not restored: a dead pid would be planted back,
+# code review B m9); the older names stay for an image
+# without it. canary-ok was missing its autocommit. prefix (it never matched).
+RDF="autocommit.wd autocommit.decided autocommit.why autocommit.hold-consumed autocommit.hold-discarded autocommit.ctl.dry autocommit.dry.d autocommit-dryrun.log autocommit.canary-ok"
 up(){ cut -d. -f1 /proc/uptime; }
 cs(){ u=$(cut -d' ' -f1 /proc/uptime); echo "${u%.*}${u#*.}"; }   # uptime in 1/100 s (two decimals in /proc/uptime)
 nap(){ sleep 0.1 2>/dev/null || sleep 1; }                       # a busybox without fractional sleep: 1 s steps

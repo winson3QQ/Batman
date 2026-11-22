@@ -335,8 +335,10 @@ func cmdSign(keyPath string) {
 	}
 }
 
-// isCoseSigStructure: the only "cose" messages the signer signs are a COSE Sig_structure for a net_config or a
-// net_secrets object (["Signature1", protected, "batman-netcfg-v1" | "batman-secrets-v1", payload])
+// isCoseSigStructure: the only "cose" messages the signer signs are a COSE Sig_structure for a net_config, a
+// net_secrets or a member_list object (["Signature1", protected, "batman-netcfg-v1" | "batman-secrets-v1" |
+// "batman-members-v1", payload]). member_list was added to network/update in 508dcb6 (2026-11-13) without this rule:
+// every update unit got "signer refused" since (found 2026-11-22, prov-powerloss-txn4-254 on wsl.35)
 func isCoseSigStructure(msg []byte) bool {
 	x, rest, err := cDec(msg)
 	a, ok := x.([]any)
@@ -344,7 +346,7 @@ func isCoseSigStructure(msg []byte) bool {
 		return false
 	}
 	l, _ := a[2].([]byte)
-	return string(l) == labelNetcfg || string(l) == labelSecrets
+	return string(l) == labelNetcfg || string(l) == labelSecrets || string(l) == labelMembers
 }
 
 // ---- node side ----------------------------------------------------------------------------------------------------

@@ -63,6 +63,7 @@ cat "$OUT"
 
 # N3: every run-dir basename the tree uses must be in the path table — node code ($RUNDIR, $_R, $PSTOP_RUN) and
 # the harness ($R from the RDR resolver) must agree on the names, or a reader polls a file nobody writes
+# ($ACD = batman-autocommit's marker dir: the run dir, or its autocommit.dry.d in a dry run, #254 L96)
 TABLE=$ROOT/scripts/rundir-paths.txt
 if [ -f "$TABLE" ]; then
 	nt=0
@@ -81,7 +82,7 @@ if [ -f "$TABLE" ]; then
 		done < "$TABLE"
 		[ "$hit" = 1 ] || { echo "NOT IN PATH TABLE: run-dir name '$nm' (add it to scripts/rundir-paths.txt with its writer/reader)"; nt=$((nt+1)); }
 	done < <( { files | grep -vE '^scripts/(check|test)-tmp-trust\.sh$' | xargs sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#[^"'"'"']*$//' 2>/dev/null \
-		| grep -oE "(\\\$(RUNDIR|_R|PSTOP_RUN|R)|\\\$\\{(RUNDIR|_R|PSTOP_RUN|R)(:-[^}]*)?\\})/$N([^/A-Za-z0-9_.<>\${}-]|\$)" \
+		| grep -oE "(\\\$(RUNDIR|_R|PSTOP_RUN|R|ACD)|\\\$\\{(RUNDIR|_R|PSTOP_RUN|R|ACD)(:-[^}]*)?\\})/$N([^/A-Za-z0-9_.<>\${}-]|\$)" \
 		| sed -E 's#^\$\{?[A-Z_]+(:-[^}]*)?\}?/##; s#[^A-Za-z0-9_.<>${}-]$##'
 		# `mark` = the run-dir marker helper only where 95-batman-storage defines it (the harness has an unrelated mark)
 		files | grep -E '/95-batman-storage$' | xargs sed -e 's/^[[:space:]]*#.*$//' 2>/dev/null \

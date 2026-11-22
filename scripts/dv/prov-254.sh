@@ -917,7 +917,11 @@ pr_killpoint(){
 	lf=$(mktemp); timeout 900 ssh $SSHO root@$NODE 'logread -f' > "$lf" 2>/dev/null & lp=$!
 	sleep 2
 	r=$(pr_pc owner.pem FD3="$PR_FD3" -- "$@"); say "trigger output: $(echo "$r" | grep -v '^NETCFG' | tr '\n' '|' | cut -c1-200)"
-	grep -q '^RESULT' <<< "$r" && no "(b) the op got a reply — killpoint $p did not fire" || ok "(b) no reply to the op (the node went down)"
+	# (b) "no reply" counts only when the op reached the node: provclient dying on the host side (signer refused, bad
+	# response…) also prints no RESULT — it was judged "the node went down" (2026-11-22, txn4 on wsl.35)
+	if grep -qE '^provclient: |signer refused|signer gone|CONN-CLOSED' <<< "$r"; then inv "(b) the op never reached the node: $(grep -E '^provclient: |CONN-CLOSED' <<< "$r" | head -1)"; kill "$lp" 2>/dev/null; rm -f "$lf"; return 1
+	elif grep -q '^RESULT' <<< "$r"; then no "(b) the op got a reply — killpoint $p did not fire"
+	else ok "(b) no reply to the op (the node went down)"; fi
 	pr_find 900 "$b0" || { kill $lp 2>/dev/null; no "(d) no node after the killpoint"; return 1; }
 	kill $lp 2>/dev/null; wait $lp 2>/dev/null
 	ok "(d) boot_id changed ($b0 -> $(field "$PR_STATE" boot))"
