@@ -20,6 +20,7 @@ awk '/nft list table inet fw4/{on=1} on{print} on && /warn_once provd-disabled/{
 grep -q 'provd-stable' $T/block && grep -q 'inet fw4' $T/block || { echo "FAIL: block not extracted"; exit 1; }
 {
 	echo 'RUNDIR='$T/run
+	echo 'ACD='$T/run   # #254 L96: the autocommit markers live under $ACD (= $RUNDIR outside a dry run)
 	echo 'log(){ echo "LOG $*" >> '$T'/log; }'
 	sed -n '/^running(){/,/^}/p' "$AC"
 	sed -n '/^warn_once(){/p' "$AC"
@@ -64,12 +65,12 @@ rm -rf "$T"
 
 # ---- the BLE health line (WARN only)
 T=$(mktemp -d /tmp/acb.XXXXXX)
-awk '/if \[ -f "\$ST\/ble-ok" \] && \[ ! -f "\$RUNDIR\/autocommit.ble-warned" \]; then/{on=1} on{print} on && /^\tfi$/{exit}' "$AC" > $T/block
+awk '/if \[ -f "\$ST\/ble-ok" \] && \[ ! -f "\$(RUNDIR|ACD)\/autocommit.ble-warned" \]; then/{on=1} on{print} on && /^\tfi$/{exit}' "$AC" > $T/block
 grep -q 'ble-warned' $T/block || { echo "FAIL: block not extracted"; cat $T/block; exit 1; }
 run() { # <health line or -> -> warned yes|no
 	rm -f $T/run/autocommit.ble-warned $T/log; mkdir -p $T/run $T/st; : > $T/st/ble-ok
 	[ "$1" = - ] && rm -f $T/run/batman-prov.health || echo "$1" > $T/run/batman-prov.health
-	{ echo "RUNDIR=$T/run; ST=$T/st"; echo 'up(){ cut -d. -f1 /proc/uptime; }'; echo "log(){ echo \"\$*\" >> $T/log; }"; cat $T/block; } > $T/s.sh
+	{ echo "RUNDIR=$T/run; ACD=$T/run; ST=$T/st"; echo 'up(){ cut -d. -f1 /proc/uptime; }'; echo "log(){ echo \"\$*\" >> $T/log; }"; cat $T/block; } > $T/s.sh
 	busybox sh $T/s.sh; [ -f $T/run/autocommit.ble-warned ] && echo yes || echo no
 }
 B=$(cat /proc/sys/kernel/random/boot_id); U=$(cut -d. -f1 /proc/uptime)

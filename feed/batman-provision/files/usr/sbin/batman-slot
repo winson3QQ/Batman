@@ -43,6 +43,10 @@ GUID_B=3276af79-0000-4000-8000-000000000004
 GUID_NONE=00000000-0000-0000-0000-000000000000
 BOOTMNT=/boot                       # bootA/p1 is mounted here (pi4: holds autoboot.txt + ab.good)
 ALLOWLIST=${BATMAN_FW_ALLOWLIST:-/usr/share/batman/firmware-allowlist-bcm2710.sha256}
+# #254 L175: bf_lib = bootfacts.sh loaded (bf_vc_ack defined); rc 1 when the library is missing. A fixed absolute path
+# (no env seam): tests/prov-p1/s5-lock-lint.sh resolves every file batman-slot sources, and the offline test
+# (tryboot-ack.sh) points the copy it runs at a stub by sed.
+bf_lib() { type bf_vc_ack >/dev/null 2>&1 || . /usr/lib/batman/bootfacts.sh 2>/dev/null; type bf_vc_ack >/dev/null 2>&1; }
 BADMARK=BATMAN-BAD                  # on a slot's boot FAT: apply failed verification, never commit it
 CMDLINE_COMMON="console=serial0 console=ttyUSB0,115200 console=tty1 rootfstype=squashfs,ext4 rootwait=20 panic=10"
 
@@ -415,6 +419,18 @@ disarm_tryboot() {
 	vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1
 	r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null)
 	st DISARM get="$r"
+	if [ "$(layout)" = pi4 ]; then
+		# #254 L175 (254-v16-group1 §1): the read-back counts only when the firmware handled the tag (word 5)
+		lib=1; bf_lib || lib=0
+		# shellcheck disable=SC2086
+		set -- $r
+		if [ $lib = 0 ]; then warn "bootfacts.sh missing — cannot read the tryboot flag back; cleared blind"
+		elif bf_vc_ack "$@"; then
+			[ "$(( $6 ))" -eq 0 ] || die "tryboot flag still armed after clearing it (GET $6) — refusing to write"
+		elif [ "${2:-}" = 0x80000000 ]; then warn "tryboot GET not handled by this firmware (vcmailbox: '$r'); cleared blind"
+		else warn "cannot read the tryboot flag back on this firmware; cleared blind"; fi
+		return 0
+	fi
 	# shellcheck disable=SC2086
 	set -- $r
 	if [ "${2:-}" = 0x80000000 ]; then
@@ -535,7 +551,7 @@ P5_STALE_HINT="Run 'batman-config-save --save' (or halow-setkey) to persist the 
 # same network is refused (EStaleVersion) and a retried leave too (not a member). The flag is not removed by anyone
 # (as allow-stale-p5): it passes every later OTA of this boot, so the warning says to remove it.
 P5_TXN_OVERRIDE_HINT="touch /tmp/batman-slot.allow-unfinished-txn (as root) for sysupgrade, BATMAN_ALLOW_UNFINISHED_TXN=1 for a direct batman-slot call — the change is then dropped; check the node in the app after the OTA."
-P5_TXN_DROP_WARN="OVERRIDE allow-unfinished-txn: the unfinished network change (.txn) is DROPPED in the new slot. After the OTA check the node in the app: shows the new network but does not join -> network/leave, then network/join again; shows 'left' but still on the old mesh -> halow-setkey --forget-mesh. Remove /tmp/batman-slot.allow-unfinished-txn."
+P5_TXN_DROP_WARN="OVERRIDE allow-unfinished-txn: the unfinished network change (.txn) is DROPPED in the new slot. After the OTA check the node in the app: shows the new network but does not join -> network/leave, then network/join again; shows 'left' but still on the old mesh -> halow-setkey --forget-mesh, then rm /opt/batdata/state/mesh-expected /opt/batdata/state/mesh-joined (else autocommit still expects a mesh). Remove /tmp/batman-slot.allow-unfinished-txn."
 p5_freshness_gate() {
 	now=$(cut -d. -f1 /proc/uptime)
 	if command -v batman-config-save >/dev/null 2>&1 && [ -r /etc/config/wireless ]; then
@@ -781,12 +797,26 @@ arm_tryboot() {
 	# the decisive evidence for "armed vs ignored": raw SET + GET, what autoboot aims at, the supply
 	otalog_k SLOT ARM target="$T" fw_t="$(fw_part "$T" 2>/dev/null)" ab_all="$(ab_section all 2>/dev/null)" ab_try="$(ab_section tryboot 2>/dev/null)" set="$s" get="$r" thr="$(ota_thr)"
 	# response: <size> <code> <tag> <len> <reqresp> <value> <end>; code 0x80000000 = success
-	set -- $r
-	if [ "${2:-}" = 0x80000000 ]; then
-		[ "$(( ${6:-0} ))" -eq 1 ] || die "tryboot flag did not arm (GET returned ${6:-?}) — slot $T written and verified, but NOT armed"
+	if [ "$(layout)" = pi4 ]; then
+		# #254 L175 (254-v16-group1 §1): word 5 0x80000004 = the firmware handled the GET; an unhandled GET gives no
+		# evidence the SET did anything -> refuse, never "armed blind"
+		bf_lib || die "bootfacts.sh missing — cannot verify the arm; slot $T written and verified, but NOT armed"
+		set -- $r
+		if bf_vc_ack "$@"; then
+			[ "$(( $6 ))" -eq 1 ] || die "tryboot flag did not arm (GET returned $6) — slot $T written and verified, but NOT armed"
+		elif [ "${2:-}" = 0x80000000 ]; then
+			die "tryboot GET not handled by this firmware (vcmailbox: '$r') — cannot verify the arm; slot $T written and verified, but NOT armed"
+		else
+			warn "cannot read the tryboot flag back on this firmware (vcmailbox: '$r'); armed blind as before"
+		fi
 	else
-		[ "$(layout)" = pi3 ] && die "cannot read the tryboot flag back (vcmailbox: '$r') — NOT armed"
-		warn "cannot read the tryboot flag back on this firmware (vcmailbox: '$r'); armed blind as before"
+		set -- $r
+		if [ "${2:-}" = 0x80000000 ]; then
+			[ "$(( ${6:-0} ))" -eq 1 ] || die "tryboot flag did not arm (GET returned ${6:-?}) — slot $T written and verified, but NOT armed"
+		else
+			[ "$(layout)" = pi3 ] && die "cannot read the tryboot flag back (vcmailbox: '$r') — NOT armed"
+			warn "cannot read the tryboot flag back on this firmware (vcmailbox: '$r'); armed blind as before"
+		fi
 	fi
 	# don't pollute boot-reasons with a spurious UNCLEAN on the trial's first boot — written only once
 	# the trial is really armed, so a failed arm does not label the next plain boot a trial (S5 review)

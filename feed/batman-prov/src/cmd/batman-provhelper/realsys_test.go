@@ -120,3 +120,50 @@ func TestRealSysUciFailureIsTransient(t *testing.T) {
 		t.Fatalf("uci rc 124: %v (want a transient, plain error)", err)
 	}
 }
+
+// failingUci: the stub uci of stubs(), but `get` of a key matching pat exits rc (uci itself failing, not "unset")
+func failingUci(t *testing.T, d, pat, rc string) {
+	t.Helper()
+	uci := `#!/bin/sh
+[ "$1" = -q ] && shift
+case "$1" in
+show) cat "` + d + `/show" ;;
+get) case "$2" in ` + pat + `) exit ` + rc + ` ;; esac
+	v=$(sed -n "s/^$2='\(.*\)'$/\1/p" "` + d + `/show"); [ -n "$v" ] || exit 1; printf '%s\n' "$v" ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(d, "uci"), []byte(uci), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// #254 L112 A4 m1: `uci get <iface>.device` failing (rc 4) is transient — not "no mesh interface on the morse radio"
+// (a RestoreRefused would make Finish forget a restorable network). Negative control: the old uciGet comparison
+// returns RestoreRefused here.
+func TestRealSysDeviceReadFailureIsTransient(t *testing.T) {
+	d := stubs(t, twoMesh, "0")
+	failingUci(t, d, "*.device", "4")
+	err := realSys{}.CheckRestorable("operator-key", "halow-mesh", "28")
+	var rr *node.RestoreRefused
+	if err == nil || errors.As(err, &rr) {
+		t.Fatalf("uci get .device rc 4: %v (want a transient, plain error)", err)
+	}
+	if _, e := meshIfaceErr(); e == nil {
+		t.Fatal("meshIfaceErr: no error on uci rc 4")
+	}
+}
+
+// #254 L112 A4 m3 / B4 m2: the encryption read's rc classes — set to something else and unset are definitive
+// refusals, uci itself failing is transient
+func TestRealSysEncryptionRcClasses(t *testing.T) {
+	var rr *node.RestoreRefused
+	stubs(t, strings.Replace(twoMesh, "wireless.default_radio1.encryption='sae'\n", "", 1), "0")
+	if err := (realSys{}).CheckRestorable("operator-key", "halow-mesh", "28"); !errors.As(err, &rr) {
+		t.Fatalf("encryption unset (rc 1): %v (want RestoreRefused)", err)
+	}
+	d := stubs(t, twoMesh, "0")
+	failingUci(t, d, "*.encryption", "4")
+	if err := (realSys{}).CheckRestorable("operator-key", "halow-mesh", "28"); err == nil || errors.As(err, &rr) {
+		t.Fatalf("encryption read rc 4: %v (want a transient, plain error)", err)
+	}
+}

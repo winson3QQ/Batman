@@ -122,7 +122,13 @@ func meshIfaceErr() (string, error) {
 	for _, l := range strings.Split(out, "\n") {
 		if strings.HasSuffix(l, ".mode='mesh'") {
 			i := strings.Split(strings.TrimPrefix(l, "wireless."), ".")[0]
-			if uciGet("wireless."+i+".device") == radio {
+			// #254 L112 A4 m1: uci's own failure (rc not 0 / 1) is transient, never "no mesh interface" (which makes
+			// CheckRestorable's refusal definitive and Finish forget)
+			rc, dev := run(nil, "uci", "-q", "get", "wireless."+i+".device")
+			if rc != 0 && rc != 1 {
+				return "", fmt.Errorf("uci get wireless.%s.device rc=%d", i, rc)
+			}
+			if strings.TrimSpace(dev) == radio {
 				return i, nil
 			}
 		}

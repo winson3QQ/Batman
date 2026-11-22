@@ -17,9 +17,11 @@ trap 'grep " $W/" /proc/mounts | cut -d" " -f2 | xargs -r -n1 umount 2>/dev/null
 SRC=${PROV_SRC:-$(cd "$(dirname "$1")/../.." && pwd)}   # files/ of the product tree (override for a copied file)
 truncate -s 64M $W/p5.img; LOOP=$(losetup -f --show $W/p5.img); mkfs.ext4 -q -F $W/p5.img
 mkdir -p $W/prov $W/m $W/bin $W/run; chmod 755 $W/run; chmod 700 $W/prov
+# a stand-in identity (the copy reads $W/dropbear, never the host's /etc/dropbear): A4 m4 needs a file to rename
+mkdir -p $W/dropbear; echo "ssh-ed25519 AAAAtest dv@cfgsave-txn-save" > $W/dropbear/authorized_keys
 sed "s#^RUNDIR=/tmp/run/batman#RUNDIR=$W/run/batman#" "$SRC/usr/lib/batman/rundir.sh" > $W/rundir.sh
 sed -e "s#^DEV=/dev/mmcblk0p5#DEV=$LOOP#" -e "s#^PROVD=/etc/batman-prov#PROVD=$W/prov#" \
-	-e "s#/usr/lib/batman/prov-lock.sh#$SRC/usr/lib/batman/prov-lock.sh#g" -e "s#/usr/lib/batman/rundir.sh#$W/rundir.sh#g" \
+	-e "s#/usr/lib/batman/prov-lock.sh#$SRC/usr/lib/batman/prov-lock.sh#g" -e "s#/usr/lib/batman/rundir.sh#$W/rundir.sh#g" 	-e "s#/etc/dropbear/#$W/dropbear/#g" \
 	-e '/^# txn sequence re-check, right before the p5 write/i [ -n "${CS_TEST_HOOK:-}" ] \&\& eval "$CS_TEST_HOOK"' \
 	-e 's/SEQ0=\$(txn_seq) ;;/{ [ -z "${CS_TEST_HOOK0:-}" ] || eval "$CS_TEST_HOOK0"; }; SEQ0=$(txn_seq) ;;/' "$1" > $W/cs; chmod +x $W/cs
 grep -q CS_TEST_HOOK0 $W/cs || echo "note: no SEQ0 read in this config-save (pre-wireless-txn) — the HOOK0 cases cannot inject"
@@ -137,9 +139,18 @@ else st=unmountable; tmpf=unmountable; bad "TERM: p5 cannot be mounted ro afterw
 [ "$st" = 0 ] && okk "TERM: no stage left on p5" || bad "TERM: $st stage dir(s) left on p5"
 [ "$tmpf" = 0 ] && okk "TERM: no temp file left on p5" || bad "TERM: $tmpf temp file(s) on p5"
 has_sentinel && okk "TERM: p5 overrides untouched (killed before the write)" || bad "TERM: p5 overrides changed"
+# #254 L112 A4 m4: the identity is renamed into place from the stage, never copied over in place — every identity file
+# on p5 gets a new inode on a --save (negative control: `cat > file` instead of `mv -f` keeps the inode -> FAIL)
+inodes(){ mount -o ro $LOOP $W/m && { ( cd $W/m/identity 2>/dev/null && find . -type f -exec stat -c '%i %n' {} + | sort -k2 ); umount $W/m; }; }
+i0=$(inodes)
 t 0 --save
-# the identity is renamed into place from the stage (control: the files arrive and the stage is empty afterwards)
+i1=$(inodes)
 mount -o ro $LOOP $W/m; st=$(ls -d $W/m/.stage.* 2>/dev/null | wc -l); umount $W/m
 [ "$st" = 0 ] && okk "after the next --save: no stage left" || bad "after --save: $st stage dir(s)"
+if [ -z "$i0" ] || [ -z "$i1" ]; then bad "identity rename: no identity file on p5 to compare (before [$i0] after [$i1])"
+else
+	same=$(join -1 2 -2 2 <(echo "$i0") <(echo "$i1") | awk '$2 == $3 {print $1}')
+	[ -z "$same" ] && okk "identity rename: every identity file has a new inode ($(echo "$i1" | wc -l) files)" || bad "identity rename: same inode after --save (copied in place?): $(echo $same)"
+fi
 clean
 echo "PASS=$pass FAIL=$fail"; [ $pass -gt 0 ] && [ $fail = 0 ]

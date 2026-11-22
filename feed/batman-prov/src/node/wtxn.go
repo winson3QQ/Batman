@@ -161,6 +161,12 @@ type RestoreRefused struct{ Why string }
 
 func (e *RestoreRefused) Error() string { return "not restorable: " + e.Why }
 
+// transientCheck: desired() could not check the pre-change settings now (exec failure, uci rc not in {0,1}); the
+// boot Finish retry treats it as retryable (254-v16-group1 §2).
+type transientCheck struct{ err error }
+
+func (e *transientCheck) Error() string { return e.err.Error() }
+
 // desired = the previous state (§2, §16.2). A member's previous state is its committed network. Otherwise the
 // transaction says: a network/leave whose commit landed (the record is not member any more) -> forgotten; any other
 // change (a join, after a leave too) -> the pre-change snapshot, i.e. what was live before it — the placeholder of a
@@ -187,7 +193,7 @@ func (n *Node) desired(rec *provstore.Record, tx provstore.Txn, txOK bool) (want
 	if err := n.Sys.CheckRestorable(tx.PrevKey, tx.PrevID, tx.PrevChannel); err != nil {
 		var rr *RestoreRefused
 		if !errors.As(err, &rr) {
-			return wantWireless{}, fmt.Errorf("cannot check the pre-change settings now (%v)", err)
+			return wantWireless{}, &transientCheck{fmt.Errorf("cannot check the pre-change settings now (%v)", err)}
 		}
 		n.Log("CRIT finish: the pre-change settings cannot be restored by halow-setkey (%v) — forgetting the mesh (the owner can join again)", err)
 		return wantWireless{kind: wantForget, source: "forgotten (the snapshot cannot be restored)", fromSnapshot: true}, nil
@@ -291,11 +297,13 @@ func (n *Node) resolve() (*provstore.Record, *Error) {
 // The run-dir marker is (re)written with .txn's token — after a reboot it is gone, and `config-save --save --txn`
 // needs it — and cleared on EVERY exit (review B r6 MAJOR-1). On failure .txn stays: saves stay blocked.
 func (n *Node) finish(why string) *Error {
+	n.lastFinishCause = causeNone
 	if !provstore.TxnPresent(n.P) {
 		return nil
 	}
 	rec, e := n.resolve()
 	if e != nil {
+		n.lastFinishCause = causeResolve
 		n.Log("finish (%s): %s — the unfinished change is finished later", why, e.Reason)
 		return e
 	}
@@ -306,17 +314,24 @@ func (n *Node) finish(why string) *Error {
 		// is unreadable too and desired() forgets.
 		tok = hex.EncodeToString(rnd(16))
 		if err := provstore.WriteTxn(n.P, tok, rec.Generation, rec.Generation, "unreadable", "", "", "", false); err != nil {
+			n.lastFinishCause = causeTxnWrite
 			return fail(EApply, "txn rewrite: %v", err)
 		}
 		n.Log("CRIT finish (%s): .txn had no readable token — rewritten with a fresh one", why)
 		tx, txOK = provstore.Txn{}, false
 	}
 	if err := n.Sys.WriteTxnMarker(tok); err != nil {
+		n.lastFinishCause = causeTxnWrite
 		return fail(EApply, "txn marker: %v", err)
 	}
 	defer n.Sys.ClearTxnMarker()
 	w, err := n.desired(rec, tx, txOK)
 	if err != nil {
+		n.lastFinishCause = causeDesired
+		var tc *transientCheck
+		if errors.As(err, &tc) {
+			n.lastFinishCause = causeRestoreTransient
+		}
 		n.Log("CRIT finish (%s): %v — .txn kept, saves stay blocked", why, err)
 		return fail(EState, "%v", err)
 	}
@@ -334,6 +349,7 @@ func (n *Node) finish(why string) *Error {
 			err = nil
 		}
 		if err != nil {
+			n.lastFinishCause = setkeyCause(err)
 			n.Log("CRIT finish (%s): back to %s failed (%v) — .txn kept, saves stay blocked", why, w.source, err)
 			return fail(EApply, "%v", err)
 		}
@@ -352,6 +368,10 @@ func (n *Node) finish(why string) *Error {
 	}
 	rc, out := n.Sys.SaveTxn(tok)
 	if rc != 0 && rc != 6 {
+		n.lastFinishCause = causeSave
+		if rc == provstore.RCTimeout {
+			n.lastFinishCause = causeDeadline
+		}
 		n.Log("finish (%s): save rc=%d (%s) — .txn kept, finished again later", why, rc, strings.TrimSpace(out))
 		return fail(EStorage, "save rc=%d", rc)
 	}
@@ -417,19 +437,138 @@ func (n *Node) refreshMeshExpect(rec *provstore.Record) {
 // BootFinish (§3, §15.2): the boot's Finish runs in the background holding the helper mutex, which is taken HERE,
 // before the caller starts listening — no verb runs before it ends, and the helper always listens. waitRadio is called
 // (under the mutex) first when the previous state is a network on a radio that is not blocked.
+// #254 L111 (docs/design/254-v16-group1.md §2): a failure whose cause a retry can cure is retried by bootRetry, bounded.
 func (n *Node) BootFinish(waitRadio func()) {
 	n.mu.Lock()
 	go func() {
-		defer n.mu.Unlock()
 		if n.finishWantsRadio() {
 			waitRadio()
 		}
 		e := n.finish("boot")
 		n.noteFinish(e)
+		cause := n.lastFinishCause
 		if e != nil {
 			n.Log("boot finish: %s", e.Reason)
 		}
+		n.mu.Unlock()
+		if e == nil {
+			return
+		}
+		if !cause.retryable() {
+			n.Log("boot finish: not retried (cause %s)", cause.name())
+			return
+		}
+		n.bootRetry()
 	}()
+}
+
+// finishCause: why the last finish() failed (254-v16-group1 §2, §11). Written by finish() only, under n.mu.
+type finishCause string
+
+const (
+	causeNone             finishCause = ""
+	causeResolve          finishCause = "resolve"                 // p5 / overlay unreadable
+	causeTxnWrite         finishCause = "txn-write"               // token rewrite / run-dir marker
+	causeRestoreTransient finishCause = "restore-check-transient" // CheckRestorable could not run now
+	causeDesired          finishCause = "desired"                 // any other desired() error
+	causeSetkey2          finishCause = "setkey-rc2"              // lock busy / not settled: nothing changed
+	causeSetkey3          finishCause = "setkey-rc3"              // not verified on the air (a forget: the key may still be on the air)
+	causeDeadline         finishCause = "deadline"                // rc 124: the 300 s exec deadline
+	causeSetkeyOther      finishCause = "setkey-other"            // any other rc (1, 137, 143, an exec failure)
+	causeSave             finishCause = "save"                    // --save --txn rc not in {0, 6, 124}
+)
+
+// retryable: only failures a retry can cure and whose try is short (never the 300 s deadline). Unknown causes are not
+// retried.
+func (c finishCause) retryable() bool {
+	switch c {
+	case causeResolve, causeTxnWrite, causeRestoreTransient, causeSetkey2, causeSetkey3, causeSave:
+		return true
+	}
+	return false
+}
+
+func (c finishCause) name() string {
+	if c == causeNone {
+		return "none"
+	}
+	return string(c)
+}
+
+func setkeyCause(err error) finishCause {
+	switch setkeyRC(err) {
+	case 2:
+		return causeSetkey2
+	case 3:
+		return causeSetkey3
+	case provstore.RCTimeout:
+		return causeDeadline
+	}
+	return causeSetkeyOther
+}
+
+// bootRetryWaits: the wait before each retry of a failed boot Finish (8 retries, ~2 h 6 min; §2).
+var bootRetryWaits = []time.Duration{60 * time.Second, 120 * time.Second, 240 * time.Second, 480 * time.Second,
+	960 * time.Second, 1800 * time.Second, 1800 * time.Second, 1800 * time.Second}
+
+// bootRetryPostpone: the wait while an OTA is busy or the slot is a trial (not counted, no bound; §2).
+const bootRetryPostpone = 60 * time.Second
+
+// bootRetrySleep: the retry's clock (time.Sleep: monotonic, a wall-clock step does not move it); n.retrySleep wins
+// when set (tests).
+var bootRetrySleep = time.Sleep
+
+// bootRetry: retry the failed boot Finish without any verb. Each try runs under n.mu; it stops when .txn is gone (a
+// verb finished it), on success, on a cause that is not retryable, or after len(bootRetryWaits) failed retries. A
+// failed retry does NOT raise the verb backoff (finishFails); a successful one resets it.
+func (n *Node) bootRetry() {
+	sleep := bootRetrySleep
+	if n.retrySleep != nil {
+		sleep = n.retrySleep
+	}
+	wait, postponed := bootRetryWaits[0], false
+	for i := 0; i < len(bootRetryWaits); {
+		sleep(wait)
+		n.mu.Lock()
+		if !provstore.TxnPresent(n.P) {
+			n.mu.Unlock()
+			return
+		}
+		busy := ""
+		if n.otaBusy() {
+			busy = "ota busy"
+		} else if n.Sys.IsTrial() {
+			busy = "trial"
+		}
+		if busy != "" {
+			n.mu.Unlock()
+			if !postponed {
+				n.Log("boot finish retry postponed: %s", busy)
+				postponed = true
+			}
+			wait = bootRetryPostpone
+			continue
+		}
+		postponed = false
+		e := n.finish(fmt.Sprintf("boot retry %d", i+1))
+		cause := n.lastFinishCause
+		if e == nil {
+			n.noteFinish(nil)
+			n.mu.Unlock()
+			return
+		}
+		n.mu.Unlock()
+		n.Log("boot finish retry %d: %s (cause %s)", i+1, e.Reason, cause.name())
+		if !cause.retryable() {
+			n.Log("boot finish: not retried (cause %s)", cause.name())
+			return
+		}
+		i++
+		if i < len(bootRetryWaits) {
+			wait = bootRetryWaits[i]
+		}
+	}
+	n.Log("CRIT boot finish: gave up after %d retries — .txn kept; the next verb or boot finishes it", len(bootRetryWaits))
 }
 
 // finishWantsRadio: Finish will set a network key on a radio that is neither blocked nor switched off by hand (a radio

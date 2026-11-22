@@ -12,11 +12,18 @@
 # raw hex of a /proc/device-tree/chosen/bootloader/<name> u32, or "" when absent
 bf_dt() { hexdump -v -e '1/1 "%02x"' "/proc/device-tree/chosen/bootloader/$1" 2>/dev/null; return 0; }
 
-# the one-shot tryboot flag right now: 1 | 0 | unknown (never guess: unknown keeps the old behaviour)
+# bf_vc_ack <words of a `vcmailbox <tag> 4 4 x` answer>: rc 0 iff the firmware processed the buffer (word 2
+# 0x80000000) AND handled this tag (word 5 = 0x80000000 | 4-byte response = 0x80000004) and gave a value (word 6).
+# Firmware that does not know the tag leaves word 5 = 4 and word 6 = the request's own value — read as a real answer
+# it was "not armed" (#254 L175, docs/design/254-v16-group1.md §1). Positional parameters only: no globals.
+bf_vc_ack() { [ "${2:-}" = 0x80000000 ] && [ "${5:-}" = 0x80000004 ] && [ -n "${6:-}" ]; }
+
+# the one-shot tryboot flag right now: 1 | 0 | unknown (never guess: unknown keeps the old behaviour; an answer whose
+# tag was not handled is unknown too, #254 L175)
 bf_get() {
 	# shellcheck disable=SC2046
 	set -- $(vcmailbox 0x00030064 4 4 0 2>/dev/null)
-	if [ "${2:-}" = 0x80000000 ] && [ -n "${6:-}" ]; then
+	if bf_vc_ack "$@"; then
 		case "$(( ${6} ))" in 0) echo 0 ;; 1) echo 1 ;; *) echo unknown ;; esac
 	else
 		echo unknown

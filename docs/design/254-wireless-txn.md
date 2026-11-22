@@ -140,7 +140,7 @@ block, `:95-107`). After a leave: `MeshExpect` = `0`. **Not a secure erase**: p5
 | commit landed in p5, overlay write failed, p5 flaps, then owner.add | Resolve + rebuild before the commit | Go killpoint |
 | p5 unreadable at boot / after a commit | `.txn` kept, retried next boot | Go (`TestProbeV4P5Flap` as negative control) |
 | admin handover, then reboot with `.txn` | decode without re-verify → Finish ok | Go (rotating chain; today's `parseNet` fails it) |
-| dead HaLow (Finish always fails) | saving verbs `EState`; owner.add/remove work **between Finish attempts** — a verb that arrives during an attempt waits for it (≤ ≈13 min, §4.3), attempts are one per backoff (60 s doubling to 30 min) | Go (`TestDeadRadioCommitOnlyWorksSavingRefused`, `TestBackoffDoublesAndCountsTheBootFinish`) |
+| dead HaLow (Finish always fails) | saving verbs `EState`; owner.add/remove work **between Finish attempts** — a verb that arrives during an attempt waits for it (≤ ≈13 min, §4.3), verb-triggered attempts are one per backoff (60 s doubling to 30 min); a failed boot Finish is also retried by the helper, ≤ 8 times, without touching that backoff (#254 L111) | Go (`TestDeadRadioCommitOnlyWorksSavingRefused`, `TestBackoffDoublesAndCountsTheBootFinish`) |
 | setkey / the driver hangs (D state) | Exec abandons the command 10 s after SIGKILL (rc 124), `.txn` kept, backoff; an abandoned setkey may keep its flock (later setkey "busy") until the reboot | Go root (`TestExecAbandonsDState`, CI prov_test root run) |
 | upgrade (OTA) while `.txn` | refused: `--check` rc 5 before any p5 check, batman-slot refuses `stale:txn` in both stages; only `allow-unfinished-txn` passes it (the obligation is dropped, loud warning with the recovery steps) | shell (`cfgsave-txn-save`, `slot-p5gate-txn`) |
 | helper stopped while a command runs | the command's process group is not killed (it finishes or hits its own verify); the next start's Finish reconciles from the record and `.txn` | stated (§17) |
@@ -237,7 +237,7 @@ LuCI and a join then failed, Finish could never restore them, and the M6 lockout
 
 **15.2 No subprocess may keep the helper from serving (A MAJOR-2, B MAJOR-1).** Every command the helper runs has a
 deadline: `halow-setkey` 300 s, `batman-config-save` 300 s, anything else 60 s. The command runs in its own process
-group; at the deadline the group gets SIGTERM, then SIGKILL 10 s later. A daemonised grandchild holding the pipe is cut
+group; at the deadline the group gets SIGTERM, then its members are polled: 10 s later the ones without a TERM handler get SIGKILL, 30 s later all that are left (#254 L112, 254-v16-group1 §12-§13). A daemonised grandchild holding the pipe is cut
 off 5 s after the command exits. A timeout returns rc 124, "outcome unknown", so `.txn` is kept.
 - The boot Finish runs **in the background holding the helper mutex**, taken before the socket listens. No verb can run
   before it ends, and the helper always listens.
@@ -657,9 +657,12 @@ before offering leave.
   live radio by the supplicant's view (`meshjoin_radio_up`), which would say "up" on an orphan while netifd says
   down. No path produces such an orphan without a reload from outside the lock (rules 1–3), so it is unchanged and
   goes to the checklist ("`satisfied()` also requires netifd up", A2 N7); §15.2 `waitRadioUp` unchanged. A boot
-  Finish that meets rc 2 (a slow boot) keeps `.txn` until the next verb or boot — `BootFinish` runs once, there is
-  no retry timer (pre-existing, §4.3 reads as if there were; A2 N4, B2 N-m2) → checklist: a bounded retry (helper
-  change, outside this freeze lift); `halow-status` shows netifd's pending state and the rc 2 text names the exit.
+  Finish that meets rc 2 (a slow boot) kept `.txn` until the next verb or boot (A2 N4, B2 N-m2). **Since #254 L111
+  (docs/design/254-v16-group1.md §2):** a boot Finish that fails with a retryable cause (setkey / forget rc 2 or 3, a
+  transient restore check, resolve, the txn marker, a save rc not 124) is retried by the helper itself, 8 times over
+  ≈ 2 h (60 s doubling to 30 min), postponed while an OTA is written or the slot is a trial; a deadline (rc 124) or an
+  unknown cause is not retried. A failed retry does not raise the verb backoff. `halow-status` shows netifd's pending
+  state and the rc 2 text names the exit.
   After a leave's `EApply 21` the FIRST retry runs a Finish at once (the leave's own forget failure is not a Finish
   failure, `finishFails` = 0); a second retry inside the backoff gets `EState 22` (A2 m13 nit). A netifd that never
   settles (a hung setup) makes every setkey rc 2 and a committed leave unforgotten: the exit is a reboot, stated in
