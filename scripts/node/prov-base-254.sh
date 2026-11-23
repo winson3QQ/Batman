@@ -88,6 +88,23 @@ tree_manifest() {	# $1 root dir
 		echo "$m $h ${p#./}"
 	  done; [ "$bad" = 0 ]; } )
 }
+# redact_diff <compare file>: the DIFF lines as the compare prints them, with nothing derived from a secret value
+# (#254 v1.6 g4 PR B, 254-v16-ud §4.4 "masked restore compare", review v10 B M1 / A m1, review v11 B m1). The host
+# echoes the compare into the unit log (prov-254.sh pr_restore), so:
+#   uci.export      an `option` / `list` line whose name contains (case-insensitive) key, secret, pass, psk, token or sae,
+#                   or is mesh_id / ssid: the value is printed as <redacted changed> (no hash, prefix or length; the
+#                   option name and the +/- side stay: a DIFF line already says "changed")
+#   *.manifest      a regular file under a secret-bearing path keeps its mode, owner and path; its sha256 is printed as
+#                   <redacted changed>: overlay etc/config/*, etc/shadow, etc/batman-prov/*; p5 overrides.uci, identity/*
+# Every other line is printed unchanged.
+redact_diff() {
+	awk -v F="$1" '
+		function secret_name(n) { n = tolower(n); return (n ~ /key|secret|pass|psk|token|sae/ || n == "mesh_id" || n == "ssid") }
+		function secret_path(q) { return (q ~ /^etc\/config\// || q == "etc/shadow" || q ~ /^etc\/batman-prov\// || q ~ /(^|\/)overrides\.uci$/ || q ~ /^identity\//) }
+		F == "uci.export" && ($2 == "option" || $2 == "list") && secret_name($3) { print $1 "\t" $2 " " $3 " \047<redacted changed>\047"; next }
+		(F == "upper.manifest" || F == "p5.manifest") && NF == 5 && substr($2, 1, 1) == "-" && secret_path($5) { print $1 " " $2 " " $3 " <redacted changed> " $5; next }
+		{ print }'
+}
 uci_exports() {	# normalised: `uci export` per config file, in name order
 	for f in $(ls /etc/config 2>/dev/null | sort); do echo "=== $f"; uci -q export "$f" 2>/dev/null; done
 }
@@ -201,7 +218,7 @@ compare)
 		if [ "$f" = identity ] && [ -n "${PROTB_FROM:-}" ] && [ -n "${PROTB_TO:-}" ] && [ "$(grep -cxF -e "- protB=$PROTB_FROM" "$T/d")" = 1 ] && [ "$(grep -cxF -e "+ protB=$PROTB_TO" "$T/d")" = 1 ]; then
 			grep -vxF -e "- protB=$PROTB_FROM" -e "+ protB=$PROTB_TO" "$T/d" > "$T/e"; mv "$T/e" "$T/d"; say "identity: protB $PROTB_FROM -> $PROTB_TO allowed (B rewrite checks protB)"
 		fi
-		[ -s "$T/d" ] && { sed "s|^|DIFF $f |" "$T/d"; n=$((n + $(wc -l < "$T/d"))); }
+		[ -s "$T/d" ] && { redact_diff "$f" < "$T/d" | sed "s|^|DIFF $f |"; n=$((n + $(wc -l < "$T/d"))); }
 	done
 	rm -rf "$T"
 	for f in $STATEFILES; do
