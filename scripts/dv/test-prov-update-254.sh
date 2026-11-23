@@ -158,4 +158,69 @@ o=$(bash -c "$src; $stubs; PR_SNAPPED=1; PR_WROTE_B=1; pr_abort x" 2>&1 | grep '
 case "$o" in "CALL pl renew 1200 CALL pl undo CALL pr_restore CALL pr_brewrite CALL pr_ust_end CALL pr_finish_snap CALL pr_release ") ok "pr_abort after a prepare: pl undo, pr_restore, pr_brewrite, status compare, finish" ;; *) bad "pr_abort order: [$o]" ;; esac
 o=$(bash -c "$src; qr(){ echo 'mac=x slot=B ver=V trial_rc=1 dt_try=00000000 hold=[] held=0 badslot=[] up=1 boot=abcd1234'; }; back_to_a(){ echo CALL back_to_a; return 1; }; nb(){ echo CALL nb \$*; }; pl(){ echo CALL pl \$*; }; pr_restore_cycle" 2>&1)
 grep -q '^CALL back_to_a' <<< "$o" && ! grep -q 'CALL nb' <<< "$o" && grep -q 'NEEDS-PERSON' <<< "$o" && ok "pr_restore on B committed: back_to_a first (nothing restored when it fails)" || bad "B committed: $o"
+# ---- the real arm functions against a stubbed node (device run 2026-11-23 on 0a6cb73: every arm aborted on a script bug
+# the judges-only cases above never reached — a global set inside $(ud_check …) and an empty `ls -ln` after an upload).
+# arm_refuse and arm_write run to their end here; each must finish (no "unbound variable", pr_end reached) and say what
+# it saw: step 0 judged from the helper line it read (UDLOG), an absent upload INVALID with its evidence.
+mkdir -p "$T/smoke/out/1.5.14-wsl.36/ekh-bcm2711"; head -c 4096 /dev/urandom > "$T/smoke/out/1.5.14-wsl.36/ekh-bcm2711/batman-1.5.14-wsl.36-ekh-bcm2711-ab-payload.tar.gz"
+head -c 4096 /dev/urandom > "$T/smoke/gen.tgz"
+smoke_stubs='
+H0=04$(printf "%0128d" 0); OUTS=$UDT/smoke/out; TOOLS=$UDT/smoke; NODE=10.9.9.9
+pr_begin(){ return 0; }; pr_h0(){ return 0; }; pr_pc_place(){ return 0; }; pr_end(){ echo "STUB pr_end $*"; }
+pr_lease_renew(){ return 0; }; pr_slot_ticks(){ echo 1; }; pr_slot_free(){ ok "slot flock free (stub)"; }; sleep(){ :; }
+hostp(){ echo "$UDT/smoke/gen.tgz"; }; boot8(){ echo abcd1234; }
+wsl_(){ case "$*" in
+	*signrel.py*) echo "MANIFEST sha=ab version=v board=b size=1 serial=2 sums=$(printf "%064d" 7)" ;;
+	*manifest.hex*) echo a1 ;;
+	*"tar -tzvf"*) echo "-rw-r--r-- 0/0 117471856 2026-11-22 20:28 root.squashfs" ;;
+	*p3-payloads.sh\ malicious\ *) a="$*"; k=${a#*malicious }; echo "ACCEPT mal${k%% *} ok"; echo "PAYLOAD-SHA ab" ;;
+	*p3-payloads.sh*) for k in mutate badpayload; do case "$*" in *" $k "*) echo "ACCEPT $k ok"; echo "PAYLOAD-SHA ab" ;; esac; done ;;
+	esac; return 0; }
+pr_pc(){ local pb=new a op; for a in "$@"; do [ "$a" = PCBIN=old ] && pb=old; done
+	while [ "$1" != -- ]; do shift; done; op=$2
+	[ $pb = new ] && echo "PROVCLIENT caps=uc2,bo2,rk1,pg2,nopsk"
+	case "$op" in
+		update-check) if [ $pb = old ]; then echo "RESULT update.check code=20"; else echo "RESULT update.check code=0 ok=true ram=1"; fi ;;
+		update-status) echo "RESULT update.status code=0 phase=0 percent=0" ;;
+		bulk-open) echo "RESULT bulk.open code=0 ssid=\"s\" ip=\"10.41.0.1\" port=8095 expires=900" ;;
+		bulk-close) echo "RESULT bulk.close code=0" ;;
+		update-prepare|update-apply) echo "RESULT update.${op#update-} code=24 reason=15" ;;
+	esac; }
+q(){ case "$*" in *"joinwatch stop"*) rm -f "$UDT/smoke/jw" ;; *"joinwatch start"*) touch "$UDT/smoke/jw" ;; esac; return 0; }
+qr(){ case "$*" in
+	*"echo \"mac="*) echo "mac=88:a2:9e:b5:6c:89 slot=A ver=1.5.14-wsl.36 trial_rc=1 dt_try=00000000 hold=[] held=0 badslot=[] up=100 boot=abcd1234" ;;
+	*BATMAN_BOARD*) echo ekh-bcm2711 ;;
+	*"halow-setkey --status"*) echo "ap default_radio0 ssid=x key=set disabled=0" ;;
+	*"/etc/config/wireless"*) echo "-rw------- 1 0 0 1100 Aug 17 04:40 /etc/config/wireless" ;;
+	*logread*) printf "%s\n" "x batman-provhelper[1]: verb update.check refused: code 20 (arg 1: want 0 bytes)" "x batman-provhelper[1]: p5 stale only in keys P3 added: --save rc 0" ;;
+	*"pidof joinwatch"*) [ -e "$UDT/smoke/jw" ] && echo 4730 ;;
+	*"--check 2>&1"*) printf "p5 stale: wireless.default_radio0.ssid\nrc=5\n" ;;
+	*"--check >/dev/null"*) echo 0 ;;
+	*"bootinfo B"*) echo "bad=0 verified=x y"; echo rc=0 ;;
+	*"ls -ln /tmp/run/batman-provd-bulk/payload"*) [ "${SMOKE_UPLOAD:-present}" = present ] && echo "-rw------- 1 471 471 4096 Nov 23 12:00 /tmp/run/batman-provd-bulk/payload" ;;
+	esac; return 0; }
+pl(){ case "$1" in undo-add) echo "UNDO-ADDED 1 p6 - $2" ;; ssid-hex) echo "HEX=6162 RT=ok" ;; ssid-set) echo "SSID-SET ok" ;; undo-done) echo "UNDO-DONE $2" ;; esac; }
+:'
+cat > "$T/bin/ssh" <<'X'
+#!/bin/bash
+c=""; while [ $# -gt 0 ]; do case "$1" in -o|-p|-i) shift 2 ;; root@*) shift; c="$*"; break ;; *) shift ;; esac; done
+case "$c" in
+	*"cat > /tmp/run/batman-provd-bulk/payload"*) cat >/dev/null; echo 471; case "$c" in *cat-rc*) echo cat-rc=0 ;; esac ;;
+	*"wc -c <"*) echo 99; wc -c < "$UDT/smoke/gen.tgz"; sha256sum < "$UDT/smoke/gen.tgz" ;;
+esac
+exit 0
+X
+chmod 755 "$T/bin/ssh"
+o=$(bash -c "$src; $smoke_stubs; arm_refuse" 2>&1); rc=$?
+if ! grep -q 'unbound variable' <<< "$o" && grep -q '^STUB pr_end' <<< "$o" && grep -q "^PASS prov-update-254: step 0: the pre-UD provclient's update.check -> code 20" <<< "$o"; then
+	ok "arm_refuse against a stub node runs to its end; step 0 judged from the helper line ud_check read (UDLOG reaches the arm)"
+else bad "arm_refuse smoke: rc=$rc $(grep -E 'unbound|step 0|STUB pr_end' <<< "$o" | head -3 | tr '\n' '|')"; fi
+grep -q '^PASS prov-update-254: UD13: update.check ok=true' <<< "$o" && ok "arm_refuse smoke: UD13 judged from UDLOG after a direct ud_ul" || bad "arm_refuse smoke: UD13 [$(grep 'UD13' <<< "$o" | head -2 | tr '\n' '|')]"
+o=$(SMOKE_UPLOAD=absent bash -c "$src; $smoke_stubs; arm_write" 2>&1); rc=$?
+if ! grep -q 'unbound variable' <<< "$o" && grep -q '^STUB pr_end wrote-b' <<< "$o" \
+	&& [ "$(grep -c '^INVALID prov-update-254: upload: /tmp/run/batman-provd-bulk/payload is absent right after a 471 write' <<< "$o")" -ge 4 ]; then
+	ok "arm_write with the upload absent after the write: INVALID per upload (with ls / status evidence), the arm goes on to pr_end"
+else bad "arm_write smoke (upload absent): rc=$rc $(grep -E 'unbound|absent|STUB pr_end' <<< "$o" | tail -4 | tr '\n' '|')"; fi
+o=$(bash -c "$src; $smoke_stubs; pr_pc(){ while [ \"\$1\" != -- ]; do shift; done; echo \"RESULT \$2 code=0\"; }; ud_status >/dev/null; ud_sync; echo \"INV=\$invalid\"" 2>&1)
+grep -q '^INVALID prov-update-254: provclient printed no caps line' <<< "$o" && grep -q '^INV=1$' <<< "$o" && ok "a verdict made inside \$(…) (no caps line in ud_status) is printed and counted" || bad "subshell verdict: $(tr '\n' '|' <<< "$o" | cut -c1-200)"
 echo "test-prov-update: $P passed, $F failed"; [ $F = 0 ] && [ $P -gt 0 ]

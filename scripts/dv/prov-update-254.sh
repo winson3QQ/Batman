@@ -41,7 +41,20 @@ UD9_OBS_DIR=${UD9_OBS_DIR:-//wsl.localhost/Ubuntu-24.04/home/yello/.batman-dv/ud
 BULK=/tmp/run/batman-provd-bulk/payload
 CAPS='PROVCLIENT caps=uc2,bo2,rk1,pg2,nopsk'
 LATE8=8388608
-UD_LASTCHK=0
+UD_LASTCHK=0; UDLOG=""; UDR=""
+# Verdicts and subshells (device run 2026-11-23 12:05, review of 0a6cb73): a judgement made inside $(…) — ud_pc's caps
+# INVALID, pr_pc's refusal FAIL — incremented a counter of the subshell and printed into the captured output, so both
+# were lost. Every verdict is tallied in a file (one letter per verdict) and printed to stderr when it is made in a
+# subshell (it reaches the log, not the caller's variable); the counters are re-read from the file.
+UDV=$(mktemp) || { echo "FAIL prov-update-254: mktemp"; exit 2; }
+_ud_v(){ local t=$1; shift; if [ "${BASH_SUBSHELL:-0}" -gt 0 ]; then printf '%s\n' "$*" >&2; else printf '%s\n' "$*"; fi; echo "$t" >> "$UDV"; ud_sync; }
+ud_sync(){ fails=$(grep -c '^F$' "$UDV"); invalid=$(grep -c '^I$' "$UDV"); notjudged=$(grep -c '^N$' "$UDV"); return 0; }
+no(){ _ud_v F "FAIL $PR_UNIT: $*"; }
+inv(){ _ud_v I "INVALID $PR_UNIT: $*"; }
+nj(){ _ud_v N "NOT-JUDGED $PR_UNIT: $*"; }
+pr_result(){ ud_sync; say "RESULT fails=$fails invalid=$invalid notjudged=$notjudged"
+	if [ "$fails" = 0 ] && [ "$invalid" = 0 ]; then echo "UNIT $PR_UNIT PASS"; return 0; fi
+	[ "$fails" = 0 ] && { echo "UNIT $PR_UNIT INVALID"; return 2; }; echo "UNIT $PR_UNIT FAIL"; return 1; }
 
 # ==== judges: pure functions of what was read (tests: scripts/dv/test-prov-update-254.sh) ============================
 code(){ sed -n 's/.* code=\([0-9]*\).*/\1/p' <<< "$1" | head -1; }
@@ -85,7 +98,7 @@ ud_kill_judge(){ local log=$1 sq=$2 gone=$3 sf=$4 st=$5 bi=$6 s=$7 tr=$8 fl pf
 	[ "$pf" -lt $((sq - LATE8)) ] || { echo "INVALID UD9 kill: too late (pos_final $pf >= SQ - 8 MiB): the orphan may have had the whole rootfs"; return; }
 	local r=0
 	[ "$gone" = 1 ] || { echo "FAIL UD9 kill: the orphan batman-slot write did not exit within 300 s"; r=1; }
-	[ "$sf" = PASS ] || { echo "FAIL UD9 kill: the slot flock after the orphan: $sf"; r=1; }
+	case "$sf" in PASS) ;; JUDGED) echo "INFO UD9 kill: the slot flock check after the orphan did not pass (its own line above)"; r=1 ;; *) echo "FAIL UD9 kill: the slot flock after the orphan: $sf"; r=1 ;; esac
 	ud_phase "$st" 0 22 || { echo "FAIL UD9 kill: status [$st], want phase=0 fail_reason=22"; r=1; }
 	[ "$(ud_bi "$bi" bad)" = 1 ] || { echo "FAIL UD9 kill: bootinfo B bad=[$(ud_bi "$bi" bad)], want 1"; r=1; }
 	[ "$(field "$s" slot)" = A ] && [ "$(field "$s" trial_rc)" = 1 ] || { echo "FAIL UD9 kill: not A committed ($s)"; r=1; }
@@ -144,7 +157,9 @@ ud_status(){ ud_pc h0.pem -- update-status "$H0" | grep '^RESULT update.status';
 # ud_poll <secs> <phase> [reason] [sha16]: status every 5 s until it says that; prints the last line
 ud_poll(){ local t0 l; t0=$(mono); while :; do l=$(ud_status); ud_phase "$l" "$2" "${3:-any}" "${4:-any}" && { echo "$l"; return 0; }; [ $(( $(mono) - t0 )) -ge "$1" ] && { echo "$l"; return 1; }; sleep 5; done; }
 # ud_check <manifest hex> [PCBIN=old]: update-check, >= 11 s after the last one; ERate -> one retry; code 7 with a slot /
-# config-save busy why -> one retry after 20 s. Sets UDLOG (the helper's lines since the mark). Prints the RESULT line.
+# config-save busy why -> one retry after 20 s. Sets UDR (the RESULT line), UDLOG (the helper's lines since the mark) and
+# UD_LASTCHK. Call it directly, NEVER as $(ud_check …): a subshell's globals never reach the caller (the 0a6cb73 crash,
+# "UDLOG: unbound variable").
 ud_check(){ local hx=$1 pb=${2:-} r w i
 	for i in 1 2; do
 		w=$(( UD_LASTCHK + 11 - $(mono) )); [ $w -gt 0 ] && sleep $w
@@ -153,7 +168,7 @@ ud_check(){ local hx=$1 pb=${2:-} r w i
 			17) [ $i = 1 ] && { say "update.check ERate — one retry"; continue; } ;;
 			7) if [ $i = 1 ] && grep -qE 'batman-slot busy|config-save' <<< "$UDLOG"; then say "update.check busy (slot / config-save lock) — one retry after 20 s"; sleep 20; continue; fi ;;
 		esac; break
-	done; echo "$r"; }
+	done; UDR=$r; return 0; }
 # ud_manifest <payload, WSL path> <out dir name> [signrel options]: MHEX, MSUMS (sha256(SHA256SUMS), X for V); rc 1 = INVALID printed
 ud_manifest(){ local p=$1 d=$MDIR/$2 m; shift 2
 	m=$(wsl_ "$PYW" "$REPO_WSL/tests/tools/peer/signrel.py" "$p" --board "$BOARD" --version "$V_NOW" --out "$d" "$@" 2>&1 | tr -d '\r' | tail -1)
@@ -171,12 +186,23 @@ hostp(){ echo "//wsl.localhost/Ubuntu-24.04$1"; }   # a WSL path as Git Bash rea
 # ud_window <sha>: bulk-open; prints the line (ssid / ip / port / expires only)
 ud_window(){ ud_pc h0.pem -- bulk-open "$H0" "$1" | grep '^RESULT bulk.open'; }
 ud_close(){ ud_pc h0.pem -- bulk-close "$H0" | grep '^RESULT bulk.close'; }
+# ud_open <sha> <row>: the window an upload needs (the helper's tick deletes every file in the bulk dir while no window is
+# open, updwork.go UpdateTick); rc 1 + INVALID with the answer and the helper's lines when bulk.open did not answer 0
+ud_open(){ local r; ud_mark; r=$(ud_window "$1"); say "$2: bulk-open: ${r:-no answer}"
+	[ "$(code "$r")" = 0 ] && return 0
+	inv "$2: bulk-open [${r:-no answer}] — no window, nothing uploaded ($(ud_log | grep 'batman-provhelper\[' | tail -2 | cut -c1-200 | tr '\n' '|'))"; return 1; }
 # ud_upload <host file>: as 471 (provclient exec); root only lstats it; size + sha read as 471 under a host timeout
 ud_upload(){ local fl=$1 o sz sh p
-	o=$(timeout 300 ssh $SSHO root@$NODE "$PCD/provclient node exec /bin/sh -c 'id -u; umask 077; exec cat > $BULK'" < "$fl" 2>&1 | tr -d '\r')
+	o=$(timeout 300 ssh $SSHO root@$NODE "$PCD/provclient node exec /bin/sh -c 'id -u; umask 077; cat > $BULK; echo cat-rc=\$?'" < "$fl" 2>&1 | tr -d '\r')
 	[ "$(head -1 <<< "$o")" = 471 ] || { inv "upload: the writer is not uid 471 ([$(head -1 <<< "$o")])"; return 1; }
-	o=$(qr "ls -ln $BULK"); set -- $o
-	[ "${1:0:1}" = - ] && [ "${3:-}" = 471 ] || { inv "upload: ls -ln [$o] (want a regular file of 471)"; return 1; }
+	grep -qx 'cat-rc=0' <<< "$o" || { inv "upload: the 471 writer failed: [$(tail -n +2 <<< "$o" | tr '\n' '|' | cut -c1-200)]"; return 1; }
+	# an empty answer is the file being absent (0a6cb73 crashed here on `set -- ''` under set -u): INVALID with the evidence
+	o=$(qr "ls -ln $BULK 2>&1; ls -lnd ${BULK%/*} 2>&1")
+	p=$(head -1 <<< "$o")
+	case "$p" in
+		-*) [ "$(awk '{print $3}' <<< "$p")" = 471 ] || { inv "upload: ls -ln [$p] (want a regular file of 471)"; return 1; } ;;
+		*) inv "upload: $BULK is absent right after a 471 write that ended rc 0 [$(tr '\n' '|' <<< "$o")]; status [$(ud_status)] (no open window -> the helper's tick deletes it)"; return 1 ;;
+	esac
 	o=$(timeout 90 ssh $SSHO root@$NODE "$PCD/provclient node exec /bin/sh -c 'echo \$\$; wc -c < $BULK; sha256sum < $BULK'" 2>/dev/null | tr -d '\r'); r=$?
 	if [ $r = 124 ]; then p=$(head -1 <<< "$o"); case "$p" in ''|*[!0-9]*) ;; *) q "kill $p" ;; esac; inv "upload: the 471 reader hit the host timeout"; return 1; fi
 	sz=$(sed -n 2p <<< "$o" | tr -d ' '); sh=$(sed -n 3p <<< "$o" | cut -c1-64)
@@ -238,7 +264,7 @@ ud_begin(){	# common start: lease, tools, H0, S0 status, AP on, wireless mode, p
 	ok "V = $V_NOW, X = $X16…, root.squashfs $SQ B"
 }
 ud_end(){ wsl_ rm -rf "$MDIR" >/dev/null; pr_end "$@"; pr_result; }
-ud_ul(){ UDT0=$(pr_slot_ticks); UDR=$(ud_check "$1"); say "check: $UDR"; }
+ud_ul(){ UDT0=$(pr_slot_ticks); ud_check "$1"; say "check: $UDR"; }
 # ud_verdicts: a judge's PASS / FAIL / INVALID lines counted in THIS shell (never through a pipe into a subshell)
 ud_verdicts(){ local x; while IFS= read -r x; do case "$x" in PASS*) ok "${x#PASS }" ;; FAIL*) no "${x#FAIL }" ;; INVALID*) inv "${x#INVALID }" ;; *) say "$x" ;; esac; done <<< "$1"; }
 ud_lk(){ local why; if why=$(pr_precheck_ran "$UDR"); then pr_slot_free "$1" "$UDT0"; else nj "UD-L ($1): $why"; fi; }
@@ -247,7 +273,7 @@ arm_refuse(){
 	ud_begin 7200
 	# ---- step 0: the provclient flip (pre-UD binary vs this one, same image / manifest / minute)
 	if q "[ -x $PCD/provclient.old ]"; then
-		r=$(ud_check "$VHEX" PCBIN=old); say "old: $r"
+		ud_check "$VHEX" PCBIN=old; r=$UDR; say "old: $r"
 		if [ "$(code "$r")" = 20 ] && ud_why "$UDLOG" 'verb update.check refused: code 20 (arg 1: want 0 bytes)'; then ok "step 0: the pre-UD provclient's update.check -> code 20 (arg 1: want 0 bytes)"
 		else no "step 0: old binary [$r] $(grep 'batman-provhelper\[' <<< "$UDLOG" | tail -1)"; fi
 		r=$(ud_pc h0.pem PCBIN=old -- update-status "$H0" | grep '^RESULT update.status'); [ "$(code "$r")" = 0 ] && ok "step 0: old binary update-status code 0" || no "step 0: old update-status [$r]"
@@ -266,7 +292,7 @@ arm_refuse(){
 			[ -n "$OLD" ] || { inv "UD7 $n: no wsl.35 payload under $OUTS"; continue; }
 			ud_manifest "/home/yello/out/$(basename "$(dirname "$OLD")")/ekh-bcm2711/$(basename "$(ls "$OLD"/*-ab-payload.tar.gz | head -1)")" "ud7-$n" --version 1.5.14-wsl.35 || continue
 		else ud_manifest "$PAYW" "ud7-$n" $o || continue; fi
-		r=$(ud_check "$MHEX"); say "UD7 $n: $r"
+		ud_check "$MHEX"; r=$UDR; say "UD7 $n: $r"
 		if [ "$(code "$r")" = 0 ] && [ "$(f "$r" ok)" = false ] && [ "$(f "$r" reason)" = "$rs" ] && ud_why "$UDLOG" "update.check: refused, reason $rs (" && ud_why "$UDLOG" "$w"; then ok "UD7 $n: ok=false reason $rs, why \"$w\""
 		else no "UD7 $n: [$r] want ok=false reason $rs and \"$w\" ($(grep 'batman-provhelper\[' <<< "$UDLOG" | tail -1 | cut -c1-200))"; fi
 	done
@@ -287,15 +313,15 @@ arm_refuse(){
 	if ud_gen badpayload bad.tar.gz && ud_manifest "$GENF" y --allow-no-key; then
 		Y=$MSUMS; YHEX=$MHEX
 		if ud_y_differs "$Y" "$X"; then
-			r=$(ud_check "$VHEX"); [ "$(f "$r" ok)" = true ] || no "UD20c: owner check X [$r]"
-			r=$(ud_check "$YHEX"); say "UD20c: provclient check Y: $r"
+			ud_check "$VHEX"; r=$UDR; [ "$(f "$r" ok)" = true ] || no "UD20c: owner check X [$r]"
+			ud_check "$YHEX"; r=$UDR; say "UD20c: provclient check Y: $r"
 			r=$(ud_window "$Y"); [ "$(code "$r")" = 0 ] && ok "UD20c P: bulk-open Y succeeds (the pending is now Y)" || no "UD20c P: bulk-open Y [$r]"
 			ud_close >/dev/null
 			ud_mark; r=$(ud_window "$X"); ud_refused "$r" 24 15 "no pending update of this owner for this sha" "UD20c bulk-open X"
 			ud_mark; r=$(ud_prepare "$X"); ud_refused "$r" 24 15 "no pending update for this sha" "UD20c prepare X"
 			r=$(ud_status); case " $r " in *" phase=2 "*) no "UD20c: a worker started [$r]" ;; *) ok "UD20c: no worker ($r)" ;; esac
-			r=$(ud_check "$VHEX"); r=$(ud_window "$X"); [ "$(code "$r")" = 0 ] || no "UD20c arm 2: bulk-open X [$r]"
-			r=$(ud_check "$YHEX"); [ "$(code "$r")" = 7 ] && ud_why "$UDLOG" "an update is being uploaded or written" && ok "UD20c arm 2: update-check Y in a window -> code 7" || no "UD20c arm 2: [$r]"
+			ud_check "$VHEX"; r=$UDR; r=$(ud_window "$X"); [ "$(code "$r")" = 0 ] || no "UD20c arm 2: bulk-open X [$r]"
+			ud_check "$YHEX"; r=$UDR; [ "$(code "$r")" = 7 ] && ud_why "$UDLOG" "an update is being uploaded or written" && ok "UD20c arm 2: update-check Y in a window -> code 7" || no "UD20c arm 2: [$r]"
 			r=$(ud_status); ud_phase "$r" 1 any "$X16" && ok "UD20c arm 2: status phase=1 sha=$X16" || no "UD20c arm 2 status [$r]"
 			ud_close >/dev/null
 			# ---- UD20b: pending X, an owner-op valid over Y
@@ -303,7 +329,7 @@ arm_refuse(){
 		else inv "UD20c: sums_sha(Y) = X ($Y): Y would test nothing"; fi
 	fi
 	# ---- UD8b: a FIFO instead of the upload
-	r=$(ud_check "$VHEX"); r=$(ud_window "$X")
+	ud_check "$VHEX"; r=$UDR; r=$(ud_window "$X")
 	if [ "$(code "$r")" = 0 ]; then
 		o=$(q "$PCD/provclient node exec /bin/sh -c 'id -u; mkfifo $BULK'"); p=$(qr "ls -ln $BULK")
 		if [ "$(head -1 <<< "$o")" = 471 ] && [ "${p:0:1}" = p ] && [ "$(awk '{print $3}' <<< "$p")" = 471 ]; then ok "UD8b P: the upload is a FIFO of 471 ($p)"
@@ -323,8 +349,8 @@ arm_write(){
 		ud_gen "mal$n" "m$n.tar.gz" || continue
 		if [ $n = 3 ]; then ud_manifest "$PAYW" "m3" --size-of "$GENF" || continue; else ud_manifest "$GENF" "m$n" || continue; fi
 		case $n in 1) w="is not a regular file" ;; 2) w="members after root.squashfs" ;; 3) w="data after the gzip stream" ;; 4) w="too many members" ;; esac
-		r=$(ud_check "$MHEX"); [ "$(f "$r" ok)" = true ] || { no "UD8 ($n): check [$r]"; continue; }
-		r=$(ud_window "$MSUMS"); ud_upload "$(hostp "$GENF")" || { ud_close >/dev/null; continue; }
+		ud_check "$MHEX"; r=$UDR; [ "$(f "$r" ok)" = true ] || { no "UD8 ($n): check [$r]"; continue; }
+		ud_open "$MSUMS" "UD8 ($n)" && ud_upload "$(hostp "$GENF")" || { ud_close >/dev/null; continue; }
 		ud_mark; r=$(ud_prepare "$MSUMS"); say "UD8 ($n) prepare: $r"
 		r=$(ud_poll 300 0 11); log=$(ud_log)
 		if ud_phase "$r" 0 11 && ud_why "$log" "update worker: prepare refused, reason 11 (" && ud_why "$log" "$w"; then ok "UD8 ($n): phase 0 + 11, worker why \"$w\""
@@ -333,8 +359,8 @@ arm_write(){
 	done
 	# ---- UD8c: V uploaded, then replaced (rm first: two copies do not fit) by the same-length mutant
 	if ud_gen mutate mut.tar.gz; then
-		r=$(ud_check "$VHEX"); r=$(ud_window "$X")
-		if ud_upload "$PAYH"; then
+		ud_check "$VHEX"; r=$UDR
+		if ud_open "$X" UD8c && ud_upload "$PAYH"; then
 			q "$PCD/provclient node exec /bin/rm -f $BULK" >/dev/null
 			if ud_upload "$(hostp "$GENF")"; then
 				ud_mark; r=$(ud_prepare "$X"); r=$(ud_poll 300 0 11); log=$(ud_log)
@@ -345,9 +371,8 @@ arm_write(){
 	fi
 	# ---- UD6 (b): p5 stale at the worker's precheck (joinwatch stopped: nothing re-saves p5)
 	pr_lease_renew +1800
-	r=$(ud_check "$VHEX"); [ "$(f "$r" ok)" = true ] || no "UD6 (b): check [$r]"
-	r=$(ud_window "$X")
-	if ud_upload "$PAYH" && ud_ssid_on "dv-s${RUN: -8}" "UD6 (b)"; then
+	ud_check "$VHEX"; r=$UDR; [ "$(f "$r" ok)" = true ] || no "UD6 (b): check [$r]"
+	if ud_open "$X" "UD6 (b)" && ud_upload "$PAYH" && ud_ssid_on "dv-s${RUN: -8}" "UD6 (b)"; then
 		ud_mark; r=$(ud_prepare "$X"); r=$(ud_poll 300 0 17); log=$(ud_log)
 		ud_phase "$r" 0 17 && ud_why "$log" "batman-slot write rc 12: " && ud_why "$log" "p5 (config) is STALE vs the running config (wireless.default_radio0.ssid)" \
 			&& ok "UD6 (b): phase 0 + 17, batman-slot write rc 12 'p5 (config) is STALE …'" || no "UD6 (b): [$r] $(grep 'batman-provhelper\[' <<< "$log" | tail -1 | cut -c1-200)"
@@ -357,8 +382,8 @@ arm_write(){
 	ud_close >/dev/null 2>&1
 	# ---- UD20 neg / pos (+ the UD9 observe watcher)
 	pr_lease_renew +2400
-	r=$(ud_check "$VHEX"); r=$(ud_window "$X")
-	if ud_upload "$PAYH"; then
+	ud_check "$VHEX"; r=$UDR
+	if ud_open "$X" UD20 && ud_upload "$PAYH"; then
 		ud_mark; r=$(ud_prepare "$X" PROVCLIENT_SIGN_ARGS_SHA="$(printf 'ud20-neg' | sha256sum | cut -c1-64)"); say "UD20 neg: $r"
 		log=$(ud_log); s=$(ud_status)
 		if [ "$(code "$r")" = 3 ] && grep -q ' signed-for=' <<< "$r"; then
@@ -378,7 +403,7 @@ arm_write(){
 		b=$(boot8); o=$(q "$(reboot_guarded "$b" A 1 prov-update-254)")
 		if [ "$o" = SENT ] && pr_find 900 "$b" && pr_pc_place; then
 			r=$(ud_poll 120 0 23); ud_phase "$r" 0 23 && ok "UD10b: after the reboot 0 + 23" || no "UD10b: after the reboot [$r]"
-			r=$(ud_check "$VHEX"); r=$(ud_status); ud_phase "$r" 0 23 && ok "UD10b: after the re-check still 0 + 23 (verified= carries the old boot)" || no "UD10b: after the re-check [$r]"
+			ud_check "$VHEX"; r=$UDR; r=$(ud_status); ud_phase "$r" 0 23 && ok "UD10b: after the re-check still 0 + 23 (verified= carries the old boot)" || no "UD10b: after the re-check [$r]"
 			ud_mark; r=$(ud_apply "$X"); ud_refused "$r" 24 15 "the target slot is not verified for this sha in this boot" "UD10b apply"
 		else no "UD10b: reboot [$o] / node not found"; fi
 	fi
@@ -428,14 +453,14 @@ arm_kill(){
 	if [ "$g" != ok ]; then inv "UD9 kill and cut: ${g#inv }"; ud_end; return; fi
 	ok "UD9: the write arm's observation holds for $V_NOW on $mac"
 	# ---- kill sub-arm (no reserve)
-	r=$(ud_check "$VHEX"); r=$(ud_window "$X")
-	if ud_upload "$PAYH" && ud_watch kill; then
+	ud_check "$VHEX"; r=$UDR
+	if ud_open "$X" "UD9 kill" && ud_upload "$PAYH" && ud_watch kill; then
 		tk=$(pr_slot_ticks); r=$(ud_prepare "$X"); say "UD9 kill prepare: $r"
 		t0=$(mono); while [ $(( $(mono) - t0 )) -lt 900 ]; do l=$(ud_watch_log); grep -qE '^UD9-(FIRE|MISS)' <<< "$l" && break; sleep 2; done
 		say "watcher: $l"; orph=$(sed -n 's/.* orphan=\([0-9]*\).*/\1/p' <<< "$l")
 		g=0; if [ -n "$orph" ]; then for i in $(seq 1 60); do [ -z "$(qr "[ -d /proc/$orph ] && echo up")" ] && { g=1; break; }; sleep 5; done; fi
-		o=$(pr_slot_free "the orphan's exit" "$tk"); echo "$o"; sf=$(grep -E '^(PASS|FAIL|INVALID)' <<< "$o" | tail -1)
-		case "$sf" in PASS*) sf=PASS ;; INVALID*) inv "UD9 kill: ${sf#INVALID }" ;; esac
+		ud_sync; f0=$fails; i0=$invalid; pr_slot_free "the orphan's exit" "$tk"; ud_sync
+		sf=PASS; [ "$fails$invalid" = "$f0$i0" ] || sf=JUDGED   # pr_slot_free printed and counted its own verdict
 		st=$(ud_poll 180 0 22); bi=$(ud_bootinfo); s=$(qr "$ST"); tr=$(qr 'tail -40 /opt/batdata/log/ota-trace.log')
 		ud_verdicts "$(ud_kill_judge "$l" "$SQ" "$g" "$sf" "$st" "$bi" "$s" "$tr")"
 		ud_flag0 && ok "UD9 kill: tryboot flag 0" || no "UD9 kill: tryboot flag set"
@@ -444,8 +469,8 @@ arm_kill(){
 	ud_close >/dev/null 2>&1
 	# ---- cut sub-arm: the host polls the p6 log; MISS -> INVALID, no pr_find; a lost connection after PRE-B = cut
 	pr_lease_renew +2400
-	r=$(ud_check "$VHEX"); r=$(ud_window "$X")
-	if ud_upload "$PAYH" && ud_watch cut; then
+	ud_check "$VHEX"; r=$UDR
+	if ud_open "$X" "UD9 cut" && ud_upload "$PAYH" && ud_watch cut; then
 		b=$(boot8); r=$(ud_prepare "$X"); say "UD9 cut prepare: $r"
 		ud_cut_wait "$b"; v=$UDCUTV
 		case "$v" in
@@ -465,8 +490,8 @@ arm_trial(){
 	local b r o ul hv bs off1 off2 c0 c1 rec
 	hv=$V_NOW
 	ud_to3(){	# <hex> <sums> <host file> <row>: check -> window -> upload -> prepare -> phase 3
-		r=$(ud_check "$1"); [ "$(f "$r" ok)" = true ] || { no "$4: check [$r]"; return 1; }
-		r=$(ud_window "$2"); ud_upload "$3" || return 1
+		ud_check "$1"; r=$UDR; [ "$(f "$r" ok)" = true ] || { no "$4: check [$r]"; return 1; }
+		ud_open "$2" "$4" && ud_upload "$3" || return 1
 		r=$(ud_prepare "$2"); r=$(ud_poll 900 3); ud_phase "$r" 3 && { ok "$4: phase 3 ($r)"; return 0; }; no "$4: phase 3 not reached [$r]"; return 1; }
 	ud_hold(){	# the hold flag, journalled first (rm-hold)
 		o=$(pl undo-add rm-hold); UDHOLD=$(sed -n 's/^UNDO-ADDED \([0-9]*\) .*/\1/p' <<< "$o"); [ -n "$UDHOLD" ] || { inv "undo-add rm-hold: $o"; return 1; }
@@ -511,13 +536,13 @@ arm_trial(){
 		bi=$(ud_bootinfo)
 		q '/etc/init.d/batman-provhelper restart >/dev/null 2>&1'; sleep 5
 		r=$(ud_poll 90 0 23); ud_phase "$r" 0 23 && ok "UD10: after a helper restart 0 + 23" || no "UD10: after the restart [$r]"
-		r=$(ud_check "$VHEX"); r=$(ud_status); ud_phase "$r" 3 && ok "UD10: a re-check without upload -> phase 3 (no worker)" || no "UD10: after the re-check [$r]"
+		ud_check "$VHEX"; r=$UDR; r=$(ud_status); ud_phase "$r" 3 && ok "UD10: a re-check without upload -> phase 3 (no worker)" || no "UD10: after the re-check [$r]"
 		[ "$(ud_bootinfo)" = "$bi" ] && ok "UD10: bootinfo B unchanged" || no "UD10: bootinfo B changed"
 		if ud_hold; then
 			b=$(boot8); r=$(ud_apply "$X"); say "UD1 apply: $r"
 			if ud_land "$b" UD1; then
 				r=$(ud_status); ud_phase "$r" 4 && ok "UD1: phase 4 in the trial" || no "UD1: in the trial [$r]"
-				r=$(ud_check "$VHEX"); [ "$(f "$r" ok)" = false ] && [ "$(f "$r" reason)" = 1 ] && ok "UD1: update.check in the trial -> ok=false reason 1" || no "UD1: check in the trial [$r]"
+				ud_check "$VHEX"; r=$UDR; [ "$(f "$r" ok)" = false ] && [ "$(f "$r" reason)" = 1 ] && ok "UD1: update.check in the trial -> ok=false reason 1" || no "UD1: check in the trial [$r]"
 				o=$(QT=900 q "$(release_guarded "$PR_LAND_BOOT" B)" | tail -1); say "UD1 release: $o"
 				grep -q 'release: committed' <<< "$o" && ok "UD1: release: committed" || no "UD1: release [$o]"
 				pr_pc_place; r=$(ud_status); ud_phase "$r" 5 && ok "UD1 / UD5 (ii): phase 5" || no "UD1: after the commit [$r]"
