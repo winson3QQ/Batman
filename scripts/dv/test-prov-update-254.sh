@@ -312,14 +312,20 @@ printf 'x %s\n' "$FX_KEY" > "$T/lk/unitlog"; o=$(lk "q(){ :; }; scp(){ while [ \
 grep -q '^FAIL prov-update-254: leak check (unit log): the mesh key appears 1 time' <<< "$o" && ! ls "$T/lk/d" | grep -q . && ok "leak file: the unit log copied to the scratch, grepped there, removed" || bad "leak file: $o [$(ls "$T/lk/d")]"
 # (7) review v11 A m2 / B m2: the trial boot's ring again at its last controllable point; a key line written after the
 # landing grep is caught; a boot that already changed is INVALID window lost
-ring0; o=$(lk "PR_LAND_BOOT=$BID; ud_leak_ring landing boot $BID; printf '%s\n' 'Nov 23 10:30:00 batman-provhelper[9]: k=$FX_KEY' >> \"\$FX_RING\"; ud_late_ring 'UD1: before the release' $BID")
+ring0; o=$(lk "PR_LAND_BOOT=$BID; UD_LAND_MARK=M1; ud_leak_ring landing boot $BID; printf '%s\n' 'Nov 23 10:30:00 batman-provhelper[9]: k=$FX_KEY' >> \"\$FX_RING\"; ud_late_ring 'UD1: before the release'")
 grep -q '^PASS prov-update-254: leak check (landing)' <<< "$o" && grep -q '^FAIL prov-update-254: leak check (UD1: before the release): the mesh key' <<< "$o" && ok "late ring (UD1): a key line written after the landing grep -> FAIL" || bad "late ring UD1: $o"
-ring0; o=$(lk "PR_LAND_BOOT=$BID; ud_leak_ring landing boot $BID; printf '%s\n' 'Nov 23 10:30:00 batman-provhelper[9]: k=$FX_KEY' >> \"\$FX_RING\"; qr(){ case \"\$1\" in *autocommit.deadline*) echo 1000 ;; *uptime*) u=\$(cat \"\$UDT/lk/up\" 2>/dev/null || echo 800); echo \$((u + 50)) > \"\$UDT/lk/up\"; echo \$u ;; *) PATH=\"\$UDT/lk/bin:\$PATH\" sh -c \"\$1\" ;; esac; }; sleep(){ :; }; ud2_late; echo UP=\$(cat \"\$UDT/lk/up\")"); rm -f "$T/lk/up"
+ring0; o=$(lk "PR_LAND_BOOT=$BID; UD_LAND_MARK=M1; ud_leak_ring landing boot $BID; printf '%s\n' 'Nov 23 10:30:00 batman-provhelper[9]: k=$FX_KEY' >> \"\$FX_RING\"; qr(){ case \"\$1\" in *autocommit.deadline*) echo 1000 ;; *uptime*) u=\$(cat \"\$UDT/lk/up\" 2>/dev/null || echo 800); echo \$((u + 50)) > \"\$UDT/lk/up\"; echo \$u ;; *) PATH=\"\$UDT/lk/bin:\$PATH\" sh -c \"\$1\" ;; esac; }; sleep(){ :; }; ud2_late; echo UP=\$(cat \"\$UDT/lk/up\")"); rm -f "$T/lk/up"
 grep -q '^FAIL prov-update-254: leak check (UD2: the B trial boot, last HELD sample before the deadline): the mesh key' <<< "$o" && grep -q '^UP=1000$' <<< "$o" && ok "late ring (UD2): waits to deadline - 60 s, a key line written after landing -> FAIL" || bad "late ring UD2: $o"
 o=$(lk "PR_LAND_BOOT=$BID; boot8(){ echo 0000beef; }; qr(){ case \"\$1\" in *autocommit.deadline*) echo 1000 ;; *uptime*) echo 10 ;; esac; }; ud2_late")
 grep -q '^INVALID prov-update-254: leak check (UD2: the B trial boot before its revert): logread window lost (boot 0000beef)' <<< "$o" && ok "late ring (UD2): the boot changed before the grep -> INVALID window lost" || bad "late ring UD2 lost: $o"
 o=$(lk "qr(){ echo; }; ud2_late"); grep -q '^INVALID prov-update-254: UD2: no autocommit deadline' <<< "$o" && ok "late ring (UD2): no deadline -> INVALID window lost" || bad "late ring UD2 no deadline: $o"
-ring0; o=$(lk "ud_late_ring 'UD1: before back_to_a' 00000000"); grep -q '^INVALID prov-update-254: leak check (UD1: before back_to_a): logread window lost' <<< "$o" && ok "late ring (UD1): the B boot already gone -> INVALID window lost" || bad "late ring UD1 lost: $o"
+ring0; o=$(lk "UD_LAND_MARK=M9; ud_late_ring 'UD1: before back_to_a'"); grep -q '^INVALID prov-update-254: leak check (UD1: before back_to_a): logread window lost (LEAK-NOWINDOW mark)' <<< "$o" && ok "late ring (UD1): the landing mark gone (a new boot or a wrap past it) -> INVALID window lost" || bad "late ring UD1 lost: $o"
+# design v12 (device run 2026-11-23 ud36d): a held trial's ring wraps; the late grep runs over landing mark .. now, so a
+# ring whose first line is no longer the boot's still gives a verdict (v11's boot window: INVALID "ring start" always)
+printf '%s\n' "Nov 23 10:20:00 netifd: wrapped" "Nov 23 10:20:01 batman-dv-ud: mark M1" "Nov 23 10:30:00 batman-provhelper[9]: k=$FX_KEY" > "$FX_RING"
+o=$(lk "UD_LAND_MARK=M1; ud_late_ring 'UD2: wrapped ring'"); grep -q '^FAIL prov-update-254: leak check (UD2: wrapped ring): the mesh key appears 1 time' <<< "$o" && ok "late ring over a wrapped ring: judged from the landing mark (a key line -> FAIL)" || bad "late ring wrapped: $o"
+printf '%s\n' "Nov 23 10:20:00 netifd: wrapped" "Nov 23 10:20:01 batman-dv-ud: mark M1" "Nov 23 10:30:00 batman-provhelper[9]: ok" > "$FX_RING"
+o=$(lk "UD_LAND_MARK=M1; ud_late_ring 'UD2: wrapped clean'"); grep -q '^PASS prov-update-254: leak check (UD2: wrapped clean)' <<< "$o" && ok "late ring over a wrapped ring, clean -> PASS" || bad "late ring wrapped clean: $o"
 # (8) 02 (review v11 A m1): each listed format matches once, benign lines do not; the record equal at start and end
 o=$(bash -c "$src"'; IFS="|" read -ra a <<< "$UD_02FMT"; n=0; for x in "${a[@]}"; do l=$(sed "s/\\\\//g" <<< "$x"); c=$(ud_02_match "Nov 23 batman-provhelper[7]: ${l}tail" | grep -c .); [ "$c" = 1 ] || echo "BAD [$l] $c"; n=$((n + 1)); done; echo "N=$n"
 	for b in "verb update.check refused: code 20 (arg 1: want 0 bytes)" "p5 stale only in keys P3 added: --save rc 0" "bulk.open: window 900 s" "net.apply ok"; do [ -z "$(ud_02_match "x batman-provhelper[7]: $b")" ] || echo "BENIGN-MATCH [$b]"; done
@@ -380,9 +386,9 @@ o=$(bash -c "$src; q(){ echo 'WATCH 4242'; echo 'UNDO-ADDED 4 tmp boot:x kill-pg
 grep -q '^STARTED' <<< "$o" && grep -q '^REFUSED1' <<< "$o" && grep -q '^REFUSED2' <<< "$o" && grep -q 'pid 4242 is not a live group-leading watcher right after the start \[GONE\]' <<< "$o" \
 	&& ok "ud_watch: the started pid must be a live group-leading watcher (dead pid / other group -> INVALID)" || bad "ud_watch start check: $o"
 o=$(bash -c "$src; for a in 'gone|LOGSIZE 4096 NONSPACE 0' 'alive|LOGSIZE 4096 NONSPACE 0|SYSLOG x ud9-watch: UD9-MISS stop' 'gone|NOLOG'; do IFS='|' read -r g l1 l2 <<< \"\$a\"; ud9_diag_text \"\$g\" \"\$(printf '%s\n%s' \"\$l1\" \"\$l2\")\"; done" 2>&1)
-[ "$(sed -n 1p <<< "$o")" = "the watcher had exited; its log holds no line (pre-sized spaces only); no ud9-watch line in syslog" ] \
-	&& grep -q '^the watcher was still running at the read (no stream dd seen within the step); its log holds no line (pre-sized spaces only); syslog: x ud9-watch: UD9-MISS stop|$' <<< "$o" \
-	&& grep -q '^the watcher had exited; its log does not exist (it never started); no ud9-watch line in syslog$' <<< "$o" && ok "ud9_diag_text: alive / exited, empty log, no log, syslog lines" || bad "ud9_diag_text: $o"
+grep -q "^the watcher had exited; its log holds no line (pre-sized spaces only); no ud9-watch line in syslog; no oom" <<< "$(sed -n 1p <<< "$o")" \
+	&& grep -q '^the watcher was still running at the read (no stream dd seen within the step); its log holds no line (pre-sized spaces only); syslog: x ud9-watch: UD9-MISS stop|; ' <<< "$o" \
+	&& grep -q '^the watcher had exited; its log does not exist (it never started); no ud9-watch line in syslog; ' <<< "$o" && ok "ud9_diag_text: alive / exited, empty log, no log, syslog lines" || bad "ud9_diag_text: $o"
 o=$(bash -c "$src; ud_watch_gone(){ return 0; }; ud_watch_log(){ :; }; ud_watch_done(){ :; }; qr(){ case \"\$1\" in *dv-ud9-*wc*) echo 'LOGSIZE 4096 NONSPACE 0' ;; esac; }; RUN=r1; ud_watch_obs_end" 2>&1)
 grep -q '^INVALID prov-update-254: UD9 premise (output side) not shown: \[\] — the watcher had exited; its log holds no line' <<< "$o" && ok "UD9 observe with no result line: INVALID with the diagnosis" || bad "obs_end diag: $o"
 # ---- device run 2026-11-23 (ud36c) write arm: UD8 (1)-(4) FAILed on a correct refusal: the judge wanted "update worker:
@@ -392,4 +398,40 @@ ud8s='RESULT update.status code=0 phase=0 percent=0 fail_reason=11 sha=e03ad2a57
 ud8v=1.5.14-wsl.36+b885a2c.fw302c80b.bench
 o=$(bash -c "$src; ud8_ok \"\$1\" \"\$2\" \"\$3\" 'is not a regular file' && echo A; ud8_ok \"\$1\" \"\$2\" 1.5.14-wsl.35 'is not a regular file' || echo B; ud8_ok \"\$1\" \"\$2\" \"\$3\" 'too many members' || echo C; ud8_ok \"\$1\" \"\$2\" '' 'is not a regular file' || echo D; ud8_ok \"\${1/fail_reason=11/fail_reason=12}\" \"\$2\" \"\$3\" 'is not a regular file' || echo E" _ "$ud8s" "$ud8l" "$ud8v" 2>&1)
 [ "$(tr -d '\n' <<< "$o")" = ABCDE ] && ok "UD8 judge on the device's real refusal line: PASS; another version / why / no version / reason -> not a PASS" || bad "UD8 judge: $o"
+# ---- device run 2026-11-23 (ud36d) trial arm
+# A: UD2 leaves a HELD trial to its deadline; pr_wait_reverted FAILed "the trial is HELD" on the HELD line pr_wait_held had
+# already seen. PR_HELD_OK=1: HELD expected, wait for the boot to change, then TRIAL-REVERTED of that boot on A
+mkdir -p "$T/wr"; printf '%s\n' '#!/bin/bash' 'c=${*: -1}; case "$c" in' \
+	'*"logread | grep -E"*) echo "BOOT=b0b0b0b0"; echo "x autocommit: B is healthy and HELD (operator)" ;;' \
+	'*"echo \"mac="*) n=$(( $(cat "$UDT/wr/n" 2>/dev/null || echo 0) + 1 )); echo $n > "$UDT/wr/n"; [ $n -lt 3 ] && echo "mac=x slot=B up=500 boot=b0b0b0b0" || echo "mac=x slot=A up=90 boot=c1c1c1c1" ;;' \
+	'esac; exit 0' > "$T/wr/ssh"; chmod 755 "$T/wr/ssh"
+wr_stub='sleep(){ :; }; pr_trial_guard_tick(){ :; }; pr_trial_guard_close(){ echo GUARD-CLOSED; }; pr_lease_renew(){ :; }; back_to_a(){ echo BACK_TO_A; }
+	pr_find(){ PR_STATE="mac=x slot=A trial_rc=1 up=90 boot=c1c1c1c1"; return 0; }
+	qr(){ case "$1" in *autocommit.deadline*) echo 600 ;; *"echo \"mac="*) echo "mac=x slot=B boot=b0b0b0b0" ;; *"TRIAL-REVERTED boot=b0b0b0b0 "*) echo "TRIAL-REVERTED boot=b0b0b0b0 reason=deadline" ;; *boot-reasons*) echo "x deadline" ;; esac; }'
+rm -f "$T/wr/n"; o=$(PATH="$T/wr:$PATH" bash -c "$src; $wr_stub; fails=0; PR_HELD_OK=1 pr_wait_reverted; echo rc=\$?" 2>&1)
+grep -q '^rc=0$' <<< "$o" && grep -q '^PASS prov-update-254: TRIAL-REVERTED of trial boot b0b0b0b0, back on A' <<< "$o" && grep -q GUARD-CLOSED <<< "$o" && ! grep -q 'BACK_TO_A\|^FAIL' <<< "$o" \
+	&& ok "UD2's wait: HELD is expected (PR_HELD_OK=1); the boot change, then TRIAL-REVERTED of that boot on A -> PASS" || bad "UD2 wait held-ok: $(tr '\n' '|' <<< "$o")"
+rm -f "$T/wr/n"; o=$(PATH="$T/wr:$PATH" bash -c "$src; $wr_stub; fails=0; pr_wait_reverted; echo rc=\$?" 2>&1)
+grep -q '^FAIL prov-update-254: the trial is HELD — the mutant had no effect' <<< "$o" && grep -q BACK_TO_A <<< "$o" && ok "the REVERT units' wait is unchanged: HELD = the mutant had no effect" || bad "pr_wait_reverted default: $(tr '\n' '|' <<< "$o")"
+# B1: UD2 not at its end state -> UD4 / UD5 / UD1 / UD10 NOT-RUN (they ran in ud36d with no tool on the node)
+o=$(smoke_run 'mono(){ local x; x=$(cat "$UDT/smoke/mono" 2>/dev/null || echo 0); echo $((x + 300)) > "$UDT/smoke/mono"; echo $x; }; ud_leak_ring(){ :; }; arm_trial'); rm -f "$T/smoke/mono"
+n1=$(grep -n 'UD2: phase 3 not reached' <<< "$o" | head -1 | cut -d: -f1)
+if [ -n "$n1" ] && grep -q '^NOT-JUDGED prov-update-254: UD4 / UD5 (i), UD5 (ii), UD1, UD10: NOT-RUN — prerequisite UD2 not met' <<< "$o" \
+	&& ! tail -n +"$n1" <<< "$o" | grep -v '^NOT-JUDGED' | grep -qE 'UD4|UD1|UD5 \(ii\)|badpayload' && grep -q '^STUB pr_end wrote-b' <<< "$o"; then
+	ok "UD2 not at its end state: UD4 / UD5 / UD1 / UD10 NOT-RUN, straight to the restore"
+else bad "UD2 prerequisite: $(tail -n +"${n1:-1}" <<< "$o" | grep -E 'UD|NOT-|STUB|generated' | head -5 | tr '\n' '|')"; fi
+# B2: provclient is in the node's tmpfs: after a boot ud_pc re-places it once; a missing tool is named as such
+o=$(bash -c "$src; RUN=r1; H0=04; printf 'aaaa1111\n' > \"\$UDPLF\"; boot8(){ echo bbbb2222; }; pr_pc_place_base(){ echo PLACED >&2; }
+	pr_pc(){ echo 'PROVCLIENT caps=uc2,bo2,rk1,pg2,nopsk'; echo 'RESULT update.status code=0 phase=0 percent=0'; }
+	r=\$(ud_status); echo \"R=\$r\"; r=\$(ud_status); echo \"R2=\$r\"; echo \"FILE=\$(cat \"\$UDPLF\")\"" 2>&1)
+[ "$(grep -c '^PLACED' <<< "$o")" = 1 ] && grep -q 'provclient re-placed: the node booted since it was placed (aaaa1111 -> bbbb2222)' <<< "$o" && grep -q '^FILE=bbbb2222$' <<< "$o" && grep -q '^R2=RESULT update.status' <<< "$o" \
+	&& ok "ud_pc after a boot: provclient re-placed once (the record is a file, so \$(…) calls count too)" || bad "re-place: $(tr '\n' '|' <<< "$o")"
+o=$(bash -c "$src; RUN=r1; pr_pc(){ echo \"sh: \$PCD/provclient: not found\"; }; ud_pc h0.pem -- update-check x; echo rc=\$?" 2>&1)
+grep -qE '^INVALID prov-update-254: provclient missing on the node [(]sh: [^ ]*/batman-dvpc[.][^/ ]*/provclient: not found[)]' <<< "$o" && ! grep -q 'stale tool' <<< "$o" && grep -q '^rc=2$' <<< "$o" \
+	&& ok "ud_pc: 'sh: …/provclient: not found' -> INVALID provclient missing on the node (not 'a stale tool')" || bad "missing tool: $o"
+o=$(bash -c "$src; RUN=r1; printf 'aaaa1111\n' > \"\$UDPLF\"; boot8(){ echo aaaa1111; }; pr_pc_place_base(){ echo PLACED; }; pr_pc_place; pr_keys_drop_base(){ :; }; pr_keys_drop; boot8(){ echo aaaa1111; }; pr_pc_place" 2>&1)
+[ "$(grep -c '^PLACED' <<< "$o")" = 1 ] && ok "pr_pc_place: a no-op for a boot already placed; again after pr_keys_drop removed the tool" || bad "place idempotent: $o"
+# D: the diagnosis reads dmesg (oom / killed process) and free
+o=$(bash -c "$src; ud9_diag_text gone \"\$(printf '%s\n' 'LOGSIZE 4096 NONSPACE 0' 'DMESG [ 812.1] Out of memory: Killed process 15472 (sh)' 'FREE Mem: 1000 900 100')\"" 2>&1)
+grep -q 'its log holds no line (pre-sized spaces only); no ud9-watch line in syslog; dmesg (oom / killed): \[ 812.1\] Out of memory: Killed process 15472 (sh)|; free: Mem: 1000 900 100$' <<< "$o" && ok "ud9_diag_text: dmesg oom / killed-process lines and free" || bad "diag dmesg: $o"
 echo "test-prov-update: $P passed, $F failed"; [ $F = 0 ] && [ $P -gt 0 ]

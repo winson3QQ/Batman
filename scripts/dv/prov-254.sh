@@ -425,6 +425,9 @@ pr_wait_held(){ local max=${1:-480} u t0; t0=$(mono)
 	done; }
 # pr_wait_reverted: (REVERT units) TRIAL-REVERTED; budget = the trial's deadline + DEFER_MAX 600 + 120 s (F42); HELD
 # instead = the mutant had no effect; a hard reboot without TRIAL-REVERTED (trial panic) = INVALID, not "no effect"
+# PR_HELD_OK=1 (prov-update-254's UD2 only: a HELD trial left to its deadline, 254-v16-ud §1.4): HELD is the expected
+# state, not "no effect" — the wait is for the boot to change, then TRIAL-REVERTED of that boot on A (device run
+# 2026-11-23 ud36d: the HELD line pr_wait_held had seen FAILed the first poll, 4 s after the wait began).
 pr_wait_reverted(){
 	local dl b0 t0 o s dfl=""
 	dl=$(qr '. /usr/lib/batman/rundir.sh; cat $RUNDIR/autocommit.deadline 2>/dev/null'); b0=$(field "$(qr "$ST")" boot)
@@ -434,7 +437,7 @@ pr_wait_reverted(){
 		# logread is this boot's ring; the boot id comes with it and a line of another boot is not this trial's (§23.9)
 		o=$(timeout 30 ssh $SSHO root@$NODE 'echo "BOOT=$(cut -c1-8 /proc/sys/kernel/random/boot_id)"; logread | grep -E "is healthy and HELD|revert deferred:" | tail -2' 2>/dev/null | tr -d '\r')
 		case "$o" in "BOOT=$b0"*) o=$(tail -n +2 <<< "$o") ;; *) o="" ;; esac
-		grep -q "is healthy and HELD" <<< "$o" && { no "the trial is HELD — the mutant had no effect"; back_to_a; return 1; }
+		[ "${PR_HELD_OK:-0}" = 1 ] || { grep -q "is healthy and HELD" <<< "$o" && { no "the trial is HELD — the mutant had no effect"; back_to_a; return 1; }; }
 		if grep -q "revert deferred:" <<< "$o" && [ "$o" != "${dfl:-}" ]; then dfl=$o; pr_lease_renew +600 || return 1; fi   # once per new deferred line (review A-m3)
 		pr_trial_guard_tick "$b0"
 		s=$(timeout 30 ssh $SSHO root@$NODE "$ST" 2>/dev/null | tr -d '\r')

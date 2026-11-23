@@ -40,6 +40,9 @@ wline() {	# one 128-byte slot in place, fsync of the log only; then syslog
 	return 0
 }
 miss() { wline "UD9-MISS $*"; exit 1; }
+# a catchable signal leaves its line (device run 2026-11-23 ud36d: the observe watcher vanished during the real write with
+# no line at all; SIGKILL — the OOM killer — still leaves none, the host then reads dmesg)
+for _sg in HUP INT TERM PIPE USR1 USR2; do trap "wline 'UD9-MISS signal $_sg'; exit 1" "$_sg"; done
 # ---- the log first, while no stream exists: pre-sized, one sync, never again
 umask 077
 [ -d "$LOGD" ] && [ ! -L "$LOGD" ] || exit 3

@@ -159,10 +159,25 @@ ud_log(){ qr "logread | sed -n '/batman-dv-ud: mark $UDM\$/,\$p' | grep -E 'batm
 ud_bootinfo(){ local o i; for i in 1 2 3; do o=$(qr "batman-slot bootinfo B 2>&1; echo rc=\$?"); case "$o" in *rc=14) sleep 10 ;; *) break ;; esac; done; printf '%s\n' "$o"; }
 ud_pc(){	# pr_pc + the caps rule; PCBIN=old exempt. INVALID (rc 2) on a missing caps line, with the tool's sha
 	local o pb=new a; for a in "$@"; do [ "$a" = PCBIN=old ] && pb=old; [ "$a" = -- ] && break; done
+	ud_pc_replace
 	o=$(pr_pc "$@"); printf '%s\n' "$o"
+	grep -qE "$PCD/provclient(\.old)?: (not found|No such file)" <<< "$o" && { inv "provclient missing on the node ($(grep -m1 -E 'not found|No such file' <<< "$o" | cut -c1-120)) — not placed since the node's last boot"; return 2; }
 	[ -n "$o" ] || { inv "provclient printed no output at all (not placed on the node since its last boot, or no ssh answer)"; return 2; }
 	ud_caps "$o" "$pb" || { inv "provclient printed no caps line (sha $(sha256sum < "$TOOLS/provclient-arm64" | cut -c1-16)): a stale tool — rebuild (scripts/dv-provclient-tools.sh)"; return 2; }
 	return 0; }
+# provclient lives in the node's tmpfs: a boot removes it (device run 2026-11-23 ud36d: UD4 / UD1 ran after a back_to_a
+# with no tool). pr_pc_place records the boot it placed for (a file: ud_pc runs inside $(…) too); ud_pc re-places once
+# the boot differs, and pr_pc_place is a no-op for a boot already placed. pr_keys_drop removes the tool: record cleared.
+UDPLF=$(mktemp) || { echo "FAIL prov-update-254: mktemp"; exit 2; }
+eval "$(declare -f pr_pc_place | sed '1s/^pr_pc_place/pr_pc_place_base/')"
+pr_pc_place(){ local b; b=$(boot8)
+	[ -n "$b" ] && [ "$b" = "$(cat "$UDPLF" 2>/dev/null)" ] && return 0
+	pr_pc_place_base || return 1; printf '%s\n' "$b" > "$UDPLF"; return 0; }
+eval "$(declare -f pr_keys_drop | sed '1s/^pr_keys_drop/pr_keys_drop_base/')"
+pr_keys_drop(){ : > "$UDPLF"; pr_keys_drop_base "$@"; }
+ud_pc_replace(){ local p b; p=$(cat "$UDPLF" 2>/dev/null); [ -n "$p" ] || return 0
+	b=$(boot8); [ -n "$b" ] && [ "$b" != "$p" ] || return 0
+	say "provclient re-placed: the node booted since it was placed ($p -> $b)" >&2; pr_pc_place >&2; }
 ud_status(){ ud_pc h0.pem -- update-status "$H0" | grep '^RESULT update.status'; }
 # ud_poll <secs> <phase> [reason] [sha16]: status every 5 s until it says that; prints the last line
 ud_poll(){ local t0 l; t0=$(mono); while :; do l=$(ud_status); ud_phase "$l" "$2" "${3:-any}" "${4:-any}" && { echo "$l"; return 0; }; [ $(( $(mono) - t0 )) -ge "$1" ] && { echo "$l"; return 1; }; sleep 5; done; }
@@ -334,9 +349,12 @@ ud_leak_file(){	# <label> <host file>: the file goes to the node's root-only scr
 # ud_leak_final: the unit log, pr_end / pr_abort output included (it is tee'd), grepped after the end (once)
 ud_leak_final(){ [ -n "${UDLOGF:-}" ] && [ "${UDLEAKDONE:-0}" = 0 ] || return 0; UDLEAKDONE=1; ud_leak_file "the unit log incl. pr_end / pr_abort" "$UDLOGF"; rm -f "$UDLOGF"; }
 
-# ud_late_ring <label> <boot8>: the trial boot's ring once more at its last controllable point (review v11 A m2 /
-# B m2): its ring is lost at the revert / back_to_a. A boot that already changed = INVALID "window lost"
-ud_late_ring(){ ud_leak_ring "$1" boot "$2"; }
+# ud_late_ring <label>: the trial boot's ring once more at its last controllable point (review v11 A m2 / B m2): its
+# ring is lost at the revert / back_to_a. Design v12 (device run 2026-11-23 ud36d): over the landing mark .. now, not
+# the whole boot — a held trial's ring wraps within ~10 min, so "the ring starts at this boot" can never hold late. The
+# mark is written at landing BEFORE the landing grep (boot start .. landing), so the two windows overlap. The mark is a
+# RAM-ring line: it is gone once the boot ends and after a wrap past it — both INVALID "logread window lost".
+ud_late_ring(){ ud_leak_ring "$1" mark "${UD_LAND_MARK:-}"; }
 # ud2_late: UD2 is held until its deadline: wait for the last HELD sample before it (deadline - 60 s), then grep
 ud2_late(){ local dl u b
 	dl=$(qr '. /usr/lib/batman/rundir.sh; cat $RUNDIR/autocommit.deadline 2>/dev/null')
@@ -348,7 +366,7 @@ ud2_late(){ local dl u b
 		[ "$u" -ge $((dl - 60)) ] && break
 		sleep 15
 	done
-	ud_late_ring "UD2: the B trial boot, last HELD sample before the deadline" "$PR_LAND_BOOT"; }
+	ud_late_ring "UD2: the B trial boot, last HELD sample before the deadline"; }
 
 # ---- the member join (trial arm only, §4.4 items 4, 5, 7)
 UD_FD3='m=$(uci -q get wireless.default_radio1.mesh_id); k=$(uci -q get wireless.default_radio1.key); c=$(uci -q get wireless.radio1.channel); n=$(uci -q get wireless.radio1.country); printf "mesh_id=%s\nchannel=%s\nbw=2\nsae=%s\ncountry=%s\n" "$m" "$c" "$k" "$n"'
@@ -601,13 +619,16 @@ ud_watch_obs_end(){ local l mac g=gone d
 # ud9_diag <gone|alive>: why the observe watcher left no result line: was it still running at the read (no stream dd
 # seen), did its log stay the 4096 pre-sized spaces (no line written), and its syslog lines (each line also goes there)
 ud9_diag(){ local o
-	o=$(qr "f=/opt/batdata/log/dv-ud9-$RUN.log; if [ -f \$f ]; then echo \"LOGSIZE \$(wc -c < \$f) NONSPACE \$(tr -d ' \\n' < \$f | wc -c)\"; else echo NOLOG; fi; logread 2>/dev/null | grep 'ud9-watch' | tail -3 | cut -c1-160 | sed 's/^/SYSLOG /'")
+	o=$(qr "f=/opt/batdata/log/dv-ud9-$RUN.log; if [ -f \$f ]; then echo \"LOGSIZE \$(wc -c < \$f) NONSPACE \$(tr -d ' \\n' < \$f | wc -c)\"; else echo NOLOG; fi; logread 2>/dev/null | grep 'ud9-watch' | tail -3 | cut -c1-160 | sed 's/^/SYSLOG /'
+dmesg 2>/dev/null | grep -iE 'oom|killed process|out of memory' | tail -5 | cut -c1-160 | sed 's/^/DMESG /'; free 2>/dev/null | sed -n '2p' | tr -s ' ' | sed 's/^/FREE /'")
 	ud9_diag_text "$1" "$o"; }
 ud9_diag_text(){ local s
 	case "$1" in alive) s="the watcher was still running at the read (no stream dd seen within the step)" ;; *) s="the watcher had exited" ;; esac
 	if grep -q '^NOLOG' <<< "$2"; then s="$s; its log does not exist (it never started)"
 	elif grep -q '^LOGSIZE [0-9]* NONSPACE 0$' <<< "$2"; then s="$s; its log holds no line (pre-sized spaces only)"; fi
 	grep -q '^SYSLOG ' <<< "$2" && s="$s; syslog: $(grep '^SYSLOG ' <<< "$2" | sed 's/^SYSLOG //' | tr '\n' '|')" || s="$s; no ud9-watch line in syslog"
+	grep -q '^DMESG ' <<< "$2" && s="$s; dmesg (oom / killed): $(grep '^DMESG ' <<< "$2" | sed 's/^DMESG //' | tr '\n' '|')" || s="$s; no oom / killed-process line in dmesg"
+	grep -q '^FREE ' <<< "$2" && s="$s; free: $(grep -m1 '^FREE ' <<< "$2" | sed 's/^FREE //')"
 	echo "$s"; }
 
 # ud_cut_wait <boot8 before the prepare>: polls the watcher's p6 log every 2 s (254-v16-ud §1.5, B v5 m1). A UD9-MISS
@@ -668,7 +689,7 @@ arm_kill(){
 
 arm_trial(){
 	ud_begin 14400; PR_WROTE_B=1
-	local b r o ul hv bs off1 off2 c0 c1 rec v
+	local b r o ul hv bs off1 off2 c0 c1 rec v; UD2OK=0
 	hv=$V_NOW
 	# 02 at the arm's start (read-only), and a mark in its log
 	UD02A=$(ud_02_state); UD02M="ud-$RUN-02"; qp "logger -t batman-dv-ud mark $UD02M" >/dev/null; say "02 at the start: $(tr '\n' '|' <<< "$UD02A")"
@@ -695,6 +716,7 @@ arm_trial(){
 			|| { no "$2: not a held B trial ($s)"; return 1; }
 		pr_trial_guard; o=$(pl undo-done "$UDHOLD"); grep -q "^UNDO-DONE" <<< "$o" || no "$2: undo-done rm-hold: $o"
 		pr_pc_place; ud_g; ok "$2: landed in the held B trial"
+		ud_mark; UD_LAND_MARK=$UDM   # the late ring's window start (v12), before the landing grep: the windows overlap
 		ud_leak_ring "$2: the B trial boot, at landing" boot "$PR_LAND_BOOT"; }
 	# ---- UD2: same version reverted -> 6
 	if ud_to3 "$VHEX" "$X" "$PAYH" UD2 && ud_hold; then
@@ -702,10 +724,13 @@ arm_trial(){
 		if ud_land "$b" UD2; then
 			r=$(ud_status); ud_phase "$r" 4 && pr_wait_held 480 && ok "UD2: phase 4 + HELD in the trial" || no "UD2: in the trial [$r]"
 			ud2_late
-			pr_wait_reverted && pr_pc_place && ud_g && ud_leak_ring "UD2: the A boot after the revert, at landing" boot "$(boot8)" && { r=$(ud_status); ud_phase "$r" 6 - && [ "$(field "$PR_STATE" slot)" = A ] && ok "UD2: reverted, A committed, phase 6" || no "UD2: after the revert [$r]"; }
+			PR_HELD_OK=1 pr_wait_reverted && pr_pc_place && ud_g && ud_leak_ring "UD2: the A boot after the revert, at landing" boot "$(boot8)" && { r=$(ud_status); ud_phase "$r" 6 - && [ "$(field "$PR_STATE" slot)" = A ] && [ "$(field "$PR_STATE" trial_rc)" = 1 ] && { ok "UD2: reverted, A committed, phase 6"; UD2OK=1; } || no "UD2: after the revert [$r]"; }
 		fi
 	fi
 	ud_person_stop "UD4 / UD5 (i), UD5 (ii), UD1, UD10" ud_trial_end && return
+	# UD4 / UD5 / UD1 / UD10 start from UD2's end state (A committed, phase 6, bad-slot B): without it they are not run
+	# (device run 2026-11-23 ud36d: UD2 FAILed, the node went back to A by back_to_a, and UD4 / UD1 ran anyway)
+	[ "${UD2OK:-0}" = 1 ] || { nj "UD4 / UD5 (i), UD5 (ii), UD1, UD10: NOT-RUN — prerequisite UD2 not met (not A committed at phase 6 after its revert)"; ud_trial_end; return; }
 	bs=$(qr 'cat /opt/batdata/state/bad-slot 2>/dev/null'); say "bad-slot after UD2: [$bs]"
 	off1=$(qr "grep -b 'TRIAL-REVERTED' /opt/batdata/log/autocommit.log | tail -1 | cut -d: -f1")
 	# ---- UD4 (= UD5 i): a B that does not boot -> 6 + 18; B's boot evidenced by the PANIC record
@@ -740,12 +765,12 @@ arm_trial(){
 			if ud_land "$b" UD1; then
 				r=$(ud_status); ud_phase "$r" 4 && ok "UD1: phase 4 in the trial" || no "UD1: in the trial [$r]"
 				ud_check "$VHEX"; r=$UDR; [ "$(f "$r" ok)" = false ] && [ "$(f "$r" reason)" = 1 ] && ok "UD1: update.check in the trial -> ok=false reason 1" || no "UD1: check in the trial [$r]"
-				ud_late_ring "UD1: the B trial boot, before the release" "$PR_LAND_BOOT"
+				ud_late_ring "UD1: the B trial boot, before the release"
 				o=$(QT=900 q "$(release_guarded "$PR_LAND_BOOT" B)" | tail -1); say "UD1 release: $o"
 				grep -q 'release: committed' <<< "$o" && ok "UD1: release: committed" || no "UD1: release [$o]"
 				pr_pc_place; r=$(ud_status); ud_phase "$r" 5 && ok "UD1 / UD5 (ii): phase 5" || no "UD1: after the commit [$r]"
 				[ -z "$(qr 'cat /opt/batdata/state/bad-slot 2>/dev/null')" ] && ok "UD5 (ii): bad-slot removed by the commit" || no "UD5 (ii): bad-slot still there"
-				ud_late_ring "UD1: the B boot, before back_to_a" "$PR_LAND_BOOT"
+				ud_late_ring "UD1: the B boot, before back_to_a"
 				back_to_a && pr_pc_place && ud_g && { r=$(ud_status); ud_phase "$r" 0 - && ok "UD1: back on A, phase 0" || no "UD1: after back_to_a [$r]"; }
 			fi
 		fi
