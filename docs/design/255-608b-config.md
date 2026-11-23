@@ -1,7 +1,7 @@
 # #255 608B 晶片設定 — bench 專用（設計 v7）
 
 **範圍（使用者 2026-11-23）**：量產的安全晶片**不是**空白 608B，要用哪顆之後再定（自家 HAT v1 目前畫的是 ATECC608C 預先設定版加一顆 TPM，`hardware/hat-v1/README.md:29`）。本文件只適用於 **bench 上 WM1302 HAT 的 U3 焊盤與手上 10 顆 ATECC608B-SSHDA-B**。它是第 1 期的學習與整合用具：把節點的身分後端做成介面，並把協定與 app 的改動在真晶片上跑通。量產才有的問題不在本文件（§10）。
-搭配：`255-phase1-impl.md` v5（實作、系統生命週期、驗證工具）；`255-key-authority.md` v3.1；`255-threat-model.md` v2.1。
+搭配：`255-phase1-impl.md` v5（實作、系統生命週期、驗證工具）；`255-key-authority.md` v3.2；`255-threat-model.md` v2.2。
 事實來源：`255-reviews/608b-facts.md`（**F§n**）；TFLXTLS datasheet DS40002249A（**TFLX**）；cryptoauthlib 原始碼（**CAL**）。608B 完整 datasheet 要 NDA，沒有人讀過。
 標記：✅ 有出處；⚠️ 要在晶片上確認（標實驗編號）；❓ 查不到。
 

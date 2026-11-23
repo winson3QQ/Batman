@@ -2,7 +2,7 @@
 
 範圍：把 bench 上的空白 ATECC608B（`255-608b-config.md` v7 的設定）接成節點的身分後端，並讓協定、app、驗證工具配合。**只在開發版生效**：field 版 app 第 1 期之後仍拒絕所有節點（量產根要等選定量產晶片與 #256）。**第 1 期的晶片映像不是發行產物**，只裝在 bench 節點上。
 不含：信任模型（第 2 期）、量產晶片、secure boot、晶片背書、入庫計數器（晶片設定 §10）。
-依據：`255-608b-config.md` v7；`255-key-authority.md` v3.1（K13–K16、K20、K21 約束本期）；`255-threat-model.md` v2.1。
+依據：`255-608b-config.md` v7；`255-key-authority.md` v3.2（K13–K16、K20、K21 約束本期）；`255-threat-model.md` v2.2。
 基準：main 4eba26d，加上 PR 1（#379，`Identity` 介面，未 merge）。節點路徑以 `feed/batman-prov/src/` 為根；app 的 Rust 以 `app/rust/` 為根。標記：✅ 對過原始碼；⚠️ 推論或未驗證。
 
 | 版本 | 審查 |
