@@ -1,0 +1,6 @@
+banner lines: 21
+absent pattern via -f -: count=0 rc=1
+present line via -f -: count=1 rc=0
+empty pattern via -f -: count=21 rc=0
+missing file: count=[] rc=2
+BusyBox v1.36.1 (2025-06-23 20:40:36 UTC) multi-call binary.

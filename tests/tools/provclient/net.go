@@ -231,8 +231,8 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 			cfg, sec := cl.netObjects(in, ownerPub, netID, 1, nil)
 			env := cl.ownerOp("network/join", cmap{{uint64(1), rawCBOR(cfg)}, {uint64(3), rawCBOR(sec)}})
 			code, _ := cl.call("net.apply", cmap{{uint64(1), cl.h}, {uint64(2), env}})
-			fmt.Printf("RESULT net.apply code=%d version=1 net_id=%x mesh_id_sha=%s\n", code, netID, short([]byte(in.meshID)))
-			fmt.Printf("NETCFG %s\n", hex.EncodeToString(cfg)) // not secret: the signed config (no keys)
+			fmt.Printf("RESULT net.apply code=%d version=1 net_id=%x %s\n", code, netID, meshField(in.meshID))
+			printNetcfg(cfg) // not secret: the signed config (no keys); withheld under PROVCLIENT_NET_QUIET
 		case "--first-noop": // the same join WITHOUT the owner-op (key 31): a release helper must refuse it (E_FORBIDDEN);
 			// helper-nojoinop accepts it (the prov-netjoin-254 negative control)
 			netID := make([]byte, 16)
@@ -241,7 +241,7 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 			env := cEnc(cmap{{uint64(0), []any{uint64(1), uint64(0)}}, {uint64(1), uint64(1)}, {uint64(2), "network/join"},
 				{uint64(3), cmap{{uint64(1), rawCBOR(cfg)}, {uint64(3), rawCBOR(sec)}}}})
 			code, _ := cl.call("net.apply", cmap{{uint64(1), cl.h}, {uint64(2), env}})
-			fmt.Printf("RESULT net.apply(no owner-op) code=%d version=1 net_id=%x mesh_id_sha=%s\n", code, netID, short([]byte(in.meshID)))
+			fmt.Printf("RESULT net.apply(no owner-op) code=%d version=1 net_id=%x %s\n", code, netID, meshField(in.meshID))
 		case "--update", "--update-stale-secrets":
 			// --update-stale-secrets: the new net_config with net_secrets of the CURRENT version (a fresh one: the
 			// stored one is not readable here) — the helper must refuse it (E_BAD_OBJECT), 254-net-update-members §2.2-5
@@ -264,8 +264,8 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 			step := cmap{{uint64(1), rawCBOR(cfg)}, {uint64(2), rawCBOR(cl.memberList(netID, ver+1))}, {uint64(3), rawCBOR(sec)}}
 			env := cl.ownerOp("network/update", cmap{{uint64(1), []any{step}}})
 			code, r := cl.call("net.apply", cmap{{uint64(1), cl.h}, {uint64(2), env}})
-			fmt.Println(resultLine(what, code, r, fmt.Sprintf(" version=%d mesh_id_sha=%s country=%s", ver+1, short([]byte(in.meshID)), in.country)))
-			fmt.Printf("NETCFG %s\n", hex.EncodeToString(cfg))
+			fmt.Println(resultLine(what, code, r, fmt.Sprintf(" version=%d %s country=%s", ver+1, meshField(in.meshID), in.country)))
+			printNetcfg(cfg)
 		case "--join": // net-apply --join <owner_pub> <net_config hex>: join ANOTHER node's network — its signed
 			// net_config verbatim (same net_id, same version), this node's own net_secrets (254 review A-M2)
 			cfg := hexArg(3)
@@ -283,7 +283,7 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 			sec := cl.netSecrets(in, netID, ver)
 			env := cl.ownerOp("network/join", cmap{{uint64(1), rawCBOR(cfg)}, {uint64(3), rawCBOR(sec)}})
 			code, _ := cl.call("net.apply", cmap{{uint64(1), cl.h}, {uint64(2), env}})
-			fmt.Printf("RESULT net.apply(join) code=%d version=%d net_id=%x mesh_id_sha=%s\n", code, ver, netID, short([]byte(in.meshID)))
+			fmt.Printf("RESULT net.apply(join) code=%d version=%d net_id=%x %s\n", code, ver, netID, meshField(in.meshID))
 		default:
 			die("net-apply: --first, --first-noop, --update, --update-stale-secrets or --join")
 		}
@@ -308,4 +308,22 @@ func netOp(cl *client, op string, args []string, in *netInput, hexArg func(int) 
 		return false
 	}
 	return true
+}
+
+// PROVCLIENT_NET_QUIET=1 (#254 v1.6 g4 PR B, 254-v16-ud §3.1 / §4.4): a join into an EXISTING mesh (the bench mesh, its
+// values read on the node) prints neither the signed config (NETCFG carries the mesh id) nor a hash of the id:
+// "mesh_id=withheld" instead of mesh_id_sha=. Without the flag the output is unchanged (other units' judges read both).
+func netQuiet() bool { return os.Getenv("PROVCLIENT_NET_QUIET") == "1" }
+
+func meshField(id string) string {
+	if netQuiet() {
+		return "mesh_id=withheld"
+	}
+	return "mesh_id_sha=" + short([]byte(id))
+}
+
+func printNetcfg(cfg []byte) {
+	if !netQuiet() {
+		fmt.Printf("NETCFG %s\n", hex.EncodeToString(cfg))
+	}
 }
