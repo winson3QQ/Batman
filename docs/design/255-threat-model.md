@@ -1,4 +1,11 @@
-# #255 threat model: key-management plane (v2.1, self-assessed)
+# #255 threat model: key-management plane (v2.2, self-assessed)
+
+v2.1 → v2.2: network segmentation and audit, checked against IEC 62443-4-2 FR5 (restricted data flow) and FR6
+(timely response to events), and STRIDE R (repudiation). v2.1 already had the segmentation *property* (R45, R46,
+R103) and accountability as an asset (A11) with an open question (§8.1-13); it had no threat for maintenance
+services on the bridge and no node-side requirement for an audit record. Added: T-ND9 … T-ND11, R118–R125, two
+residual risks (§10-16, §10-17); §8.1-13 now points to them. One adversarial review of the draft and one of the merged
+text (APPROVE-WITH-CHANGES, 0 / 5 / 4) were folded in. Draft with the code evidence: `255-reviews/v2.2-segmentation-audit-draft.md`. Not re-reviewed.
 
 v2 → v2.1: review v3-B = APPROVE-WITH-CHANGES (0 / 1 / 7). §3.0 now states the platform state per phase (secure boot ON for all shipping builds; phase 1 is OFF with a chip) and the overlay assumption; stale citations to the key-authority document updated. MINOR findings not yet applied: see `255-reviews/review-v3-B.md` Part 3.
 
@@ -27,6 +34,12 @@ v2 → v2.1: review v3-B = APPROVE-WITH-CHANGES (0 / 1 / 7). §3.0 now states th
     matches "ATECC608"; the chip has algorithm validations only (CAVP A4280 / A4285, per Microchip). CMVP
     certificate 5371 is the Microchip **TA101** (FIPS 140-3, overall level 2), not the 608B. This supersedes the
     [A] marker on residual risk 11 in §10.
+  - Hardware roadmap: nodes get an RTC from **v7.2**; the **v7.10** production build replaces the 608B with a
+    certified secure element (certification type and level not yet stated). Until v7.2, residual risk 3 holds as
+    written; after it, the node has a clock that a holder of the node can set (R41 and R113 still apply).
+- Follow-up outside this file, not done here (v2.2): devices on the bridged segment can act as a rogue DHCP server,
+  send IPv6 router advertisements, or forge alfred / openmanetd address-reservation data. That is network-layer and
+  belongs in `docs/threat-model.md`; it is not a management-plane threat and is not scored here.
 - Follow-up outside this file, not done here: `docs/threat-model.md:38` describes a single root CA that signs both
   node and TAK client certificates; that conflicts with R24 and R97 and should be corrected when this document is
   approved [author v1, header note].
@@ -171,7 +184,7 @@ the merge.
 |---|---|---|---|
 | S1 | Whoever holds the node can boot any OS on it and drive the SE from that OS | **Yes.** OFF: true. ON: the holder cannot boot their own OS — as far as the chain reaches (root filesystem included only with dm-verity or equivalent). Driving the SE from *another* host wired to the HAT is not prevented by secure boot [A] | OFF: task statement; ON: [A] |
 | S2 | The SD partitions holding the provisioning record are plaintext | **Yes.** OFF: true. ON: encrypted (#111, design not written [A]) | **[D 219-field-provisioning.md:27, :492]** |
-| S3 | The node has no trusted clock | No. An RTC (#174) is a separate product choice and is trustworthy only if set by an authenticated source | task statement |
+| S3 | The node has no trusted clock | No. An RTC (#174) is a separate product choice and is trustworthy only if set by an authenticated source. [v2.2] Decided: RTC from v7.2 (header), still settable by the holder | task statement |
 | S4 | Node identity today = a P-256 key file on the card; a reflash makes a new identity | No (changes with the SE backend, not with the boot state) | **[V keystore/keystore.go:1-5]**, **[D 219-field-provisioning.md:335]** |
 | S5 | Purpose labels ("the node never signs a caller's value") are enforced by helper software, not by the key store | No: true in both unless the SE configuration enforces it | **[V keystore/keystore.go:78-98]** |
 | S6 | At most 4 owners and 4 admins per node; the last owner cannot be removed except by reflash | No | **[V provstore/provstore.go:147, 181]**, **[V node/node.go:954, 983-984]** |
@@ -605,6 +618,40 @@ administrator who built it lost a phone; and a node that learns of the revocatio
 never accept that state. The existing code already met this and chose "stored state is not re-verified" (S28).
 -> **R88, R89.**
 
+**Added in v2.2 (T-ND9 … T-ND11).** [v2.2: IEC 62443-4-2 FR5 / FR6 check]
+
+**T-ND9 (E, X5, X15) Maintenance services on the bridge, reachable from every node.** B11 has three entries, not
+two: the phone AP, the Ethernet jack, and HaLow, because `bat0` is a port of the same bridge as the AP and `eth`
+**[V feed/batman-provision/files/usr/bin/meshpoint-1.8.0:66-69, 112-113]**; batman-adv AP isolation is off
+**[V meshpoint-1.8.0:93]** and the bridge's firewall zone accepts input and forward **[V meshpoint-1.8.0:137-139]**.
+On that segment the node offers, besides provd's 8095: SSH, listening on every interface [A], key-only once the node
+is claimed **[V feed/batman-provision/files/etc/init.d/batman-prov-lock:24-28]**; LuCI / rpcd with root-password login (the
+password is random, 24 characters **[D docs/design/254-claim-lock-fix.md:45]**, but X5 may have been shown it);
+the landing page and `/cgi-bin/mesh`; OTS via DNAT **[V deploy/ots/ots.fw4.uci:14-40]**. A host on node A's AP reaches node
+B's SSH through B's `bat0`, so a control that looks only at a node's own AP and Ethernet ports misses it. Only 8095 is
+restricted today, by ingress port and fail-closed **[V feed/batman-prov/files/batman-http.nft]**,
+**[V cmd/batman-provhelper/bulk.go:89-120]** — a working pattern for the rest. Combined with S10 (SSH keys and root passwords
+left behind by removed people), this turns T-MS1's "removed party keeps the password" into "removed party keeps a
+shell on every node". Maintainers use SSH across the mesh today; R118 removes that by default, a K15 trade the user
+decides. -> **R118, R46, R103, R45.** Res: none for management once R118 holds; user-to-user traffic on
+the segment is network-layer (header follow-up).
+
+**T-ND10 (R) No attributable record of management actions on a node.** A11. provd and the helper write
+operational messages to syslog **[V cmd/batman-provd/main.go:61]**, **[V cmd/batman-provhelper/main.go:48-51, 559]**; no
+record names which credential signed which change. The ring is saved to p6 only on a clean shutdown, last ten copies
+**[V feed/batman-provision/files/etc/uci-defaults/95-batman-storage:730-739]**: a power cut loses everything since
+the last clean shutdown. p6 is encrypted only where the image ships cryptsetup
+**[V feed/batman-provision/files/etc/uci-defaults/95-batman-storage:112-115]** and is shared with tenants
+**[D docs/storage-architecture.md:26, 147]**.
+So T-PH1 (stolen phone replaces the admin set), §10-6 (mis-issue found after the fact) and §10-8 (coerced
+administrator, "after-the-fact attribution") have nothing to be found with. -> **R119, R121, R122, R124, R125.**
+
+**T-ND11 (R, D) The record is erased, flushed or mis-timed.** (a) Whoever gains root (T-PH1's planted SSH key, X2)
+deletes or edits the node's record; a hash chain does not help, because root can recompute it. (b) Anyone in BLE
+range sends invalid requests until a bounded record has dropped the real changes. (c) Before v7.2 the node's time is
+only monotonic (`batman-faketime`, #174); after it, a holder of the node can set the RTC; a forward jump is then kept.
+-> **R120, R123, R119 (records ordered independently of any clock), R41, R113.** Res: §10-16.
+
 ### 5.5 Mesh and inter-organisation (B12)
 
 **T-MS1 (E) Shared password = no individual removal.** Stated in the existing docs
@@ -895,6 +942,9 @@ author, who saw no design, did not rank them. They are not folded into the ranks
 | T-MS8 Rekey delivery splits the mesh or is slower than today | 4 | 3 | 12 | Happens at every removal |
 | T-SE15 SE bus reachable by non-root code or a container | 2 | 4 | 8 | Needs a foothold on the node; silent |
 | T-SE13 / T-SE16 Label does not commit to the chip key / label as a standing key | 2 | 4 | 8 | Label is visible on the body; irreversible once chips are locked around it |
+| T-ND9 Maintenance services reachable from every entry and every node [v2.2] | 4 | 4 | 16 | Ethernet needs no password and HaLow only the shared mesh key; removed people keep SSH keys and root passwords (S10), which overlaps rank 2. Refines rank 10 |
+| T-ND10 No attributable record of management actions [v2.2] | 5 | 2 | 10 | Certain today; harmless by itself, but leaves ranks 1, 2, 4 and §10-6, §10-8 undetectable |
+| T-ND11 Record erased, flushed or mis-timed [v2.2] | 3 | 3 | 9 | Flushing needs nothing; erasing needs root first |
 
 ---
 
@@ -926,7 +976,8 @@ author, who saw no design, did not rank them. They are not folded into the ranks
 11. **What crosses provd in plaintext** in each new flow (enrolment tokens, new trust anchors, recovery shares)?
 12. **How does a brand-new or replaced admin phone catch up a node that is 200 versions behind?**
 13. **What is the audit record, where does it live, and who can alter it?** Node logs are on the plaintext card;
-    phone clocks are settable.
+    phone clocks are settable. [v2.2] Node side: T-ND10, T-ND11 and R119–R125 state what must be true; where the
+    record lives and its size are phase-2 design. Issuing-station side: still R21, R98.
 14. **Mutual aid:** how does a guest node leave, and what did the guest organisation learn that must be rotated?
 15. **How does the organisation's identity appear to a human** such that two organisations with the same name
     are distinguishable at enrolment?
@@ -1037,8 +1088,9 @@ Note on item 11 [review v2-B B1(c)]: the clock / watchdog mode and the I2C addre
 A reviewer ticks each item only with the named test's output attached. "NT" = negative test (must fail without
 the control). Tests marked **SE** must be run on a real locked chip, not a software stand-in.
 
-R1–R80 are the base's, unchanged. R81–R117 were added in the merge; each carries its source in brackets. For the
-rows listed in §11 the property wording given there is the requirement. Total: 117. None has been tested.
+R1–R80 are the base's, unchanged. R81–R117 were added in the merge; each carries its source in brackets. R118–R125
+were added in v2.2. For the rows listed in §11 the property wording given there is the requirement. Total: 125.
+None has been tested.
 
 | # | Requirement | Negative test |
 |---|---|---|
@@ -1159,6 +1211,14 @@ rows listed in §11 the property wording given there is the requirement. Total: 
 | R115 | The authority to start installation of an already release-signed image is separate from root-equivalent rights (R82): it gives nothing beyond what the release signer authorised, exercising it needs neither a top-authority ceremony per round nor a standing root-equivalent credential on a field device, and it follows R77 [review v2-A M8; review v2-B M9] | NT: with the update right only, attempt shell / root-password / settings verbs — refused. Exercise: update 30 nodes and one newly enrolled node without the offline root |
 | R116 | Every request type the node understands is assigned to exactly one authority class in a reviewed table, and one that is not in the table is refused; an export of diagnostics is classed by the most sensitive thing it can contain [review v2-A m7; review v2-B m3] | NT: enumerate every request type with each credential class and compare with the table; add an unlisted type on a test build — refused |
 | R117 | Whatever channel carries rosters, revocations or recognition secrets between the issuing station and a phone is confidential and authenticated to the individual account, and releases each recognition secret only to those the role gives it to [review v2-A m14] | NT: observe and replay a synchronisation as another enrolled account; a member account requests another node's recognition secret — refused |
+| R118 | No interface that gives a shell, changes configuration or reads management state is reachable on a node by a party that does not currently hold authority over that node; making such an interface reachable is a request type in the R116 table, and that reach ends without further action [v2.2: T-ND9] | NT: as a party without authority over node N — a client of N's AP, a host on N's Ethernet port, a client of another node's AP, a host on the mesh — scan N over IPv4 and IPv6: no shell, configuration or management-state interface answers. Holding authority, make one reachable through its R116 request; it works; take no further action — after the stated bound, and after a reboot, it is unreachable again |
+| R119 | Every management event on a node produces at least one attributable record that names the credential (not the person): applied changes of every R116 class, attempts refused for lack of authority, maintenance opened and closed, shell and web-administration logins, secure-element events (provisioned, frozen for a swapped HAT or a mismatched backend, no answer at boot, claim or replay refused), boot reason, update and revert. Each record carries the node's time and, where the request is signed, the time the request states; records are ordered independently of any clock, and both times are informational — no decision uses them (R41, R113) [v2.2: T-ND10, T-ND11] | NT: trigger each event type once; at least one attributable record each, every field present. Set the node's clock a year back and forward between events — the order of records is unchanged |
+| R120 | An unauthenticated party cannot cause records of applied changes to be lost [v2.2: T-ND11] | NT: send invalid requests over BLE and over 8095 until the allowance for refused attempts has been exceeded twice; every earlier record of an applied change is still there |
+| R121 | A record contains no secret, password or location [v2.2: T-ND10; T-MS4] | NT: search all records for the test passwords, keys and coordinates used during the R119 test |
+| R122 | Records survive reboot and power loss; when space runs out, what was dropped is itself recorded [v2.2: T-ND10] | NT: cut power right after the app reports a change applied with recording available — the record is there. Fill the store — the oldest surviving record and the "dropped up to" record agree |
+| R123 | After an administrator has read a node's records, deleting or rolling back those records on the node is detected by that administrator without any network service, and does not destroy what was already read; a restart of the record raises no warning only when the node has also lost its enrolment and network state (factory reset, re-image) [v2.2: T-ND11] | NT on a bench node: delete one record; restore an older copy of the store; as root, declare a restart while keeping the network; factory reset — the first three warn on the administrator's next read, the last does not, and the earlier records are still readable on the phone |
+| R124 | Failure to write a record never blocks a management action; the administrator is told that recording is unavailable [v2.2: T-ND10] | NT: make the record store full or unmounted; send a change — it is applied and the app shows recording unavailable |
+| R125 | Reading a node's R119 records (not the operational syslog) is a request type in the R116 table at administrator class; no unauthenticated or member path reveals them [v2.2: T-ND10] | NT: request the records with no credential and with a member credential — refused; over the AP LAN without a session — nothing |
 
 ---
 
@@ -1169,7 +1229,8 @@ rows listed in §11 the property wording given there is the requirement. Total: 
 2. **Shared mesh password**: removal of one party is a rekey of all, and is only as complete as the least
    reachable node. Until per-node link credentials exist, "removed" is a process with a duration.
 3. **No clock**: nothing expires on a node by itself. Authority ends when the node is told, not when the paper
-   says.
+   says. [v2.2] Holds until v7.2; from v7.2 the node has an RTC, but a holder of the node can set it, so time is
+   still not authenticated (R41, R113).
 4. **A node that has not heard of a revocation obeys the revoked authority.** The design can make this
    recoverable; it cannot make it impossible.
 5. **The top authority is a single point**: its holder (or the holder of its recovery material) can do anything;
@@ -1183,6 +1244,8 @@ rows listed in §11 the property wording given there is the requirement. Total: 
 11. **No FIPS 140 module validation is claimed for the ATECC608B.** [author v1 §6 item 7] [A — the author's v1
     says the chip is not found in the NIST CMVP list; the first design draft cited a CMVP certificate number that
     reviewer v1-A listed as unchecked. Neither was verified in this merge; check before any customer statement.]
+    [v2.2] Superseded by the header (no 608B module certificate). Ends at v7.10 for the chip only; the product
+    itself still has no certification of its own.
 12. **A copy of the recovery material is permanent, silent ability to take the organisation**, including replacing
     the recovery path itself; the legitimate owner cannot take it back with their own copy and is left with a
     physical reset of every node. R17 makes its *use* visible; nothing makes the *copy* visible.
@@ -1196,8 +1259,14 @@ rows listed in §11 the property wording given there is the requirement. Total: 
     trusted like the release signer, and a unit whose anchor was programmed wrongly, or whose signing key is lost,
     cannot be corrected.
 
+16. **Root on a node can delete its records since an administrator last read them** [v2.2: T-ND11]. R123 makes
+    the deletion visible and keeps what was read; nothing recovers what was not yet read.
+17. **A record attributes an action to a credential, not to a person** [v2.2]. A stolen phone or a coerced
+    administrator is recorded as its rightful holder (item 8, T-PH1).
+
 How items 1–10 read per platform state: item 1 is the state-OFF statement; in state ON see §3.2 (possession alone
-gives less, the three exceptions remain). Items 2–10 are the same in both states.
+gives less, the three exceptions remain). Items 2–10 are the same in both states. Items 16–17 hold in both; in state
+ON item 16 first needs root, that is, a software flaw.
 
 ---
 
@@ -1207,7 +1276,7 @@ The requirements must say **what has to be true**, not how. A requirement that n
 one design and hides the property a different design would have to meet. The base (written without seeing any
 design) is mostly clean; the rows below are the ones in R1–R80 that prescribe a mechanism. For these, **the property
 wording in this table is the requirement**; the §9 text is kept unchanged for traceability and its negative test
-still applies. R81–R117 were written as properties from the start.
+still applies. R81–R125 were written as properties from the start.
 
 | # | Mechanism named in §9 | The property needed |
 |---|---|---|
