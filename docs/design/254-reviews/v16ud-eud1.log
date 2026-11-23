@@ -1,0 +1,134 @@
+** WARNING: connection is not using a post-quantum key exchange algorithm.
+** This session may be vulnerable to "store now, decrypt later" attacks.
+** The server may need to be upgraded. See https://openssh.com/pq.html
+=== #1
+BATMAN_VERSION=1.5.14-wsl.36+b885a2c.fw302c80b.bench
+BATMAN_BOARD=ekh-bcm2711
+=== #2
+A
+is_trial_rc=1
+=== #3
+batman-provhelper 1.5.14-wsl.36+b885a2c.fw302c80b.bench
+=== #4
+mesh default_radio1   id=bm-<redacted> key=set radio=radio1 channel=40 country=US disabled=0
+ap   default_radio0   ssid=BCM2711-6c89 key=set disabled=0
+keyguard: nothing blocked
+persist: p5 fresh
+=== #5
+		"up": true,
+		"disabled": false,
+				"section": "default_radio0",
+				"ifname": "phy1-ap0",
+		"up": true,
+		"disabled": false,
+				"section": "default_radio1",
+				"ifname": "wlh0",
+=== #6
+bat0
+eth0
+phy1-ap0
+=== #7
+radio0
+radio1
+=== #8
+ls: /etc/halow-keyguard.blocked: No such file or directory
+=== #9
+sh: stat: not found
+=== #10
+cat: can't open '/etc/halow-keyguard.blocked': No such file or directory
+2
+2
+0
+=== #11
+batman-provd-bulk /tmp/run/batman-provd-bulk tmpfs rw,nosuid,nodev,noexec,relatime,size=246700k,nr_inodes=16,mode=700,uid=471,gid=471 0 0
+Filesystem           1K-blocks      Used Available Use% Mounted on
+batman-provd-bulk       246700         0    246700   0% /tmp/run/batman-provd-bulk
+drwx------    2 471      471             40 Aug 17 06:05 /tmp/run/batman-provd-bulk
+=== #12
+MemAvailable:    7170572 kB
+=== #13
+-list: applet not found
+=== #14
+printf is a shell builtin
+echo is a shell builtin
+test is a shell builtin
+=== #15
+pos:	0
+pos:	1048576
+pos:	10485760
+pos:	11534336
+pos:	12582912
+lr-x------    1 root     root            64 Aug 17 07:10 0 -> /dev/mmcblk0p4
+l-wx------    1 root     root            64 Aug 17 07:10 1 -> /dev/null
+l-wx------    1 root     root            64 Aug 17 07:10 2 -> pipe:[625719]
+=== #16
+48+0 records in
+48+0 records out
+3
+panic=10
+20250817-055107 boot_id=64903dac prev=CLEAN: 20250817-060333 uptime=168.81s trigger=prov-dv-254
+20250623-204049 boot_id=26541fd7 prev=SYSUPGRADE-REBOOT (rc=0 get=0x00000001 thr=0x00000000) ‚Äî UNCLEAN ‚Äî no shutdown ran (hang‚Üíhardware watchdog, reboot -f, sysrq or reflash); last console log saved under /opt/batdata/crash
+20250817-060551 boot_id=4d4b48bc prev=CLEAN: 20250817-060511 uptime=124.36s trigger=prov-dv-254
+=== #17
+502
+=== #18
+				"pid": 4204,
+				"command": [
+=== #19
+drwx------    2 root     root            80 Aug 17 06:05 /tmp/.uci
+0
+=== #20
+ble-ok
+dv-undo
+lock-status
+mesh-expected
+mesh-joined
+ota-armed.mesh
+prov-state
+slot-A.protected
+slot-B.protected
+update-last
+ls: /tmp/batman-fault.*: No such file or directory
+=== #21
+verified=e03ad2a57f336ece66d816a4ed1d0f7a10d91a183fb4fde7589bc75de88ecb76 64903dac-98c3-4f09-b155-7d1763ad6588
+bad=0
+bootcfg=fd0e63ad1f372d02eccb0bdc528968fa0fdd8273d4886f31cfb4b9f7e1f9fd92
+=== #22
+batman-config-save: p5 fresh
+rc=0
+=== #23
+4730
+enabled_rc=0
+=== #24
+Sun Aug 17 06:05:58 2025 daemon.info batman-provhelper[4204]: boot rc=0 verdict=member action=in sync
+Sun Aug 17 06:05:58 2025 daemon.info batman-provhelper[4204]: serving (member)
+Sun Aug 17 06:07:09 2025 daemon.info batman-provhelper[4204]: provd stable for 1m0s: /tmp/run/batman/provd-stable writte
+=== #extra-partitions
+brw-------    1 root     root      179,   1 Jan  1  1970 /dev/mmcblk0p1
+brw-------    1 root     root      179,   2 Jan  1  1970 /dev/mmcblk0p2
+brw-------    1 root     root      179,   3 Jan  1  1970 /dev/mmcblk0p3
+brw-------    1 root     root      179,   4 Jan  1  1970 /dev/mmcblk0p4
+brw-------    1 root     root      179,   5 Jan  1  1970 /dev/mmcblk0p5
+brw-------    1 root     root      179,   6 Jan  1  1970 /dev/mmcblk0p6
+A
+=== 9b
+-rw-r--r--    1 0        0             1100 Aug 17 04:40 /etc/config/wireless
+-rw-r--r--    1 0        0             1100 Aug 17 04:40 /overlay/upper/etc/config/wireless
+drwxr-xr-x    1 0        0             3488 Aug 17 06:06 /etc/config
+=== 13b
+dd=/bin/dd od=- hexdump=/usr/bin/hexdump tr=/usr/bin/tr timeout=- setsid=/usr/bin/setsid stat=- mkfifo=/usr/bin/mkfifo sha256sum=/usr/bin/sha256sum logger=/usr/bin/logger base64=- 
+=== 16b
+3
+panic=10
+/etc/sysctl.d/1-panic.conf:2:kernel.panic_print=74
+/etc/sysctl.d/10-default.conf:4:kernel.panic=3
+=== 20b
+-rw-------    1 0        0              171 Aug 16 17:13 /opt/batdata/state/update-last
+©
+X aü%	:¬ÛÅ–ætv©∆xˇ+L‚€πSwX˛†|ÎaAx%1.5.14-wsl.35+8568a78.fwebd3850.benchaBx%1.5.14-wsl.35+8568a78.fwebd3850.benchx$bad82cfc-10c8-4c19-b265-da3e72c6881
+Í[ı
+drwx------    2 root     root          4096 Jul 31 01:21 .
+drwxr-xr-x    3 root     root          4096 Aug 17 06:15 ..
+64903dac B joined
+=== 20c
+/usr/bin/batman-provhelper

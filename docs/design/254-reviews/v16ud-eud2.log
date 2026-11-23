@@ -1,0 +1,46 @@
+=== modules
+(none in /proc/modules)
+=== builtin?
+pstore
+ramoops
+console_size
+dump_oops
+ecc
+ftrace_size
+max_reason
+mem_address
+mem_size
+mem_type
+pmsg_size
+record_size
+16384
+184549376
+=== config
+CONFIG_PSTORE=y
+CONFIG_PSTORE_DEFAULT_KMSG_BYTES=10240
+CONFIG_PSTORE_COMPRESS=y
+CONFIG_PSTORE_CONSOLE=y
+# CONFIG_PSTORE_PMSG is not set
+CONFIG_PSTORE_RAM=y
+# CONFIG_PSTORE_BLK is not set
+=== modules.d
+02-crypto-hash
+04-crypto-crc32
+04-crypto-crc32c
+09-crypto-aead
+09-crypto-manager
+15-libphy
+15-mii
+15-phylink
+17-pps
+18-phy-microchip
+=== pstore fs
+pstore /sys/fs/pstore pstore rw,nosuid,nodev,noexec,noatime 0 0
+=== dmesg
+[    0.000000] OF: reserved mem: 0x000000000b000000..0x000000000b00ffff (64 KiB) map non-reusable ramoops@b000000
+[    0.016515] pstore: Using crash dump compression: deflate
+[    0.016526] printk: console [ramoops-1] enabled
+[    0.016706] pstore: Registered ramoops as persistent store backend
+[    0.016713] ramoops: using 0x10000@0xb000000, ecc: 0
+=== dt
+ramoops@b000000
