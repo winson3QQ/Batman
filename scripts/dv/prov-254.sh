@@ -442,6 +442,8 @@ pr_wait_reverted(){
 		pr_trial_guard_tick "$b0"
 		s=$(timeout 30 ssh $SSHO root@$NODE "$ST" 2>/dev/null | tr -d '\r')
 		[ -n "$s" ] && [ "$(field "$s" boot)" != "$b0" ] && break
+		# PR_WAIT_HOOK (prov-update-254's UD2: rolling leak steps): runs only while the trial boot is unchanged
+		[ -n "${PR_WAIT_HOOK:-}" ] && [ -n "$s" ] && "$PR_WAIT_HOOK"
 		[ $(( $(mono) - t0 )) -gt $(( dl + 600 + 120 + 300 )) ] && { no "no revert within the budget"; return 1; }
 		sleep 10
 	done

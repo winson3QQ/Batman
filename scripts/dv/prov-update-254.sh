@@ -49,9 +49,23 @@ UD_LASTCHK=0; UDLOG=""; UDR=""
 UDV=$(mktemp) || { echo "FAIL prov-update-254: mktemp"; exit 2; }
 _ud_v(){ local t=$1; shift; if [ "${BASH_SUBSHELL:-0}" -gt 0 ]; then printf '%s\n' "$*" >&2; else printf '%s\n' "$*"; fi; echo "$t" >> "$UDV"; ud_sync; }
 ud_sync(){ fails=$(grep -c '^F$' "$UDV"); invalid=$(grep -c '^I$' "$UDV"); notjudged=$(grep -c '^N$' "$UDV"); return 0; }
-no(){ _ud_v F "FAIL $PR_UNIT: $*"; }
-inv(){ _ud_v I "INVALID $PR_UNIT: $*"; }
-nj(){ _ud_v N "NOT-JUDGED $PR_UNIT: $*"; }
+# A tool / ssh failure inside a row's own call (review v12 B MAJOR-1; device run ud36d "INVALID … no caps line" then
+# "FAIL UD4: check []"): ud_pc records it in $UDTOOLF (a file: it runs inside $(…)). The next row verdict made in the
+# main shell after it is INVALID, not FAIL — the row could not be judged. Each main-shell verdict marks the file as
+# seen, so a later row is judged normally.
+UDTOOLF=$(mktemp) || { echo "FAIL prov-update-254: mktemp"; exit 2; }
+ud_tool_n(){ wc -l < "$UDTOOLF" | tr -d ' '; }
+ud_tool_note(){ printf '%s\n' "$*" >> "$UDTOOLF"; }
+ud_seen(){ UD_TOOL_SEEN=$(ud_tool_n); }
+no(){ local n; n=$(ud_tool_n)
+	if [ "$n" -gt "${UD_TOOL_SEEN:-0}" ]; then UD_TOOL_SEEN=$n; _ud_v I "INVALID $PR_UNIT: $* — not judged: a provclient / ssh failure in this row's own call ($(tail -1 "$UDTOOLF"))"
+	else _ud_v F "FAIL $PR_UNIT: $*"; fi; }
+inv(){ [ "${BASH_SUBSHELL:-0}" -gt 0 ] || ud_seen; _ud_v I "INVALID $PR_UNIT: $*"; }
+nj(){ [ "${BASH_SUBSHELL:-0}" -gt 0 ] || ud_seen; _ud_v N "NOT-JUDGED $PR_UNIT: $*"; }
+ok(){ [ "${BASH_SUBSHELL:-0}" -gt 0 ] || ud_seen; echo "PASS $PR_UNIT: $*"; }
+# ud_tool_inv <why>: a tool INVALID (printed and counted once, recorded for the row); UD_PC_QUIET=1 (ud_poll's reads):
+# recorded only — a poll that later gets its answer was not hurt by one failed read
+ud_tool_inv(){ ud_tool_note "$*"; [ "${UD_PC_QUIET:-0}" = 1 ] || _ud_v I "INVALID $PR_UNIT: $*"; }   # not inv: the row has not been judged yet
 # pr_needs_person counts a FAIL with fails=$((…)), which ud_sync overwrote from the tally file (device run 2026-11-23
 # ud36c trial: NEEDS-PERSON and "RESULT fails=2" without it). Its FAIL goes into the file as well.
 eval "$(declare -f pr_needs_person | sed '1s/^pr_needs_person/pr_needs_person_base/')"
@@ -154,16 +168,17 @@ ud4_judge(){
 # ==== node steps ======================================================================================================
 TBGET='set -- $(vcmailbox 0x00030064 4 4 0 2>/dev/null); if [ "${2:-}" = 0x80000000 ] && [ "${5:-}" = 0x80000004 ] && [ -n "${6:-}" ]; then echo "tryboot_flag=$(( ${6} ))"; else echo tryboot_flag=unknown; fi'
 boot8(){ field "$(qr "$ST")" boot; }
-ud_mark(){ UDM="ud-$RUN-$(date +%s%N)"; q "logger -t batman-dv-ud mark $UDM"; }
+# the mark carries 8 random bytes made on the host (review v12 B m1: not guessable before it is written)
+ud_mark(){ UDM="ud-$RUN-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"; q "logger -t batman-dv-ud mark $UDM"; }
 ud_log(){ qr "logread | sed -n '/batman-dv-ud: mark $UDM\$/,\$p' | grep -E 'batman-provhelper\\[|batman-slot|batman-config-save' | cut -c1-400"; }
 ud_bootinfo(){ local o i; for i in 1 2 3; do o=$(qr "batman-slot bootinfo B 2>&1; echo rc=\$?"); case "$o" in *rc=14) sleep 10 ;; *) break ;; esac; done; printf '%s\n' "$o"; }
 ud_pc(){	# pr_pc + the caps rule; PCBIN=old exempt. INVALID (rc 2) on a missing caps line, with the tool's sha
 	local o pb=new a; for a in "$@"; do [ "$a" = PCBIN=old ] && pb=old; [ "$a" = -- ] && break; done
 	ud_pc_replace
 	o=$(pr_pc "$@"); printf '%s\n' "$o"
-	grep -qE "$PCD/provclient(\.old)?: (not found|No such file)" <<< "$o" && { inv "provclient missing on the node ($(grep -m1 -E 'not found|No such file' <<< "$o" | cut -c1-120)) — not placed since the node's last boot"; return 2; }
-	[ -n "$o" ] || { inv "provclient printed no output at all (not placed on the node since its last boot, or no ssh answer)"; return 2; }
-	ud_caps "$o" "$pb" || { inv "provclient printed no caps line (sha $(sha256sum < "$TOOLS/provclient-arm64" | cut -c1-16)): a stale tool — rebuild (scripts/dv-provclient-tools.sh)"; return 2; }
+	grep -qE "$PCD/provclient(\.old)?: (not found|No such file)" <<< "$o" && { ud_tool_inv "provclient missing on the node ($(grep -m1 -E 'not found|No such file' <<< "$o" | cut -c1-120)) — not placed since the node's last boot"; return 2; }
+	[ -n "$o" ] || { ud_tool_inv "provclient printed no output at all (not placed on the node since its last boot, or no ssh answer)"; return 2; }
+	ud_caps "$o" "$pb" || { ud_tool_inv "provclient printed no caps line (sha $(sha256sum < "$TOOLS/provclient-arm64" | cut -c1-16)): a stale tool — rebuild (scripts/dv-provclient-tools.sh)"; return 2; }
 	return 0; }
 # provclient lives in the node's tmpfs: a boot removes it (device run 2026-11-23 ud36d: UD4 / UD1 ran after a back_to_a
 # with no tool). pr_pc_place records the boot it placed for (a file: ud_pc runs inside $(…) too); ud_pc re-places once
@@ -180,7 +195,13 @@ ud_pc_replace(){ local p b; p=$(cat "$UDPLF" 2>/dev/null); [ -n "$p" ] || return
 	say "provclient re-placed: the node booted since it was placed ($p -> $b)" >&2; pr_pc_place >&2; }
 ud_status(){ ud_pc h0.pem -- update-status "$H0" | grep '^RESULT update.status'; }
 # ud_poll <secs> <phase> [reason] [sha16]: status every 5 s until it says that; prints the last line
-ud_poll(){ local t0 l; t0=$(mono); while :; do l=$(ud_status); ud_phase "$l" "$2" "${3:-any}" "${4:-any}" && { echo "$l"; return 0; }; [ $(( $(mono) - t0 )) -ge "$1" ] && { echo "$l"; return 1; }; sleep 5; done; }
+# ud_poll: a failed read is recorded, not printed (UD_PC_QUIET); a poll in which NO read answered records that too, so
+# the row's "phase not reached" becomes INVALID (review v12 B MAJOR-1)
+ud_poll(){ local t0 l n=0 a=0; t0=$(mono)
+	while :; do l=$(UD_PC_QUIET=1 ud_status); n=$((n + 1)); [ -n "$l" ] && a=$((a + 1))
+		ud_phase "$l" "$2" "${3:-any}" "${4:-any}" && { echo "$l"; return 0; }
+		[ $(( $(mono) - t0 )) -ge "$1" ] && { [ $a = 0 ] && ud_tool_note "update.status: no answer in any of $n reads within $1 s"; echo "$l"; return 1; }
+		sleep 5; done; }
 # ud_check <manifest hex> [PCBIN=old]: update-check, >= 11 s after the last one; ERate -> one retry; code 7 with a slot /
 # config-save busy why -> one retry after 20 s. Sets UDR (the RESULT line), UDLOG (the helper's lines since the mark) and
 # UD_LASTCHK. Call it directly, NEVER as $(ud_check …): a subshell's globals never reach the caller (the 0a6cb73 crash,
@@ -313,7 +334,7 @@ ud_claim_h0(){ local r
 #   LEAK-NOWINDOW <why> | KEY=EMPTY | KEY=<count> rc=<rc> | MESH=EMPTY | MESH=<count> rc=<rc> [MESHSYS=<count> rc=<rc>]
 ud_leak_cmd(){ local w
 	case "$1" in
-		mark) w="logread > \$d/leak.r 2>/dev/null; grep -q 'batman-dv-ud: mark $2\$' \$d/leak.r || { echo 'LEAK-NOWINDOW mark'; rm -f \$d/leak.*; exit 0; }; sed -n '/batman-dv-ud: mark $2\$/,\$p' \$d/leak.r > \$d/leak.w" ;;
+		mark) w="logread > \$d/leak.r 2>/dev/null; c=\$(grep -c 'batman-dv-ud: mark $2\$' \$d/leak.r); [ \"\$c\" = 1 ] || { [ \"\$c\" = 0 ] && echo 'LEAK-NOWINDOW mark' || echo \"LEAK-NOWINDOW mark not unique (\$c)\"; rm -f \$d/leak.*; exit 0; }; sed -n '/batman-dv-ud: mark $2\$/,\$p' \$d/leak.r > \$d/leak.w" ;;
 		boot) w="[ \"\$(cut -c1-8 /proc/sys/kernel/random/boot_id)\" = '$2' ] || { echo 'LEAK-NOWINDOW boot'; exit 0; }; logread > \$d/leak.w 2>/dev/null; head -1 \$d/leak.w | grep -q 'kernel: \[ *0\.' || { echo 'LEAK-NOWINDOW ring start'; rm -f \$d/leak.*; exit 0; }" ;;
 		file) w="cp \$d/$2 \$d/leak.w 2>/dev/null || { echo 'LEAK-NOWINDOW file'; exit 0; }; rm -f \$d/$2" ;;
 	esac
@@ -354,7 +375,17 @@ ud_leak_final(){ [ -n "${UDLOGF:-}" ] && [ "${UDLEAKDONE:-0}" = 0 ] || return 0;
 # the whole boot — a held trial's ring wraps within ~10 min, so "the ring starts at this boot" can never hold late. The
 # mark is written at landing BEFORE the landing grep (boot start .. landing), so the two windows overlap. The mark is a
 # RAM-ring line: it is gone once the boot ends and after a wrap past it — both INVALID "logread window lost".
-ud_late_ring(){ ud_leak_ring "$1" mark "${UD_LAND_MARK:-}"; }
+ud_late_ring(){ ud_roll_step "$1"; }
+# ud_roll_step <label> [quiet]: v13 rolling marks (review v12 A m1 / B m2): write a new mark FIRST, then grep from the
+# previous mark (landing, or the last step's) to now — the window holds its start mark exactly once and the new mark,
+# so consecutive windows overlap. The chain covers landing .. the last step even when the ring wraps several times; a
+# step whose start mark is gone (wrapped past it, or a new boot) -> INVALID. quiet: a PASS is said, not a verdict line.
+ud_roll_step(){ local prev=${UD_ROLL_MARK:-${UD_LAND_MARK:-}} o
+	ud_mark; UD_ROLL_MARK=$UDM; UD_ROLL_T=$(mono)
+	o=$(ud_leak_judge "$1" "$(qr "$(ud_leak_cmd mark "$prev")")")
+	if [ "${2:-}" = quiet ] && [ "$(grep -c . <<< "$o")" = 1 ] && grep -q '^PASS' <<< "$o"; then say "$o"; else ud_verdicts "$o"; fi; }
+# ud_roll_tick: a quiet step every UD_ROLL_S (60) s — the 04 ring (128 KiB) grows ~77 B / 120 s at idle (§25)
+ud_roll_tick(){ [ $(( $(mono) - ${UD_ROLL_T:-0} )) -ge "${UD_ROLL_S:-60}" ] || return 0; ud_roll_step "${1:-UD2: the held trial, rolling step}" quiet; }
 # ud2_late: UD2 is held until its deadline: wait for the last HELD sample before it (deadline - 60 s), then grep
 ud2_late(){ local dl u b
 	dl=$(qr '. /usr/lib/batman/rundir.sh; cat $RUNDIR/autocommit.deadline 2>/dev/null')
@@ -364,6 +395,7 @@ ud2_late(){ local dl u b
 		[ "$b" = "$PR_LAND_BOOT" ] || { inv "leak check (UD2: the B trial boot before its revert): logread window lost (boot $b)"; return; }
 		case "$u" in ''|*[!0-9]*) sleep 10; continue ;; esac
 		[ "$u" -ge $((dl - 60)) ] && break
+		ud_roll_tick "UD2: the held trial, rolling step"
 		sleep 15
 	done
 	ud_late_ring "UD2: the B trial boot, last HELD sample before the deadline"; }
@@ -716,7 +748,7 @@ arm_trial(){
 			|| { no "$2: not a held B trial ($s)"; return 1; }
 		pr_trial_guard; o=$(pl undo-done "$UDHOLD"); grep -q "^UNDO-DONE" <<< "$o" || no "$2: undo-done rm-hold: $o"
 		pr_pc_place; ud_g; ok "$2: landed in the held B trial"
-		ud_mark; UD_LAND_MARK=$UDM   # the late ring's window start (v12), before the landing grep: the windows overlap
+		ud_mark; UD_LAND_MARK=$UDM; UD_ROLL_MARK=$UDM; UD_ROLL_T=$(mono)   # the rolling chain's start (v12 / v13), before the landing grep: the windows overlap
 		ud_leak_ring "$2: the B trial boot, at landing" boot "$PR_LAND_BOOT"; }
 	# ---- UD2: same version reverted -> 6
 	if ud_to3 "$VHEX" "$X" "$PAYH" UD2 && ud_hold; then
@@ -724,7 +756,14 @@ arm_trial(){
 		if ud_land "$b" UD2; then
 			r=$(ud_status); ud_phase "$r" 4 && pr_wait_held 480 && ok "UD2: phase 4 + HELD in the trial" || no "UD2: in the trial [$r]"
 			ud2_late
-			PR_HELD_OK=1 pr_wait_reverted && pr_pc_place && ud_g && ud_leak_ring "UD2: the A boot after the revert, at landing" boot "$(boot8)" && { r=$(ud_status); ud_phase "$r" 6 - && [ "$(field "$PR_STATE" slot)" = A ] && [ "$(field "$PR_STATE" trial_rc)" = 1 ] && { ok "UD2: reverted, A committed, phase 6"; UD2OK=1; } || no "UD2: after the revert [$r]"; }
+			# the held trial's revert may be deferred up to DEFER_MAX: the rolling steps go on while its boot lasts (v13)
+			if PR_HELD_OK=1 PR_WAIT_HOOK=ud_roll_tick pr_wait_reverted && pr_pc_place && ud_g; then
+				# UD2's own verdict does not depend on the leak check of the A boot (review v12 A m3)
+				ud_leak_ring "UD2: the A boot after the revert, at landing" boot "$(boot8)"
+				r=$(ud_status)
+				if ud_phase "$r" 6 - && [ "$(field "$PR_STATE" slot)" = A ] && [ "$(field "$PR_STATE" trial_rc)" = 1 ]; then ok "UD2: reverted, A committed, phase 6"; UD2OK=1
+				else no "UD2: after the revert [$r] ($PR_STATE)"; fi
+			fi
 		fi
 	fi
 	ud_person_stop "UD4 / UD5 (i), UD5 (ii), UD1, UD10" ud_trial_end && return

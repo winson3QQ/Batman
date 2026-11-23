@@ -184,7 +184,7 @@ pr_pc(){ local pb=new a op; for a in "$@"; do [ "$a" = PCBIN=old ] && pb=old; do
 	while [ "$1" != -- ]; do shift; done; op=$2
 	[ $pb = new ] && echo "PROVCLIENT caps=uc2,bo2,rk1,pg2,nopsk"
 	case "$op" in
-		update-status) ph=0; grep -qs '^update-prepare' "$UDT/smoke/calls" && ph=${SMOKE_PHASE:-0}; echo "RESULT update.status code=0 phase=$ph percent=0" ;;
+		update-status) ph=0; grep -qs '^update-prepare' "$UDT/smoke/calls" && ph=${SMOKE_PHASE:-0}; [ -s "$UDT/smoke/phase" ] && ph=$(cat "$UDT/smoke/phase"); echo "RESULT update.status code=0 phase=$ph percent=0" ;;
 		bulk-open) echo "RESULT bulk.open code=0 ssid=\"s\" ip=\"10.41.0.1\" port=8095 expires=900" ;;
 		bulk-close) echo "RESULT bulk.close code=0" ;;
 		update-prepare|update-apply) echo "${op}" >> "$UDT/smoke/calls"; echo "RESULT update.${op#update-} code=24 reason=15" ;;
@@ -240,7 +240,7 @@ grep -q '^INVALID prov-update-254: provclient printed no caps line' <<< "$o" && 
 # Each block drives the real functions against a stubbed node; on 5bce2c9 (before v8-v11) these functions do not exist
 # and every case below fails (negative control, PR body).
 H0HEX=$(printf "%0128d" 0); ENCHEX=$(printf "%0128d" 1)
-smoke_run(){ rm -f "$T/smoke/calls" "$T/smoke/csn" "$T/smoke/state"; rm -rf "$T/smoke/s0"; bash -c "$src; $smoke_stubs; $1" 2>&1; }
+smoke_run(){ rm -f "$T/smoke/calls" "$T/smoke/csn" "$T/smoke/state" "$T/smoke/phase"; rm -rf "$T/smoke/s0"; bash -c "$src; $smoke_stubs; $1" 2>&1; }
 # (1) the v11 start and end on arm_refuse: S0 scan saved, H0 claim, guard, the record at the end = S0, the unit log grepped
 o=$(smoke_run 'RUN=pupdate2540000000001; arm_refuse'); s0f=$T/smoke/s0/pupdate2540000000001.txt
 grep -q '^PASS prov-update-254: 04 claimed by H0 for this arm' <<< "$o" && grep -q '^claim$' "$T/smoke/calls" && grep -q '^UDSCAN v=1 state=member gen=2 rm=1 sha=ab keys=f1 H0-IN-RECORD=yes$' "$s0f" \
@@ -287,7 +287,7 @@ done
 mkdir -p "$T/lk/bin" "$T/lk/d"; BID=$(cut -c1-8 /proc/sys/kernel/random/boot_id)
 printf '#!/bin/sh\ncase "$3" in *.key) printf "%%s" "$FX_KEY" ;; *.mesh_id) printf "%%s" "$FX_MESH" ;; esac\n' > "$T/lk/bin/uci"
 printf '#!/bin/sh\ncat "$FX_RING"\n' > "$T/lk/bin/logread"; chmod 755 "$T/lk/bin/uci" "$T/lk/bin/logread"
-lk_stubs='UDLS=$UDT/lk/d; qr(){ PATH="$UDT/lk/bin:$PATH" sh -c "$1"; }; boot8(){ cut -c1-8 /proc/sys/kernel/random/boot_id; }'
+lk_stubs='UDLS=$UDT/lk/d; qr(){ PATH="$UDT/lk/bin:$PATH" sh -c "$1"; }; boot8(){ cut -c1-8 /proc/sys/kernel/random/boot_id; }; q(){ case "$1" in *"logger -t batman-dv-ud mark "*) echo "Nov 23 10:40:00 batman-dv-ud: mark ${1##* }" >> "$FX_RING" ;; esac; }'
 export FX_KEY=fixture-key-0001 FX_MESH=fixture-mesh-0001 FX_RING=$T/lk/ring
 lk(){ bash -c "$src; $lk_stubs; fails=0; invalid=0; $1" 2>&1; }
 ring0(){ printf '%s\n' "Nov 23 10:00:00 kernel: [    0.000000] Booting" "Nov 23 10:00:01 batman-dv-ud: mark M1" "Nov 23 10:00:02 batman-provhelper[9]: verb update.check" "$@" > "$FX_RING"; }
@@ -315,7 +315,7 @@ grep -q '^FAIL prov-update-254: leak check (unit log): the mesh key appears 1 ti
 ring0; o=$(lk "PR_LAND_BOOT=$BID; UD_LAND_MARK=M1; ud_leak_ring landing boot $BID; printf '%s\n' 'Nov 23 10:30:00 batman-provhelper[9]: k=$FX_KEY' >> \"\$FX_RING\"; ud_late_ring 'UD1: before the release'")
 grep -q '^PASS prov-update-254: leak check (landing)' <<< "$o" && grep -q '^FAIL prov-update-254: leak check (UD1: before the release): the mesh key' <<< "$o" && ok "late ring (UD1): a key line written after the landing grep -> FAIL" || bad "late ring UD1: $o"
 ring0; o=$(lk "PR_LAND_BOOT=$BID; UD_LAND_MARK=M1; ud_leak_ring landing boot $BID; printf '%s\n' 'Nov 23 10:30:00 batman-provhelper[9]: k=$FX_KEY' >> \"\$FX_RING\"; qr(){ case \"\$1\" in *autocommit.deadline*) echo 1000 ;; *uptime*) u=\$(cat \"\$UDT/lk/up\" 2>/dev/null || echo 800); echo \$((u + 50)) > \"\$UDT/lk/up\"; echo \$u ;; *) PATH=\"\$UDT/lk/bin:\$PATH\" sh -c \"\$1\" ;; esac; }; sleep(){ :; }; ud2_late; echo UP=\$(cat \"\$UDT/lk/up\")"); rm -f "$T/lk/up"
-grep -q '^FAIL prov-update-254: leak check (UD2: the B trial boot, last HELD sample before the deadline): the mesh key' <<< "$o" && grep -q '^UP=1000$' <<< "$o" && ok "late ring (UD2): waits to deadline - 60 s, a key line written after landing -> FAIL" || bad "late ring UD2: $o"
+grep -qE '^FAIL prov-update-254: leak check \(UD2: the (B trial boot, last HELD sample before the deadline|held trial, rolling step)\): the mesh key' <<< "$o" && grep -q '^UP=1000$' <<< "$o" && grep -q 'leak check (UD2: the B trial boot, last HELD sample before the deadline)' <<< "$o" && ok "late ring (UD2): rolling steps up to deadline - 60 s, a key line written after landing -> FAIL" || bad "late ring UD2: $o"
 o=$(lk "PR_LAND_BOOT=$BID; boot8(){ echo 0000beef; }; qr(){ case \"\$1\" in *autocommit.deadline*) echo 1000 ;; *uptime*) echo 10 ;; esac; }; ud2_late")
 grep -q '^INVALID prov-update-254: leak check (UD2: the B trial boot before its revert): logread window lost (boot 0000beef)' <<< "$o" && ok "late ring (UD2): the boot changed before the grep -> INVALID window lost" || bad "late ring UD2 lost: $o"
 o=$(lk "qr(){ echo; }; ud2_late"); grep -q '^INVALID prov-update-254: UD2: no autocommit deadline' <<< "$o" && ok "late ring (UD2): no deadline -> INVALID window lost" || bad "late ring UD2 no deadline: $o"
@@ -434,4 +434,36 @@ o=$(bash -c "$src; RUN=r1; printf 'aaaa1111\n' > \"\$UDPLF\"; boot8(){ echo aaaa
 # D: the diagnosis reads dmesg (oom / killed process) and free
 o=$(bash -c "$src; ud9_diag_text gone \"\$(printf '%s\n' 'LOGSIZE 4096 NONSPACE 0' 'DMESG [ 812.1] Out of memory: Killed process 15472 (sh)' 'FREE Mem: 1000 900 100')\"" 2>&1)
 grep -q 'its log holds no line (pre-sized spaces only); no ud9-watch line in syslog; dmesg (oom / killed): \[ 812.1\] Out of memory: Killed process 15472 (sh)|; free: Mem: 1000 900 100$' <<< "$o" && ok "ud9_diag_text: dmesg oom / killed-process lines and free" || bad "diag dmesg: $o"
+# ---- review v12 B MAJOR-1: a tool / ssh failure in a row's own call makes the row INVALID, not FAIL
+for c in 'none|:' 'nocaps|echo Segmentation fault'; do IFS='|' read -r n pc <<< "$c"
+	o=$(bash -c "$src; $smoke_stubs; pr_pc(){ $pc; }; ud_check 00; r=\$UDR; [ \"\$(f \"\$r\" ok)\" = true ] || no \"UD4: check [\$r]\"; no 'the next row'; ud_sync; echo \"fails=\$fails invalid=\$invalid\"" 2>&1)
+	grep -q '^INVALID prov-update-254: UD4: check \[\] — not judged: a provclient / ssh failure in this row' <<< "$o" && grep -q '^FAIL prov-update-254: the next row$' <<< "$o" && grep -q '^fails=1 invalid=2$' <<< "$o" \
+		&& ok "tool failure ($n) in the row's own check: the row is INVALID (not FAIL); the next row is judged normally" || bad "tool row $n: $(tr '\n' '|' <<< "$o")"
+done
+o=$(bash -c "$src; $smoke_stubs; pr_pc(){ :; }; mono(){ local x; x=\$(cat \"\$UDT/smoke/mono\" 2>/dev/null || echo 0); echo \$((x + 10)) > \"\$UDT/smoke/mono\"; echo \$x; }; r=\$(ud_poll 60 3); ud_phase \"\$r\" 3 || no \"UD2: phase 3 not reached [\$r]\"; ud_sync; echo \"fails=\$fails invalid=\$invalid\"" 2>&1); rm -f "$T/smoke/mono"
+grep -q '^INVALID prov-update-254: UD2: phase 3 not reached \[\] — not judged: .*update.status: no answer in any of [0-9]* reads within 60 s' <<< "$o" && grep -q '^fails=0 invalid=1$' <<< "$o" \
+	&& ok "ud_poll with every status read failed: one INVALID for the row (failed reads are not one INVALID each)" || bad "poll all failed: $(tr '\n' '|' <<< "$o" | cut -c1-400)"
+# ---- review v12 A m3: UD2's phase-6 verdict does not depend on the A boot's leak check; the dependent rows then run
+o=$(SMOKE_PHASE=3 smoke_run 'pr_find(){ PR_STATE="mac=x slot=B trial_rc=0 held=1 hold=[] boot=b0b0b0b0"; return 0; }; pr_trial_guard(){ :; }; pr_wait_held(){ return 0; }; ud2_late(){ :; }
+	pr_wait_reverted(){ PR_STATE="mac=x slot=A trial_rc=1 boot=c1c1c1c1"; echo 6 > "$UDT/smoke/phase"; return 0; }
+	ud_leak_ring(){ case "$1" in *"A boot after the revert"*) inv "leak check ($1): logread window lost (stub)"; return 1 ;; esac; return 0; }
+	ud_gen(){ echo UD4-REACHED; exit 0; }; arm_trial')
+grep -q '^INVALID prov-update-254: leak check (UD2: the A boot after the revert, at landing): logread window lost' <<< "$o" && grep -q '^PASS prov-update-254: UD2: reverted, A committed, phase 6' <<< "$o" && grep -q '^UD4-REACHED' <<< "$o" \
+	&& ok "UD2 with an INVALID A-boot leak window: its phase-6 PASS is still made and UD4 runs" || bad "UD2 leak-independent: $(grep -E 'UD2|UD4|NOT-' <<< "$o" | tail -4 | tr '\n' '|')"
+# ---- review v12 B m1: the mark is random and must be unique in the window source
+o=$(bash -c "$src; RUN=r1; q(){ :; }; ud_mark; echo \"M=\$UDM\"" 2>&1); grep -qE '^M=ud-r1-[0-9a-f]{16}$' <<< "$o" && ok "ud_mark: 8 host-random bytes in the mark" || bad "mark value: $o"
+ring0 "Nov 23 10:00:03 batman-dv-ud: mark M1"; o=$(lk "UD_LAND_MARK=M1; ud_leak_ring 'dup mark' mark M1")
+grep -q '^INVALID prov-update-254: leak check (dup mark): logread window lost (LEAK-NOWINDOW mark not unique (2))' <<< "$o" && ok "a duplicated mark -> INVALID 'mark not unique'" || bad "dup mark: $o"
+# ---- review v12 A m1 / B m2: rolling marks — each step greps previous mark .. now after writing the next mark
+ring0; o=$(lk "UD_LAND_MARK=M1; ud_roll_step 'step 1'; m=\$UD_ROLL_MARK; sed -n \"/mark \$m\\\$/,\\\$p\" \"\$FX_RING\" > \"\$FX_RING.t\"; mv \"\$FX_RING.t\" \"\$FX_RING\"; echo 'Nov 23 10:41:00 netifd: after the wrap' >> \"\$FX_RING\"; ud_roll_step 'step 2'; ud_leak_ring 'v12 single mark' mark M1")
+grep -q '^PASS prov-update-254: leak check (step 1)' <<< "$o" && grep -q '^PASS prov-update-254: leak check (step 2)' <<< "$o" && grep -q '^INVALID prov-update-254: leak check (v12 single mark): logread window lost (LEAK-NOWINDOW mark)' <<< "$o" \
+	&& ok "rolling marks: a ring wrapped past the landing mark between two steps is still judged (v12's single mark: INVALID)" || bad "rolling wrap: $o"
+ring0; o=$(lk "UD_LAND_MARK=M1; ud_roll_step 'step 1'; printf '%s\n' 'Nov 23 10:42:00 batman-provhelper[9]: k=$FX_KEY' >> \"\$FX_RING\"; ud_roll_step 'step 2'")
+grep -q '^PASS prov-update-254: leak check (step 1)' <<< "$o" && grep -q '^FAIL prov-update-254: leak check (step 2): the mesh key appears 1 time' <<< "$o" && ok "rolling marks: a key line in the 2nd step -> FAIL" || bad "rolling key: $o"
+ring0; o=$(lk "UD_LAND_MARK=M1; ud_roll_step 'step 1'; printf '%s\n' 'Nov 23 10:43:00 netifd: wrapped past both' > \"\$FX_RING\"; ud_roll_step 'step 2'")
+grep -q '^INVALID prov-update-254: leak check (step 2): logread window lost (LEAK-NOWINDOW mark)' <<< "$o" && ok "rolling marks: a step whose start mark wrapped out -> INVALID" || bad "rolling lost: $o"
+ring0; o=$(lk "UD_LAND_MARK=M1; UD_ROLL_T=0; mono(){ echo 100; }; ud_roll_tick 'tick'")
+grep -q 'PASS leak check (tick)' <<< "$o" && ! grep -q '^PASS prov-update-254: leak check (tick)' <<< "$o" && ok "a quiet rolling step says its PASS (no verdict line per step)" || bad "quiet tick: $o"
+rm -f "$T/wr/n"; o=$(PATH="$T/wr:$PATH" bash -c "$src; $wr_stub; hk(){ echo HOOK; }; fails=0; PR_HELD_OK=1 PR_WAIT_HOOK=hk pr_wait_reverted; echo rc=\$?" 2>&1)
+[ "$(grep -c '^HOOK$' <<< "$o")" = 2 ] && grep -q '^rc=0$' <<< "$o" && ok "pr_wait_reverted runs PR_WAIT_HOOK on each read with the trial boot unchanged, not after the boot changed" || bad "wait hook: $(tr '\n' '|' <<< "$o")"
 echo "test-prov-update: $P passed, $F failed"; [ $F = 0 ] && [ $P -gt 0 ]
