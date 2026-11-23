@@ -19,7 +19,20 @@ cat > "$B/batman-slot" <<'EOS'
 case "$1" in
 	active) echo "$G_ACT" ;; is-trial) exit "$G_TRIAL" ;; layout) echo "${G_LAYOUT:-pi4}" ;;
 	fw-part) [ "${G_FWEMPTY:-0}" = 1 ] && exit 1; case "$2" in A) echo 1 ;; B) echo 2 ;; esac ;;
+	bootinfo) [ -n "${G_BI:-}" ] && printf '%s
+' "-- slot $2" "$G_BI" ;;
 esac
+EOS
+# the UD unit's P9 lines (254-v16-ud §4.3): uci changes from G_UCI; config-save --check answers the rc sequence G_CS
+printf '#!/bin/sh
+[ "$1" = changes ] && [ -n "${G_UCI:-}" ] && echo "$G_UCI"; exit 0
+' > "$B/uci"
+cat > "$B/batman-config-save" <<'EOS'
+#!/bin/sh
+n=$(cat "$P9_TEST_ROOT/cs.n" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$P9_TEST_ROOT/cs.n"
+rc=$(echo "${G_CS:-0}" | cut -d' ' -f$n); [ -n "$rc" ] || rc=$(echo "${G_CS:-0}" | awk '{print $NF}')
+[ "$rc" = 5 ] && echo "p5 stale: wireless.default_radio0.ssid"
+exit "$rc"
 EOS
 cat > "$B/mount" <<'EOS'
 #!/bin/sh
@@ -41,8 +54,8 @@ base(){ rm -rf "$R"; mkdir -p "$R/opt/batdata/state" "$R/boot" "$R/usr/lib/batma
 	printf '#!/bin/sh\n[ "$1" = --version ] && echo "batman-provhelper x" && exit 0\nexit 2\n' > "$R/usr/bin/batman-provhelper"; chmod 755 "$R/usr/bin/batman-provhelper"
 	printf 'wbox_gate_self\necho "holds a -wbox test image"\n' > "$R/usr/sbin/batman-slot"
 	: > "$R/mountinfo"; : > "$R/logread"
-	G_ACT=A G_TRIAL=1 G_DTTRY=00000000 G_LAYOUT=pi4 G_MOUNTFAIL=0 G_FWEMPTY=0; }
-run(){ OUT=$(env -i PATH="$B:/usr/bin:/bin" P9_TEST_ROOT="$R" G_ACT="$G_ACT" G_TRIAL="$G_TRIAL" G_DTTRY="$G_DTTRY" G_LAYOUT="$G_LAYOUT" G_MOUNTFAIL="$G_MOUNTFAIL" G_FWEMPTY="$G_FWEMPTY" sh "$J" 2>&1); RC=$?; }
+	G_ACT=A G_TRIAL=1 G_DTTRY=00000000 G_LAYOUT=pi4 G_MOUNTFAIL=0 G_FWEMPTY=0 G_BI="" G_UCI="" G_CS=0; }
+run(){ OUT=$(env -i PATH="$B:/usr/bin:/bin" P9_TEST_ROOT="$R" G_ACT="$G_ACT" G_TRIAL="$G_TRIAL" G_DTTRY="$G_DTTRY" G_LAYOUT="$G_LAYOUT" G_MOUNTFAIL="$G_MOUNTFAIL" G_FWEMPTY="$G_FWEMPTY" G_BI="$G_BI" G_UCI="$G_UCI" G_CS="$G_CS" P9_RETRY_S=0 sh "$J" 2>&1); RC=$?; }
 # want <case> clean|clean-nowarn|warn:<text>|fail:<text>|info:<text>
 want(){ cases=$((cases+1)); local w=$2
 	case "$w" in
@@ -84,5 +97,33 @@ base; G_FWEMPTY=1; run; want "batman-slot fw-part unreadable" "fail:fw-part / ac
 base; G_ACT=""; run; want "batman-slot active unreadable" "fail:fw-part / active unreadable"
 # the recovery script's pid file counts like the arm's (§23.2)
 base; mkdir -p "$R/tmp/run/batman-dv/r1"; sleep 300 & sp=$!; echo $sp > "$R/tmp/run/batman-dv/r1/rbfix.pid"; run; kill $sp; want "a recovery (rbfix.pid) still running" "fail:rollback arm is still running"
+# ---- #254 v1.6 g4 PR B (254-v16-ud §4.3 "P9 scope", §7, §7.1): the UD-RECOVER block and the gated / ungated lines
+UD=pupdate2541123120000
+blockok(){ grep -qx "UD-RECOVER-BEGIN $UD" <<< "$OUT" && grep -qx "UD-RECOVER-END $UD" <<< "$OUT" 	&& ! sed -n '/^UD-RECOVER-BEGIN/,/^UD-RECOVER-END/p' <<< "$OUT" | grep -qE '@(DEAD|V)@' 	&& sed -n '/^UD-RECOVER-BEGIN/,/^UD-RECOVER-END/p' <<< "$OUT" | grep -q "RUN=$UD PR_V=$V PR_BASE=member" 	&& [ "$(sed -n '/^UD-RECOVER-BEGIN/,/^UD-RECOVER-END/p' <<< "$OUT" | grep -c '@NODE@')" = 2 ]; }
+base; echo "$UD 1a2b3c4d snap" > "$R/opt/batdata/state/dv-prov-dirty"; run; want "dirty flag of a prov-update-254 run: NEEDS-PERSON line" "fail:run $UD of prov-update-254 stopped mid-arm"
+cases=$((cases + 1)); blockok && ok "  ... and the UD-RECOVER block with @DEAD@ / @V@ replaced, @NODE@ left for the host" || no "UD-RECOVER block: $(sed -n '/^UD-RECOVER-BEGIN/,/^UD-RECOVER-END/p' <<< "$OUT" | head -3 | tr '
+' '|')"
+for bad in pfoo2541123120000 " 1a2b snap" "pupdate254x/../.. 1a2b snap" pupdate2541123 pupdate25411231200000; do
+	base; echo "$bad" > "$R/opt/batdata/state/dv-prov-dirty"; run
+	cases=$((cases + 1)); if grep -q '^FAIL dv-prov-dirty .*run scripts/dv/prov-254.sh restore' <<< "$OUT" && ! grep -q 'UD-RECOVER' <<< "$OUT"; then ok "dirty flag [$bad]: the generic line, no block"; else no "dirty flag [$bad]: $(tr '
+' '|' <<< "$OUT" | cut -c1-200)"; fi
+done
+base; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; echo 'x/y&z' > "$R/opt/batdata/state/slot-A.protected"; run
+cases=$((cases + 1)); grep -q '^FAIL dv-prov-dirty .*run scripts/dv/prov-254.sh restore' <<< "$OUT" && ! grep -q 'UD-RECOVER' <<< "$OUT" && ok "a slot-A version with / or & never reaches sed: the generic line" || no "bad V: $(tr '
+' '|' <<< "$OUT" | cut -c1-200)"
+base; mkdir -p "$R/opt/batdata/state/dv-undo/$UD"; echo "3 todo slot:A ssid-restore 6162" > "$R/opt/batdata/state/dv-undo/$UD/journal"; run; want "a pending undo journal: WARN" "warn:undo journal pending: $UD"
+base; mkdir -p "$R/proc/4321"; printf 'sh\0/tmp/run/batman-dv/bt/x/ud9-watch-254.sh\0kill\0' > "$R/proc/4321/cmdline"; run; want "a live ud9-watch: FAIL" "fail:a ud9-watch is alive .pid 4321."
+base; G_BI="bad=1 verified="; run; want "slot B bad=1, no UD dirty flag: WARN" "warn:slot B is BAD"
+base; G_BI="bad=1 verified="; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; run; want "slot B bad=1 with a UD dirty flag: FAIL" "fail:slot B is BAD .* — run $UD"
+base; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; mkdir -p "$R/opt/batdata/dv-prov/$UD/snap/state"; echo old > "$R/opt/batdata/dv-prov/$UD/snap/state/update-last"; echo new > "$R/opt/batdata/state/update-last"; run
+want "update-last != the run's snapshot copy: FAIL" "fail:update-last differs from run $UD"
+base; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; mkdir -p "$R/opt/batdata/dv-prov/$UD/snap/state"; echo same > "$R/opt/batdata/dv-prov/$UD/snap/state/update-last"; echo same > "$R/opt/batdata/state/update-last"; run
+cases=$((cases + 1)); grep -q 'update-last' <<< "$OUT" && no "an update-last equal to the snapshot copy was reported" || ok "update-last equal to the snapshot copy: nothing"
+base; echo 1.5.14-wsl.36 > "$R/opt/batdata/state/autocommit-hold-commit"; run; want "hold flag on a committed boot, ungated: WARN" "warn:the hold flag"
+base; G_UCI="wireless.default_radio0.ssid='x'"; run; want "uci changes staged: WARN" "warn:uci has 1 staged change"
+base; G_CS=5; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; run; want "--check rc 5 with a UD dirty flag: FAIL" "fail:batman-config-save --check rc 5"
+base; G_CS="8 8 0"; run; want "--check rc 8 twice, then 0: clean (retried)" clean-nowarn
+base; G_CS="8 8 8 8"; run; want "--check rc 8 four times: INFO, not judged" "info:rc 8 .busy. after 3 retries"
+base; G_CS=3; run; want "--check rc 3: INFO" "info:batman-config-save --check rc 3"
 [ "$cases" -gt 0 ] || { echo "FAIL no case ran"; exit 1; }
 echo "P9-JUDGE cases=$cases fails=$fails"; [ "$fails" = 0 ]

@@ -105,6 +105,14 @@ for n in $ALL; do
 	if grep -q '^FAIL' <<< "$o"; then while read -r l; do f "P9 $n ${l#FAIL }"; done < <(grep '^FAIL' <<< "$o")
 	elif grep -q '^P9 clean$' <<< "$o"; then ok "P9 $n prov / wbox state clean"
 	else f "P9 $n judge gave no verdict ($(tail -1 <<< "$o"))"; fi
+	# #254 v1.6 g4 PR B (254-v16-ud §7.1, review v7 A m2): a prov-update-254 run left mid-arm — P9 prints the manual
+	# recovery between UD-RECOVER-BEGIN / -END; shown here as it is, with @NODE@ = this node (a name / address only)
+	if grep -q '^UD-RECOVER-BEGIN ' <<< "$o"; then
+		case "$n" in *[!A-Za-z0-9.-]*|'') echo "preflight: UD-RECOVER block of $n not shown (node name [$n] not a plain name / address): run scripts/node/prov-p9-254.sh on it" ;;
+		*) echo "preflight: P9 $n NEEDS-PERSON — the manual recovery (run each step from the repo root on the host, read its output first):"
+			sed -n '/^UD-RECOVER-BEGIN /,/^UD-RECOVER-END /p' <<< "$o" | sed "s/@NODE@/$n/g" ;;
+		esac
+	fi
 	grep '^WARN ' <<< "$o" | sed "s/^WARN /preflight warn: P9 $n /"
 	grep -E '^INFO (pre-|p6 autocommit|running a -wbox|trial in progress)' <<< "$o" | sed "s/^INFO /preflight ok: P9 $n note: /"
 done

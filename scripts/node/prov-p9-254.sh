@@ -68,7 +68,95 @@ hp=$(pidof batman-provhelper | awk '{print $1}')
 $P9R/usr/bin/batman-provhelper --version >/dev/null 2>&1 || echo "INFO pre-P1b helper (no --version): units that need the seams FAIL 'pre-P1b image'"
 grep -q 'holds a -wbox test image' $P9R/usr/sbin/batman-slot 2>/dev/null || echo "INFO pre-gate image (batman-slot has no wbox gate): -wbox units FAIL 'pre-gate image' before any OTA"
 # --- leftovers of a prov run
-d=$(cat "$ST/dv-prov-dirty" 2>/dev/null); [ -n "$d" ] && no "dv-prov-dirty [$d]: run scripts/dv/prov-254.sh restore for that run (snapshot /opt/batdata/dv-prov/<run>)"
+d=$(cat "$ST/dv-prov-dirty" 2>/dev/null)
+# #254 v1.6 g4 PR B (docs/design/254-v16-ud.md §7, §7.1): a prov-update-254 run (RUN = p + update254 + %m%d%H%M%S,
+# prov-254.sh RUN=) left mid-arm is NEEDS-PERSON: its manual recovery block is printed between UD-RECOVER-BEGIN / -END,
+# with @DEAD@ = that run and @V@ = slot A's version, both validated whole (no "/", "&" or newline can reach sed);
+# @NODE@ is filled by the host (pr_p9, dv-preflight). Any other run id gets the generic line.
+r=${d%% *}; v=$(cat "$ST/slot-A.protected" 2>/dev/null)
+udr=0
+case "$r" in pupdate254[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) udr=1 ;; esac
+case "$v" in ''|*[!A-Za-z0-9.+-]*) udr=0 ;; esac
+[ "${#v}" -le 80 ] || udr=0
+if [ -n "$d" ] && [ $udr = 1 ]; then
+	no "dv-prov-dirty [$d]: run $r of prov-update-254 stopped mid-arm — NEEDS-PERSON: the manual recovery between UD-RECOVER-BEGIN and UD-RECOVER-END below (docs/design/254-v16-ud.md §7.1), step by step"
+	echo "UD-RECOVER-BEGIN $r"
+	sed -e "s/@DEAD@/$r/g" -e "s/@V@/$v/g" <<'UDREC'
+# --- step 0a: host lock. If a step prints "a stale lock (host crash / TaskStop)", check that no harness runs, then run the
+#     rm -rf that message names (prov-254.sh:181-188).
+# --- step 0b: read-only state (no lease needed)
+ssh root@@NODE@ 'cut -c1-8 /proc/sys/kernel/random/boot_id; cut -d. -f1 /proc/uptime; batman-slot active;
+  batman-slot is-trial; echo trial_rc=$?; cat /opt/batdata/state/dv-prov-dirty; cat /tmp/run/batman-dv/bt/lease-prov 2>&1;
+  ls -la /tmp/run/batman-dv/bt/@DEAD@ 2>&1; cat /tmp/run/batman-dv/@DEAD@/ud9.pid 2>&1'
+#   - lease-prov names @DEAD@ in THIS boot with expiry > uptime: its lease and deadman are live. Wait until
+#     uptime >= expiry + 60 (up to ~2 h for the trial arm; the deadman then replays @DEAD@'s journal and removes the
+#     lease, ble-lib-254.sh:349-363). Repeat 0b. No later step may run before that: every acquire would refuse
+#     (ble-lib-254.sh:302-305).
+#   - a later step's acquire prints "run @DEAD@ did not clean up (lease expired, no deadman left)": stop here.
+#     NEEDS-PERSON beyond this block. The prov lease has no recover command (section 7.1 note).
+#   - the dead run's staging dir is NOT removed by hand: the next acquire's gc_rundirs removes it once no lease and no
+#     live deadman names it, and prints its listing (ble-lib-254.sh:317-326).
+# --- step 0b2: only if 0b printed a pid from ud9.pid (same boot only; after a reboot the pidfile and the watcher are gone).
+#     busybox kill takes no "--" (ble-lib-254.sh pg_kill): the group is "-<pid>"; every member is waited for <= 10 s.
+ssh root@@NODE@ 'p=$(cat /tmp/run/batman-dv/@DEAD@/ud9.pid 2>/dev/null); case "$p" in ""|*[!0-9]*) echo NO-PID; exit 0;; esac;
+  [ -d /proc/$p ] || { echo GONE; exit 0; }; set -- $(cat /proc/$p/stat);
+  if [ "$5" = "$p" ] && tr "\0" " " < /proc/$p/cmdline | grep -q ud9-watch-254.sh; then kill -TERM "-$p"; n=0;
+  while [ $n -lt 10 ]; do a=0; for s in /proc/[0-9]*/stat; do [ "$(cut -d" " -f5 "$s" 2>/dev/null)" = "$p" ] && { a=1; break; }; done;
+  [ $a = 0 ] && break; n=$((n + 1)); sleep 1; done; [ $a = 0 ] && echo KILLED || echo STILL-ALIVE; else echo NOT-THE-WATCHER; fi'
+# --- step 0c: only if 0b shows slot B. A held trial: wait for its revert, then repeat 0b. A committed B, or a trial
+#     without hold: back to A FIRST, with a lease but WITHOUT the journal replay (pr_stage + pl acquire, not
+#     pr_acquire). back_to_a's own pr_find then acquires and replays on A, after the reboot.
+PR_UNIT=prov-update-254 bash -c '. scripts/dv/prov-254.sh; pr_lock; PR_DEADLINE=$(( $(mono) + 3600 )); r=1
+  pr_stage && pl acquire 3600 | grep -q "^LEASE " && { back_to_a; r=$?; }; pl release; pr_unlock; exit $r'
+# --- step 1: replay @DEAD@'s journal under a NEW run id (undo-replay skips its own run, prov-lease-254.sh:100);
+#     the lease is released whether the replay succeeded or not
+PR_UNIT=prov-update-254 bash -c '. scripts/dv/prov-254.sh; pr_lock; PR_DEADLINE=$(( $(mono) + 3600 )); pr_acquire 3600; r=$?
+  pl release; pr_unlock; exit $r'
+# --- step 2: restore @DEAD@'s snapshot, rewrite B, finish. PR_WROTE_B is set after sourcing (prov-254.sh:47 resets
+#     it); PR_DM_BASE = the dead run's deadman lines already logged (prov-254.sh:569-571). A refused acquire ends the
+#     step at once: pr_release would act on @DEAD@'s lease if it were still live (review v7 A m1)
+PR_UNIT=prov-update-254 RUN=@DEAD@ PR_V=@V@ PR_BASE=member PR_S0_STATE=member bash -c '. scripts/dv/prov-254.sh
+  PR_WROTE_B=1; pr_lock; PR_DEADLINE=$(( $(mono) + 7200 ))
+  PR_DM_BASE=$(qr "grep -c \"run=@DEAD@ prov deadman\" /opt/batdata/log/ble-dm-254.log 2>/dev/null"); PR_DM_BASE=${PR_DM_BASE:-0}
+  pr_acquire 7200 || { pr_unlock; exit 1; }
+  PR_BEGUN=1; PR_SNAPPED=1; PR_FINAL=1 pr_restore && pr_brewrite && pr_finish_snap; r=$?; pr_release; exit $r'
+# --- step 3: read-only end evidence, as pr_end gives it: status phase 0, no reason, no sha (section 4.1); no watcher
+PR_UNIT=prov-update-254 bash -c '. scripts/dv/prov-254.sh; pr_lock; PR_DEADLINE=$(( $(mono) + 600 )); pr_acquire 600 &&
+  pr_h0 && pr_pc_place && pr_pc h0.pem -- update-status "$H0" | grep "^RESULT update.status"
+  q "ps w | grep \"[u]d9-watch\" || echo NO-WATCHER"; pl release; pr_keys_drop; pr_unlock'
+UDREC
+	echo "UD-RECOVER-END $r"
+elif [ -n "$d" ]; then no "dv-prov-dirty [$d]: run scripts/dv/prov-254.sh restore for that run (snapshot /opt/batdata/dv-prov/<run>)"; fi
+# the UD unit's leftovers (254-v16-ud §4.3 "P9 scope"): FAIL when the dirty flag names a prov-update-254 run (with the
+# recovery above), WARN otherwise; a live UD9 watcher and a pending undo journal on any node
+gl() { if [ $udr = 1 ]; then no "$* — run $r: the UD-RECOVER block"; else echo "WARN $*"; fi; }
+for c in $P9R/proc/[0-9]*/cmdline; do
+	[ -f "$c" ] || continue
+	tr '\0' ' ' < "$c" 2>/dev/null | grep -q 'ud9-watch-254\.sh' && { c=${c%/cmdline}; no "a ud9-watch is alive (pid ${c##*/}): kill its group (the UD-RECOVER block, step 0b2)"; }
+done
+pend=$(for j in $P9R/tmp/run/batman-dv/undo/*/journal $P9R/opt/batdata/state/dv-undo/*/journal; do [ -f "$j" ] && grep -q '^[0-9]* todo ' "$j" && basename "$(dirname "$j")"; done | sort -u | tr '\n' ' ')
+[ -n "$pend" ] && echo "WARN undo journal pending: $pend(a node rebooted mid-arm, or the host died; the next run replays it under its lease)"
+if [ "$act" = A ] || [ "$act" = B ]; then
+	oth=B; [ "$act" = B ] && oth=A
+	for t in 1 2 3; do bi=$(batman-slot bootinfo "$oth" 2>/dev/null); brc=$?; [ $brc != 14 ] && break; sleep "${P9_RETRY_S:-10}"; done
+	case "$bi" in *bad=1*) gl "slot $oth is BAD (bootinfo bad=1)" ;; esac
+	[ "$brc" = 14 ] && echo "INFO bootinfo $oth busy (rc 14) three times: not judged"
+fi
+if [ -n "$r" ] && [ -d "$P9R/opt/batdata/dv-prov/$r/snap/state" ]; then
+	sn=$P9R/opt/batdata/dv-prov/$r/snap/state
+	if [ -e "$sn/update-last" ]; then cmp -s "$sn/update-last" "$ST/update-last" || gl "update-last differs from run $r's snapshot copy"
+	elif [ -e "$ST/update-last" ]; then gl "update-last present, absent in run $r's snapshot"; fi
+fi
+[ "$tr" = 1 ] && [ -e "$ST/autocommit-hold-commit" ] && gl "the hold flag $ST/autocommit-hold-commit is set on a committed boot"
+uc=$(uci changes 2>/dev/null | wc -l); [ "${uc:-0}" -gt 0 ] && gl "uci has $uc staged change(s) (uci changes)"
+for t in 1 2 3 4; do cso=$(batman-config-save --check 2>&1); csr=$?; [ $csr = 8 ] && [ $t -lt 4 ] && { sleep "${P9_RETRY_S:-5}"; continue; }; break; done
+case "$csr" in
+	0) ;;
+	5) gl "batman-config-save --check rc 5 (p5 stale): $(echo "$cso" | tail -1 | cut -c1-120)" ;;
+	3|7) echo "INFO batman-config-save --check rc $csr: $(echo "$cso" | tail -1 | cut -c1-120)" ;;
+	8) echo "INFO batman-config-save --check rc 8 (busy) after 3 retries: not judged" ;;
+	*) echo "INFO batman-config-save --check rc $csr" ;;
+esac
 n=$(cat "$ST/dv-prov-normalising" 2>/dev/null); [ -n "$n" ] && no "dv-prov-normalising [$n]: pr_normalise was interrupted — check the slots, then rm $ST/dv-prov-normalising"
 b=$(awk 'index($4, "/batman-dv/wbox/") {print $5}' "$MI" | tr '\n' ' '); [ -n "$b" ] && no "harness bind mounts left: $b (prov-wbox-254.sh unbind-all)"
 [ -e "$KPD" ] && no "the killpoint dir $KPD exists (left behind by a prov run)"

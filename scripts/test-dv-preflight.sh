@@ -78,5 +78,11 @@ p9note "P9 golden Pi 4: not applicable, PASS" 'INFO [all] check not applicable (
 base; printf 'INFO trial in progress (DT tryboot=1, slot B)\nP9 clean\n' > "$W/resp/n4.P9"; o=$(run)
 grep -q '^preflight warn' <<< "$o" && { echo "FAIL P9 release trial printed a warn"; F=$((F + 1)); } || { echo "ok   P9 release trial prints no warn"; P=$((P + 1)); }
 case_ "node unreachable" "not reachable" "rm -f \$W/resp/_.P3; echo 'v=1.5.12-wsl.9 t=1 s=A h=[] c=bcm2711 ' > \$W/resp/n4.P3"
+# #254 v1.6 g4 PR B (review v7 A m2): a prov-update-254 dirty flag FAILs P9 AND the UD-RECOVER block is shown, with
+# @NODE@ = the node; dv-preflight before this change dropped every non-FAIL line of P9 (the block never reached a person)
+case_ "P9 UD dirty flag" "P9 n4 dv-prov-dirty \[pupdate2541123120000" "printf 'FAIL dv-prov-dirty [pupdate2541123120000 ab snap]: run pupdate2541123120000 of prov-update-254 stopped mid-arm\nUD-RECOVER-BEGIN pupdate2541123120000\n# --- step 0a\nssh root@@NODE@ true\nUD-RECOVER-END pupdate2541123120000\nP9 fails=1\n' > \$W/resp/n4.P9"
+if grep -q '^ssh root@n4 true$' <<< "$o" && grep -q '^UD-RECOVER-BEGIN pupdate2541123120000$' <<< "$o" && grep -q '^UD-RECOVER-END ' <<< "$o" && ! grep -q '@NODE@' <<< "$o"; then
+	echo "ok   P9 UD dirty flag: the UD-RECOVER block is printed with @NODE@ = n4"; P=$((P + 1))
+else echo "FAIL P9 UD dirty flag: block not printed: $(grep -E 'UD-RECOVER|ssh root' <<< "$o" | tr '\n' '|')"; F=$((F + 1)); fi
 echo "$P passed, $F failed"
 [ "$F" = 0 ] && [ "$P" -gt 0 ]
