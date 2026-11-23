@@ -54,7 +54,7 @@ cddl ""; want "no answer -> INVALID cannot tell" "$o" "INVALID *cannot tell*rc=1
 case "$o" in *PASS*|*FAIL*) n=$((n + 1)); f=$((f + 1)); echo "FAIL pr_cddl_nu printed a PASS / FAIL";; esac
 # ---- pr_slot_free
 sf(){ echo "$1" > "$T/q2"; fails=0; invalid=0
-	o=$(qr(){ cat "$T/q2"; }; say(){ :; }; pr_slot_free "x" "${2-1234}"; echo "fails=$fails invalid=$invalid"); }
+	o=$(qr(){ cat "$T/q2"; }; qrs(){ cat "$T/q2"; }; say(){ :; }; pr_slot_free "x" "${2-1234}"; echo "fails=$fails invalid=$invalid"); }
 sf "SLKFREE ok t=0"; want "free -> PASS" "$o" "PASS prov-s5test-254: the slot flock is free <= 1 s after x*fails=0 invalid=0"
 sf "SLKFREE leak holders=812:sleep:ours"; want "a child kept fd 9 -> FAIL" "$o" "FAIL *still held after x by what the step started: holders=812:sleep:ours*fails=1 invalid=0"
 sf "SLKFREE nofile"; want "no lock file -> FAIL" "$o" "FAIL *no slot lock file after x*fails=1 invalid=0"
