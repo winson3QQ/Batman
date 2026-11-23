@@ -21,6 +21,9 @@ printf '#!/bin/sh\nexit 0\n' > "$B/sleep"
 cat > "$B/ssh" <<'EOF'
 #!/bin/bash
 c=${*: -1}
+# the node's dropbear resets a command over ~8 KB (device run 2026-11-23); `sh -s` takes the script on stdin
+[ "${#c}" -gt 8000 ] && { echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255; }
+[ "$c" = "sh -s" ] && { c=$(cat); c=${c%'} </dev/null'*}; }
 case "$c" in *'slk_take || exit 1'*)
 	n=$(( $(cat "$ST/lkn" 2>/dev/null || echo 0) + 1 )); echo $n > "$ST/lkn"
 	if grep -qx "$n" "$ST/busy" 2>/dev/null || { [ -f "$ST/busyfrom" ] && [ "$n" -ge "$(cat "$ST/busyfrom")" ]; }; then
