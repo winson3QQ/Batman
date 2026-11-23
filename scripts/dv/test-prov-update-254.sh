@@ -330,4 +330,9 @@ PS helper member member - radio'
 o=$(bash -c "$src; ud_02_judge \"\$1\" \"\$1\" ''; ud_02_judge \"\$1\" \"\${1/gen=4/gen=5}\" ''; ud_02_judge \"\$1\" \"\${1/- radio/- off}\" ''; ud_02_judge \"\${1/TXN=no/TXN=yes}\" \"\${1/TXN=no/TXN=yes}\" ''; ud_02_judge '' '' ''; ud_02_judge \"\$1\" \"\$1\" LOST; ud_02_judge \"\$1\" \"\$1\" 'x batman-provhelper[3]: commit: gen 5'" _ "$S" 2>&1)
 [ "$(sed -n 1p <<< "$o" | cut -c1-4)$(sed -n 3p <<< "$o" | cut -c1-4)$(sed -n 5p <<< "$o" | cut -c1-4)$(sed -n 7p <<< "$o" | cut -c1-4)$(sed -n 9p <<< "$o" | cut -c1-4)$(sed -n 12p <<< "$o" | cut -c1-7)$(sed -n 14p <<< "$o" | cut -c1-4)" = PASSFAILFAILFAILFAILINVALIDFAIL ] \
 	&& ok "02 judge: equal -> PASS; gen / prov-state field / .txn / empty -> FAIL; lost log -> INVALID; a state-changing line -> FAIL" || bad "02 judge: $(tr '\n' '|' <<< "$o")"
+# host dirs on //wsl.localhost: Git Bash `mkdir -p` there fails even for an existing dir (device run 2026-11-23: every
+# arm INVALID at the S0 save). hostdir makes one level; no `mkdir -p` may target a //wsl.localhost-default variable.
+v=$(grep -oE '^[A-Z0-9_]+=\$\{[A-Z0-9_]+:-//wsl\.localhost' "$U" | cut -d= -f1 | paste -sd'|')
+[ -n "$v" ] && ! grep -nE "mkdir -p \"?\\\$\\{?($v)\\b" "$U" >/dev/null && grep -q '^hostdir(){ \[ -d "\$1" \] || mkdir "\$1"; }' "$U" \
+	&& ok "host dirs: no mkdir -p on a //wsl.localhost path ($v); hostdir is one level" || bad "host dirs: mkdir -p on a //wsl.localhost path, or hostdir missing [$v]"
 echo "test-prov-update: $P passed, $F failed"; [ $F = 0 ] && [ $P -gt 0 ]

@@ -183,6 +183,9 @@ ud_gen(){ local o; GENF=$MDIR/$2
 	grep -q "^ACCEPT $1 ok$" <<< "$o" && grep -q '^PAYLOAD-SHA ' <<< "$(tail -1 <<< "$o")" || { inv "generator $1: $(tail -3 <<< "$o" | tr '\n' '|')"; return 1; }
 	say "generated $1: $(tail -1 <<< "$o")"; return 0; }
 hostp(){ echo "//wsl.localhost/Ubuntu-24.04$1"; }   # a WSL path as Git Bash reads it
+# hostdir <dir>: make ONE directory level (the parent must exist). Git Bash `mkdir -p` on a //wsl.localhost path fails
+# even when the directory exists: it tries to create //wsl.localhost itself ("Read-only file system").
+hostdir(){ [ -d "$1" ] || mkdir "$1"; }
 # ud_window <sha>: bulk-open; prints the line (ssid / ip / port / expires only)
 ud_window(){ ud_pc h0.pem -- bulk-open "$H0" "$1" | grep '^RESULT bulk.open'; }
 ud_close(){ ud_pc h0.pem -- bulk-close "$H0" | grep '^RESULT bulk.close'; }
@@ -381,7 +384,7 @@ ud_begin(){	# common start: S0 owner evidence, lease + snapshot, make-legacy, th
 	pr_h0 || { pr_result; exit 1; }
 	UDS0=$(ud_owner_scan); say "S0 owners: $UDS0"
 	ud_s0_ok "$UDS0" || { inv "start state [$(ud_scan_f "$UDS0" state)] (member / claimed / legacy accepted): not run"; pr_keys_drop; pr_result; exit 2; }
-	mkdir -p "$UD_S0_DIR" && printf '%s\n' "$UDS0" > "$UD_S0_DIR/$RUN.txt" || { inv "cannot write $UD_S0_DIR/$RUN.txt"; pr_result; exit 2; }
+	hostdir "$UD_S0_DIR" && printf '%s\n' "$UDS0" > "$UD_S0_DIR/$RUN.txt" || { inv "cannot write $UD_S0_DIR/$RUN.txt"; pr_result; exit 2; }
 	PR_BASE=legacy   # pr_begin: snapshot first, then pr_make_legacy (§4.4 item 2); the H0 claim follows at once
 	pr_begin "$1" || { pr_result; exit 1; }
 	pr_pc_place || { pr_abort "provclient"; pr_result; exit 1; }
@@ -569,7 +572,7 @@ ud_watch_obs_end(){ local l mac
 	ud_watch_gone 30; l=$(ud_watch_log); say "UD9 observe: $l"; ud_watch_done
 	mac=$(field "$(qr "$ST")" mac)
 	if grep -qE '^UD9-OBS .* result=ok$' <<< "$l"; then
-		mkdir -p "$UD9_OBS_DIR" && { echo "run=$RUN"; echo "version=$V_NOW"; echo "mac=$mac"; echo "date=$(date -u +%FT%TZ)"; echo "$l" | grep '^UD9-OBS'
+		hostdir "$UD9_OBS_DIR" && { echo "run=$RUN"; echo "version=$V_NOW"; echo "mac=$mac"; echo "date=$(date -u +%FT%TZ)"; echo "$l" | grep '^UD9-OBS'
 			echo "log_sha256=$(qr "sha256sum < /opt/batdata/log/dv-ud9-$RUN.log | cut -c1-64")"; } > "$UD9_OBS_DIR/$V_NOW-${mac//:/}.txt" \
 			&& ok "UD9 premise (output side): fd 1 = B's root, pos grows — saved for the kill arm" || no "cannot write $UD9_OBS_DIR"
 	else inv "UD9 premise (output side) not shown: [$l]"; fi; }
