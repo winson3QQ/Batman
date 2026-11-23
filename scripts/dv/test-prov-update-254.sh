@@ -168,7 +168,7 @@ smoke_stubs='
 H0=04$(printf "%0128d" 0); OUTS=$UDT/smoke/out; TOOLS=$UDT/smoke; NODE=10.9.9.9
 pr_begin(){ return 0; }; pr_h0(){ return 0; }; pr_pc_place(){ return 0; }; pr_end(){ echo "STUB pr_end $*"; echo member > "$UDT/smoke/state"; }
 UD_S0_DIR=$UDT/smoke/s0; [ -s "$UDT/smoke/state" ] || echo member > "$UDT/smoke/state"
-pr_keys(){ ENC=04$(printf "%0128d" 1); return 0; }; pk_proof(){ return 0; }; pr_needs_person(){ echo "NEEDS-PERSON $*"; echo NP >> "$UDT/smoke/calls"; }
+pr_keys(){ ENC=04$(printf "%0128d" 1); return 0; }; pk_proof(){ return 0; }; pr_needs_person(){ echo "NEEDS-PERSON $*"; echo NP >> "$UDT/smoke/calls"; PR_PERSON=1; echo F >> "$UDV"; return 1; }
 pr_info(){ echo "state=$(cat "$UDT/smoke/state") gen=2 owners=1 rm=1"; }
 nbmac(){ [ "${SMOKE_NB:-yes}" = yes ]; }; qp(){ case "$*" in *"logread"*) echo "x batman-dv-ud: mark y" ;; *"echo \"META"*) printf "META v=1 state=member gen=4 sha=ab rm=1\nTXN=no\nPS helper member member - radio\n" ;; esac; }
 pr_lease_renew(){ return 0; }; pr_slot_ticks(){ echo 1; }; pr_slot_free(){ ok "slot flock free (stub)"; }; sleep(){ :; }
@@ -184,7 +184,7 @@ pr_pc(){ local pb=new a op; for a in "$@"; do [ "$a" = PCBIN=old ] && pb=old; do
 	while [ "$1" != -- ]; do shift; done; op=$2
 	[ $pb = new ] && echo "PROVCLIENT caps=uc2,bo2,rk1,pg2,nopsk"
 	case "$op" in
-		update-status) echo "RESULT update.status code=0 phase=0 percent=0" ;;
+		update-status) ph=0; grep -qs '^update-prepare' "$UDT/smoke/calls" && ph=${SMOKE_PHASE:-0}; echo "RESULT update.status code=0 phase=$ph percent=0" ;;
 		bulk-open) echo "RESULT bulk.open code=0 ssid=\"s\" ip=\"10.41.0.1\" port=8095 expires=900" ;;
 		bulk-close) echo "RESULT bulk.close code=0" ;;
 		update-prepare|update-apply) echo "${op}" >> "$UDT/smoke/calls"; echo "RESULT update.${op#update-} code=24 reason=15" ;;
@@ -209,6 +209,7 @@ qr(){ case "$*" in
 	*"--check 2>&1"*) printf "p5 stale: wireless.default_radio0.ssid\nrc=5\n" ;;
 	*"--check >/dev/null"*) echo 0 ;;
 	*"bootinfo B"*) echo "bad=0 verified=x y"; echo rc=0 ;;
+	*"cat /opt/batdata/state/autocommit-hold-commit"*) echo 1.5.14-wsl.36 ;;
 	*"ls -ln "*"provd-bulk/payload"*) [ "${SMOKE_UPLOAD:-present}" = present ] && echo "-rw------- 1 471 471 4096 Nov 23 12:00 payload" ;;
 	esac; return 0; }
 pl(){ case "$1" in undo-add) echo "UNDO-ADDED 1 p6 - $2" ;; ssid-hex) echo "HEX=6162 RT=ok" ;; ssid-set) echo "SSID-SET ok" ;; undo-done) echo "UNDO-DONE $2" ;; esac; }
@@ -335,4 +336,60 @@ o=$(bash -c "$src; ud_02_judge \"\$1\" \"\$1\" ''; ud_02_judge \"\$1\" \"\${1/ge
 v=$(grep -oE '^[A-Z0-9_]+=\$\{[A-Z0-9_]+:-//wsl\.localhost' "$U" | cut -d= -f1 | paste -sd'|')
 [ -n "$v" ] && ! grep -nE "mkdir -p \"?\\\$\\{?($v)\\b" "$U" >/dev/null && grep -q '^hostdir(){ \[ -d "\$1" \] || mkdir "\$1"; }' "$U" \
 	&& ok "host dirs: no mkdir -p on a //wsl.localhost path ($v); hostdir is one level" || bad "host dirs: mkdir -p on a //wsl.localhost path, or hostdir missing [$v]"
+# ---- device run 2026-11-23 (ud36c): pr_slot_ticks / pr_slot_free sent the 12 KB slot-lock lib in ssh's argv; the
+# nodes' dropbear resets a command over ~8 KB, so every lock check was INVALID "no start time []". Stub ssh with that limit.
+mkdir -p "$T/db" "$T/dbrun"; : > "$T/dbrun/batman-slot.flock"
+printf '%s\n' '#!/bin/bash' 'c=""; while [ $# -gt 0 ]; do case "$1" in -o|-p|-i) shift 2 ;; root@*) shift; c="$*"; break ;; *) shift ;; esac; done' \
+	'[ "${#c}" -gt 8000 ] && { echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255; }' 'RUNDIR=$UDT/dbrun exec sh -c "$c"' > "$T/db/ssh"; chmod 755 "$T/db/ssh"
+o=$(PATH="$T/db:$PATH" bash -c "$src; sleep(){ :; }; fails=0; invalid=0; t=\$(pr_slot_ticks); echo \"TICKS=[\$t]\"; pr_slot_free 'the step' \"\$t\"" 2>&1)
+grep -qE '^TICKS=\[[0-9]+\]$' <<< "$o" && grep -q '^PASS prov-update-254: the slot flock is free <= 1 s after the step' <<< "$o" \
+	&& ok "pr_slot_ticks / pr_slot_free work through an ssh that resets commands over 8000 B (the lib goes on stdin)" || bad "slot lock over a limited ssh: $(tr '\n' '|' <<< "$o" | cut -c1-300)"
+# ---- device run 2026-11-23 (ud36c) trial arm: the re-acquire after UD2's apply counted this run's own rm-hold line as
+# "left by an earlier run" (the node's undo-replay skips RUN_ID, prov-lease-254.sh:107) -> NEEDS-PERSON on a node that
+# was back; then UD4 / UD5 (ii) / UD1 ran with no provclient on the node ("no caps line … stale tool" for empty output)
+pa_stub='pr_stage(){ :; }; pl(){ case "$1" in acquire) echo "LEASE $RUN until uptime 9" ;; undo-pending) cat "$UDT/pa/pending" ;; undo-replay) echo "REPLAY other"; [ -f "$UDT/pa/after" ] && cp "$UDT/pa/after" "$UDT/pa/pending" ;; esac; }'
+mkdir -p "$T/pa"
+printf '%s\n' "UNDO-PENDING prun1 1 todo - rm-hold" > "$T/pa/pending"; rm -f "$T/pa/after"
+o=$(bash -c "$src; RUN=prun1; $pa_stub; pr_acquire 600; echo rc=\$?" 2>&1)
+grep -q '^rc=0$' <<< "$o" && ! grep -q 'undo still left\|left by an earlier run' <<< "$o" && grep -q "this run's own undo lines" <<< "$o" \
+	&& ok "pr_acquire after this run's own reboot: its own pending rm-hold is not an earlier run's (no replay FAIL)" || bad "pr_acquire own line: $(tr '\n' '|' <<< "$o")"
+printf '%s\n' "UNDO-PENDING prun1 1 todo - rm-hold" "UNDO-PENDING pold9 3 todo slot:A ssid-restore 6162" > "$T/pa/pending"; printf '%s\n' "UNDO-PENDING prun1 1 todo - rm-hold" > "$T/pa/after"
+o=$(bash -c "$src; RUN=prun1; $pa_stub; pr_acquire 600; echo rc=\$?" 2>&1)
+grep -q '^rc=0$' <<< "$o" && grep -q 'undo left by an earlier run: UNDO-PENDING pold9' <<< "$o" && ok "pr_acquire: an earlier run's line is still replayed (and cleared)" || bad "pr_acquire other cleared: $(tr '\n' '|' <<< "$o")"
+printf '%s\n' "UNDO-PENDING prun1 1 todo - rm-hold" "UNDO-PENDING pold9 3 todo slot:A ssid-restore 6162" > "$T/pa/pending"; printf '%s\n' "UNDO-PENDING pold9 3 todo slot:A ssid-restore 6162" > "$T/pa/after"
+o=$(bash -c "$src; RUN=prun1; $pa_stub; pr_acquire 600; echo rc=\$?" 2>&1)
+grep -q '^rc=1$' <<< "$o" && grep -q '^FAIL undo still left after the replay: UNDO-PENDING pold9' <<< "$o" && ok "pr_acquire: an earlier run's line left after the replay is still a FAIL (fail-closed)" || bad "pr_acquire other left: $(tr '\n' '|' <<< "$o")"
+o=$(bash -c "$src; pr_pc(){ :; }; ud_pc h0.pem -- update-status x; echo rc=\$?" 2>&1)
+grep -q '^INVALID prov-update-254: provclient printed no output at all' <<< "$o" && ! grep -q 'stale tool' <<< "$o" && ok "ud_pc: empty provclient output is 'no output', not a stale tool" || bad "ud_pc empty: $o"
+o=$(bash -c "$src; pr_needs_person 'x' >/dev/null; ok y >/dev/null; ud_sync; echo fails=\$fails" 2>&1)
+grep -q '^fails=1$' <<< "$o" && ok "a NEEDS-PERSON is counted as a FAIL in the tally (not lost to ud_sync)" || bad "needs-person tally: $o"
+cp "$T/smoke/gen.tgz" "$T/smoke/out/1.5.14-wsl.36/ekh-bcm2711/batman-1.5.14-wsl.36-ekh-bcm2711-ab-payload.tar.gz"   # the upload stub answers with gen.tgz
+o=$(SMOKE_PHASE=3 smoke_run 'pr_find(){ return 1; }; ud_leak_ring(){ :; }; arm_trial')
+n1=$(grep -n '^NEEDS-PERSON .*UD2: no node after the apply' <<< "$o" | head -1 | cut -d: -f1)
+if [ -n "$n1" ] && grep -q '^NOT-JUDGED prov-update-254: UD4 / UD5 (i), UD5 (ii), UD1, UD10: NOT-RUN' <<< "$o" && ! tail -n +"$n1" <<< "$o" | grep -v '^NOT-JUDGED' | grep -qE 'UD4|UD1|UD5 \(ii\)|provclient printed' \
+	&& grep -q '^STUB pr_end wrote-b' <<< "$o" && [ "$(grep -c '^update-apply' "$T/smoke/calls")" = 1 ]; then
+	ok "after UD2's NEEDS-PERSON the trial arm sends no further row: the rest NOT-RUN, straight to the restore"
+else bad "trial after NEEDS-PERSON: $(tail -n +"${n1:-1}" <<< "$o" | grep -E 'UD|NOT-|STUB|INVALID' | head -6 | tr '\n' '|') applies=$(grep -c '^update-apply' "$T/smoke/calls")"; fi
+o=$(bash -c "$src; $smoke_stubs; ud_end(){ echo \"UD_END \$*\"; }; PR_PERSON=1; PR_WROTE_B=1; ud_g; echo NOT-REACHED" 2>&1); rc=$?
+[ $rc = 2 ] && grep -q "^NOT-JUDGED prov-update-254: the arm's remaining rows: NOT-RUN" <<< "$o" && grep -q '^UD_END wrote-b' <<< "$o" && ! grep -q NOT-REACHED <<< "$o" \
+	&& ok "ud_g after a NEEDS-PERSON: no owner-op, the arm ends (restore)" || bad "ud_g person: rc=$rc $o"
+# ---- device run 2026-11-23 (ud36c) write arm: "UD9 premise (output side) not shown: []" with no reason; the removed log
+# hashed as 4096 spaces (no line written). The start is checked (a live group-leading watcher) and an empty result says why
+o=$(bash -c "$src; q(){ echo 'WATCH 4242'; echo 'UNDO-ADDED 4 tmp boot:x kill-pg 4242 ud9-watch'; }; qr(){ echo \"\$QRA\"; }; RUN=r1; SQ=1; PRD=x
+	QRA='PG 4242 1' ud_watch observe && echo STARTED; QRA='PG 1 1' ud_watch observe || echo REFUSED1; QRA=GONE ud_watch observe || echo REFUSED2" 2>&1)
+grep -q '^STARTED' <<< "$o" && grep -q '^REFUSED1' <<< "$o" && grep -q '^REFUSED2' <<< "$o" && grep -q 'pid 4242 is not a live group-leading watcher right after the start \[GONE\]' <<< "$o" \
+	&& ok "ud_watch: the started pid must be a live group-leading watcher (dead pid / other group -> INVALID)" || bad "ud_watch start check: $o"
+o=$(bash -c "$src; for a in 'gone|LOGSIZE 4096 NONSPACE 0' 'alive|LOGSIZE 4096 NONSPACE 0|SYSLOG x ud9-watch: UD9-MISS stop' 'gone|NOLOG'; do IFS='|' read -r g l1 l2 <<< \"\$a\"; ud9_diag_text \"\$g\" \"\$(printf '%s\n%s' \"\$l1\" \"\$l2\")\"; done" 2>&1)
+[ "$(sed -n 1p <<< "$o")" = "the watcher had exited; its log holds no line (pre-sized spaces only); no ud9-watch line in syslog" ] \
+	&& grep -q '^the watcher was still running at the read (no stream dd seen within the step); its log holds no line (pre-sized spaces only); syslog: x ud9-watch: UD9-MISS stop|$' <<< "$o" \
+	&& grep -q '^the watcher had exited; its log does not exist (it never started); no ud9-watch line in syslog$' <<< "$o" && ok "ud9_diag_text: alive / exited, empty log, no log, syslog lines" || bad "ud9_diag_text: $o"
+o=$(bash -c "$src; ud_watch_gone(){ return 0; }; ud_watch_log(){ :; }; ud_watch_done(){ :; }; qr(){ case \"\$1\" in *dv-ud9-*wc*) echo 'LOGSIZE 4096 NONSPACE 0' ;; esac; }; RUN=r1; ud_watch_obs_end" 2>&1)
+grep -q '^INVALID prov-update-254: UD9 premise (output side) not shown: \[\] — the watcher had exited; its log holds no line' <<< "$o" && ok "UD9 observe with no result line: INVALID with the diagnosis" || bad "obs_end diag: $o"
+# ---- device run 2026-11-23 (ud36c) write arm: UD8 (1)-(4) FAILed on a correct refusal: the judge wanted "update worker:
+# prepare refused", the helper logs "update worker: <version> refused, reason 11 (<why>)" (node/updwork.go:291). Real lines:
+ud8l='Sun Aug 17 13:18:32 2025 daemon.info batman-provhelper[23990]: update worker: 1.5.14-wsl.36+b885a2c.fw302c80b.bench refused, reason 11 (member boot/overlays/spi5-1cs.dtbo is not a regular file)'
+ud8s='RESULT update.status code=0 phase=0 percent=0 fail_reason=11 sha=e03ad2a57f336ece version=1.5.14-wsl.36+b885a2c.fw302c80b.bench'
+ud8v=1.5.14-wsl.36+b885a2c.fw302c80b.bench
+o=$(bash -c "$src; ud8_ok \"\$1\" \"\$2\" \"\$3\" 'is not a regular file' && echo A; ud8_ok \"\$1\" \"\$2\" 1.5.14-wsl.35 'is not a regular file' || echo B; ud8_ok \"\$1\" \"\$2\" \"\$3\" 'too many members' || echo C; ud8_ok \"\$1\" \"\$2\" '' 'is not a regular file' || echo D; ud8_ok \"\${1/fail_reason=11/fail_reason=12}\" \"\$2\" \"\$3\" 'is not a regular file' || echo E" _ "$ud8s" "$ud8l" "$ud8v" 2>&1)
+[ "$(tr -d '\n' <<< "$o")" = ABCDE ] && ok "UD8 judge on the device's real refusal line: PASS; another version / why / no version / reason -> not a PASS" || bad "UD8 judge: $o"
 echo "test-prov-update: $P passed, $F failed"; [ $F = 0 ] && [ $P -gt 0 ]

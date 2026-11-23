@@ -52,6 +52,15 @@ ud_sync(){ fails=$(grep -c '^F$' "$UDV"); invalid=$(grep -c '^I$' "$UDV"); notju
 no(){ _ud_v F "FAIL $PR_UNIT: $*"; }
 inv(){ _ud_v I "INVALID $PR_UNIT: $*"; }
 nj(){ _ud_v N "NOT-JUDGED $PR_UNIT: $*"; }
+# pr_needs_person counts a FAIL with fails=$((…)), which ud_sync overwrote from the tally file (device run 2026-11-23
+# ud36c trial: NEEDS-PERSON and "RESULT fails=2" without it). Its FAIL goes into the file as well.
+eval "$(declare -f pr_needs_person | sed '1s/^pr_needs_person/pr_needs_person_base/')"
+pr_needs_person(){ pr_needs_person_base "$@"; echo F >> "$UDV"; ud_sync; return 1; }
+# ud_person_stop <rows>: after a NEEDS-PERSON no further row is sent: the rows are NOT-RUN and the arm goes to its end
+# (the restore). rc 0 = stopped (the caller returns). Device run 2026-11-23 ud36c: UD4, UD5 (ii) and UD1 ran on a node
+# with no provclient after UD2's NEEDS-PERSON.
+ud_person_stop(){ [ "${PR_PERSON:-0}" = 1 ] || return 1
+	nj "$1: NOT-RUN — a NEEDS-PERSON earlier in the arm; straight to the restore"; "${2:-ud_end}" ${PR_WROTE_B:+wrote-b}; return 0; }
 pr_result(){ ud_sync; say "RESULT fails=$fails invalid=$invalid notjudged=$notjudged"
 	if [ "$fails" = 0 ] && [ "$invalid" = 0 ]; then echo "UNIT $PR_UNIT PASS"; return 0; fi
 	[ "$fails" = 0 ] && { echo "UNIT $PR_UNIT INVALID"; return 2; }; echo "UNIT $PR_UNIT FAIL"; return 1; }
@@ -151,6 +160,7 @@ ud_bootinfo(){ local o i; for i in 1 2 3; do o=$(qr "batman-slot bootinfo B 2>&1
 ud_pc(){	# pr_pc + the caps rule; PCBIN=old exempt. INVALID (rc 2) on a missing caps line, with the tool's sha
 	local o pb=new a; for a in "$@"; do [ "$a" = PCBIN=old ] && pb=old; [ "$a" = -- ] && break; done
 	o=$(pr_pc "$@"); printf '%s\n' "$o"
+	[ -n "$o" ] || { inv "provclient printed no output at all (not placed on the node after a reboot, or no ssh answer)"; return 2; }
 	ud_caps "$o" "$pb" || { inv "provclient printed no caps line (sha $(sha256sum < "$TOOLS/provclient-arm64" | cut -c1-16)): a stale tool — rebuild (scripts/dv-provclient-tools.sh)"; return 2; }
 	return 0; }
 ud_status(){ ud_pc h0.pem -- update-status "$H0" | grep '^RESULT update.status'; }
@@ -267,6 +277,7 @@ ud_guard_judge(){
 # ud_g: the owner-op guard (before an owner-op, after every reboot). A failed guard ends the arm: its owner-op rows are
 # INVALID "H0 not an owner", never FAIL; the restore still runs (ud_end). Main shell only (it may exit).
 ud_g(){ local s i v
+	ud_person_stop "the arm's remaining rows" && exit 2
 	s=$(ud_owner_scan); i=$(pr_info)
 	v=$(ud_guard_judge "$s" "$i" "$UDWANT")
 	[ "$v" = ok ] && return 0
@@ -488,9 +499,13 @@ arm_refuse(){
 	ud_end
 }
 
+# ud8_ok <status line> <helper log> <version from the prepare reply> <why>: phase 0 + 11 and the worker's refusal line,
+# "update worker: <version> refused, reason 11 (<why>)" (feed/batman-prov/src/node/updwork.go:291 logs r.Version, not
+# the verb; device run 2026-11-23 expected "prepare refused" and FAILed UD8 (1)-(4) on a correct refusal)
+ud8_ok(){ [ -n "$3" ] && ud_phase "$1" 0 11 && ud_why "$2" "update worker: $3 refused, reason 11 (" && ud_why "$2" "$4"; }
 arm_write(){
 	ud_begin 10800; PR_WROTE_B=1
-	local n w bi0 bi
+	local n w bi0 bi v
 	bi0=$(ud_bootinfo)
 	for n in 1 2 3 4; do
 		pr_lease_renew +1800 || break
@@ -499,9 +514,9 @@ arm_write(){
 		case $n in 1) w="is not a regular file" ;; 2) w="members after root.squashfs" ;; 3) w="data after the gzip stream" ;; 4) w="too many members" ;; esac
 		ud_check "$MHEX"; r=$UDR; [ "$(f "$r" ok)" = true ] || { no "UD8 ($n): check [$r]"; continue; }
 		ud_open "$MSUMS" "UD8 ($n)" && ud_upload "$(hostp "$GENF")" || { ud_close >/dev/null; continue; }
-		ud_g; ud_mark; r=$(ud_prepare "$MSUMS"); say "UD8 ($n) prepare: $r"
+		ud_g; ud_mark; r=$(ud_prepare "$MSUMS"); say "UD8 ($n) prepare: $r"; v=$(f "$r" version)
 		r=$(ud_poll 300 0 11); log=$(ud_log)
-		if ud_phase "$r" 0 11 && ud_why "$log" "update worker: prepare refused, reason 11 (" && ud_why "$log" "$w"; then ok "UD8 ($n): phase 0 + 11, worker why \"$w\""
+		if ud8_ok "$r" "$log" "$v" "$w"; then ok "UD8 ($n): phase 0 + 11, worker why \"$w\""
 		else no "UD8 ($n): [$r] $(grep 'batman-provhelper\[' <<< "$log" | tail -1 | cut -c1-200)"; fi
 		bi=$(ud_bootinfo); [ "$bi" = "$bi0" ] && ud_flag0 && ok "UD8 ($n): bootinfo B unchanged, tryboot flag 0" || no "UD8 ($n): B changed or flag set ($(tr '\n' ' ' <<< "$bi"))"
 	done
@@ -562,20 +577,38 @@ ud_watch(){ local o
 	o=$(q "d=/tmp/run/batman-dv/$RUN; mkdir -m 700 \$d 2>/dev/null; [ -d \$d ] && cd \$d || exit 1; setsid sh $PRD/ud9-watch-254.sh $1 $RUN $SQ /dev/mmcblk0p4 </dev/null >/dev/null 2>&1 & p=\$!; echo \$p > \$d/ud9.pid; RUN_ID=$RUN sh $PRD/prov-lease-254.sh undo-add kill-pg \$p ud9-watch && touch \$d/ud9.go && echo WATCH \$p")
 	UDW=$(sed -n 's/^WATCH //p' <<< "$o"); UDWID=$(sed -n 's/^UNDO-ADDED \([0-9]*\) .*/\1/p' <<< "$o")
 	[ -n "$UDW" ] && [ -n "$UDWID" ] || { inv "UD9 watcher ($1) not started / not registered: $(echo $o)"; return 1; }
+	# the pid in ud9.pid must be the watcher itself, alive, leader of its own group (a setsid that forked leaves a dead
+	# $! here, and the journal's kill-pg would miss the real one)
+	o=$(qr "[ -d /proc/$UDW ] && echo \"PG \$(sed 's/.*) //' /proc/$UDW/stat | cut -d' ' -f3) \$(tr '\\0' ' ' < /proc/$UDW/cmdline | grep -c ud9-watch)\" || echo GONE")
+	[ "$o" = "PG $UDW 1" ] || { inv "UD9 watcher ($1): pid $UDW is not a live group-leading watcher right after the start [$o]"; return 1; }
 	say "UD9 watcher $1: pid $UDW, journal line $UDWID"; return 0; }
 ud_watch_log(){ qr "tr -s ' ' < /opt/batdata/log/dv-ud9-$RUN.log 2>/dev/null | grep '^UD9-' | sed 's/ *\$//'"; }
 ud_watch_gone(){ local i; for i in $(seq 1 "${1:-30}"); do [ -z "$(qr "[ -d /proc/$UDW ] && tr '\\0' ' ' < /proc/$UDW/cmdline | grep -c ud9-watch")" ] && return 0; sleep 2; done; return 1; }
 ud_watch_done(){ local o; q "touch /tmp/run/batman-dv/$RUN/ud9.stop"
 	ud_watch_gone 30 || { no "the UD9 watcher $UDW did not exit"; return 1; }
 	o=$(pl undo-done "$UDWID"); grep -q "^UNDO-DONE $UDWID$" <<< "$o" || no "undo-done of the watcher line: $o"; }
-ud_watch_obs_end(){ local l mac
-	ud_watch_gone 30; l=$(ud_watch_log); say "UD9 observe: $l"; ud_watch_done
+ud_watch_obs_end(){ local l mac g=gone d
+	ud_watch_gone 30 || g=alive; l=$(ud_watch_log); say "UD9 observe: $l"
+	# no result line: say what is known (device run 2026-11-23 ud36c: an empty line, and a log removed as 4096 spaces)
+	[ -n "$l" ] || { d=$(ud9_diag "$g"); say "UD9 observe diagnosis: $d"; }
+	ud_watch_done
 	mac=$(field "$(qr "$ST")" mac)
 	if grep -qE '^UD9-OBS .* result=ok$' <<< "$l"; then
 		hostdir "$UD9_OBS_DIR" && { echo "run=$RUN"; echo "version=$V_NOW"; echo "mac=$mac"; echo "date=$(date -u +%FT%TZ)"; echo "$l" | grep '^UD9-OBS'
 			echo "log_sha256=$(qr "sha256sum < /opt/batdata/log/dv-ud9-$RUN.log | cut -c1-64")"; } > "$UD9_OBS_DIR/$V_NOW-${mac//:/}.txt" \
 			&& ok "UD9 premise (output side): fd 1 = B's root, pos grows — saved for the kill arm" || no "cannot write $UD9_OBS_DIR"
-	else inv "UD9 premise (output side) not shown: [$l]"; fi; }
+	else inv "UD9 premise (output side) not shown: [$l]${d:+ — $d}"; fi; }
+# ud9_diag <gone|alive>: why the observe watcher left no result line: was it still running at the read (no stream dd
+# seen), did its log stay the 4096 pre-sized spaces (no line written), and its syslog lines (each line also goes there)
+ud9_diag(){ local o
+	o=$(qr "f=/opt/batdata/log/dv-ud9-$RUN.log; if [ -f \$f ]; then echo \"LOGSIZE \$(wc -c < \$f) NONSPACE \$(tr -d ' \\n' < \$f | wc -c)\"; else echo NOLOG; fi; logread 2>/dev/null | grep 'ud9-watch' | tail -3 | cut -c1-160 | sed 's/^/SYSLOG /'")
+	ud9_diag_text "$1" "$o"; }
+ud9_diag_text(){ local s
+	case "$1" in alive) s="the watcher was still running at the read (no stream dd seen within the step)" ;; *) s="the watcher had exited" ;; esac
+	if grep -q '^NOLOG' <<< "$2"; then s="$s; its log does not exist (it never started)"
+	elif grep -q '^LOGSIZE [0-9]* NONSPACE 0$' <<< "$2"; then s="$s; its log holds no line (pre-sized spaces only)"; fi
+	grep -q '^SYSLOG ' <<< "$2" && s="$s; syslog: $(grep '^SYSLOG ' <<< "$2" | sed 's/^SYSLOG //' | tr '\n' '|')" || s="$s; no ud9-watch line in syslog"
+	echo "$s"; }
 
 # ud_cut_wait <boot8 before the prepare>: polls the watcher's p6 log every 2 s (254-v16-ud §1.5, B v5 m1). A UD9-MISS
 # line -> INVALID at once with NO pr_find (the node was never reset); only a lost ssh connection after UD9-PRE-B is
@@ -672,6 +705,7 @@ arm_trial(){
 			pr_wait_reverted && pr_pc_place && ud_g && ud_leak_ring "UD2: the A boot after the revert, at landing" boot "$(boot8)" && { r=$(ud_status); ud_phase "$r" 6 - && [ "$(field "$PR_STATE" slot)" = A ] && ok "UD2: reverted, A committed, phase 6" || no "UD2: after the revert [$r]"; }
 		fi
 	fi
+	ud_person_stop "UD4 / UD5 (i), UD5 (ii), UD1, UD10" ud_trial_end && return
 	bs=$(qr 'cat /opt/batdata/state/bad-slot 2>/dev/null'); say "bad-slot after UD2: [$bs]"
 	off1=$(qr "grep -b 'TRIAL-REVERTED' /opt/batdata/log/autocommit.log | tail -1 | cut -d: -f1")
 	# ---- UD4 (= UD5 i): a B that does not boot -> 6 + 18; B's boot evidenced by the PANIC record
@@ -692,6 +726,7 @@ arm_trial(){
 		fi
 	fi
 	# ---- UD1 (+ UD10, UD5 ii): T -> trial -> commit -> 5
+	ud_person_stop "UD5 (ii), UD1, UD10" ud_trial_end && return
 	bs=$(qr 'cat /opt/batdata/state/bad-slot 2>/dev/null')
 	[ "$bs" = "slot=B version=$hv" ] && ok "UD5 (ii) P: bad-slot = slot=B version=V before UD1" || inv "UD5 (ii) P: bad-slot [$bs]"
 	if ud_to3 "$VHEX" "$X" "$PAYH" UD1; then

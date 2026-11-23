@@ -58,7 +58,7 @@ chain0(){
 	o=$(timeout 900 ssh $SSHO root@$NODE "batman-slot apply $PDIR 2>&1 | tail -3" 2>/dev/null | tr -d '\r'); say "apply: $(echo $o)"
 	grep -q "armed as one-shot tryboot" <<< "$o" || { q "$DISARM; rm -f $HOLDF" >/dev/null; no "apply did not arm: $o"; return 1; }
 	PR_WROTE_B=1
-	o=$(q "${SLOTLK}m=\$(mktemp -d /tmp/run/batman-dv/c0.XXXXXX) && mount -t vfat $BFAT \$m && { c0=\$(sha256sum < \$m/cmdline.txt | cut -c1-16); grep -q batman_bypass \$m/cmdline.txt || sed -i '1s/\$/ batman_bypass=1/' \$m/cmdline.txt; sync; echo \"C0=\$c0 C1=\$(sha256sum < \$m/cmdline.txt | cut -c1-16) LINE=\$(cat \$m/cmdline.txt)\"; umount \$m; }; rmdir \$m")
+	o=$(qs "$(slk_stdin "${SLOTLK}m=\$(mktemp -d /tmp/run/batman-dv/c0.XXXXXX) && mount -t vfat $BFAT \$m && { c0=\$(sha256sum < \$m/cmdline.txt | cut -c1-16); grep -q batman_bypass \$m/cmdline.txt || sed -i '1s/\$/ batman_bypass=1/' \$m/cmdline.txt; sync; echo \"C0=\$c0 C1=\$(sha256sum < \$m/cmdline.txt | cut -c1-16) LINE=\$(cat \$m/cmdline.txt)\"; umount \$m; }; rmdir \$m")")
 	say "B cmdline.txt: $o"
 	slk_leak "$o" && { no "B cmdline edit not done, the slot flock is held by an orphan: $(grep '^SLOTLK-BUSY' <<< "$o")"; q "$DISARM; rm -f $HOLDF" >/dev/null; return 1; }
 	slk_busy "$o" && { inv "B cmdline edit not done: $(grep '^SLOTLK-BUSY' <<< "$o")"; q "$DISARM; rm -f $HOLDF" >/dev/null; return 1; }

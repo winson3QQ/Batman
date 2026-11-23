@@ -177,5 +177,25 @@ chk "host: no hand-copied SLOTLK prefix left" "$c" ""
 mkdir -p "$T/x/scripts/lib"; cp "$REPO/scripts/lib/slotlock-254.sh" "$T/x/scripts/lib/"
 o=$(bash -c '. "$1/scripts/lib/slotlock-254.sh"; echo "rc=$? $SLOTLK"' _ "$T/x" 2>/dev/null); has "host: a missing node lib is an error (rc != 0)" "$o" "^rc=[1-9]"
 has "host: a missing node lib gives a prefix that refuses, never an empty one" "$o" "SLOTLK-BUSY the harness lacks"
+# host: the lib never travels in ssh's argv (device run 2026-11-23: the nodes' dropbear resets a command over ~8 KB,
+# "9000: Connection reset by peer"; the lib is ~12 KB, so pr_slot_ticks / pr_slot_free / ab-selftest's sshl / eh13-pre /
+# prov-chain0 got no output at all). A stub ssh with that limit runs the remote side here.
+mkdir -p "$T/db" "$T/dbrun"; : > "$T/dbrun/batman-slot.flock"
+cat > "$T/db/ssh" <<'X'
+#!/bin/bash
+c=""; while [ $# -gt 0 ]; do case "$1" in -o|-p|-i) shift 2 ;; root@*) shift; c="$*"; break ;; *) shift ;; esac; done
+[ "${#c}" -gt 8000 ] && { echo "client_loop: send disconnect: Connection reset by peer" >&2; exit 255; }
+RUNDIR=$DB_RUN exec sh -c "$c"
+X
+chmod 755 "$T/db/ssh"
+chk "host: the lib is over the limit (else this case proves nothing)" "$([ "${#SLOTLK}" -gt 8000 ] && echo over)" over
+eval "$(sed -n '/^sshl() {/,/^}/p' "$REPO/scripts/ab-selftest.sh")"
+o=$(SSHOPTS=(-o BatchMode=yes); NODE=n; BUSYF=$T/busyf; DB_RUN=$T/dbrun PATH="$T/db:$PATH" sshl 'echo body-ran; read -r x && echo "STDIN-READ [$x]"' 2>&1)
+chk "host: ab-selftest sshl runs its body under the lib through an 8 KB-limited ssh, nothing reads the script text" "$o" "body-ran"
+o=$(DB_RUN=$T/dbrun PATH="$T/db:$PATH" bash -c '. "$1/scripts/lib/slotlock-254.sh"; slk_stdin "$SLK_LIB
+slk_ticks" | ssh -o x root@n "sh -s"' _ "$REPO" 2>&1)
+has "host: slk_stdin + sh -s: slk_ticks answers through the limited ssh" "$o" "^[0-9][0-9]*$"
+c=$(grep -rnE --include='*.sh' '[$][{]?(SLOTLK|SLK_LIB)' "$REPO/scripts" | grep -v "^$REPO/scripts/lib/slotlock-254.sh:" | grep -v "^$REPO/scripts/test-slotlock-254.sh:" | grep -v 'slk_stdin' | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' | sed "s#^$REPO/##" | cut -d: -f1,2 | tr '\n' ' ')
+chk "host: every SLOTLK / SLK_LIB use goes through slk_stdin (never ssh's argv)" "$c" ""
 echo "SLOTLOCK $P passed, $F failed"
 [ "$P" -gt 0 ] && [ "$F" = 0 ]

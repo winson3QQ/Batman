@@ -61,6 +61,10 @@ PH=$(printf '%s%s\n' "$KSALT" 'CHANGE-ME-NOW' | sha256sum | cut -c1-16)
 # q: one ssh (state changes are never retried); qr: read-only, retried on connection errors (255 / timeout)
 q(){ timeout "${QT:-120}" ssh $SSHO root@$NODE "$@" 2>/dev/null | tr -d '\r'; }
 qr(){ local o rc i; for i in 1 2 3 4 5 6; do o=$(timeout 90 ssh $SSHO root@$NODE "$@" 2>/dev/null); rc=$?; case $rc in 255|124) sleep 10 ;; *) printf '%s' "$o" | tr -d '\r'; [ -n "$o" ] && echo; return $rc ;; esac; done; return 255; }
+# qs / qrs <script>: q / qr with the script on stdin to `sh -s` (argv stays tiny: dropbear resets a command over ~8 KB);
+# qrs re-sends the whole script on each retry
+qs(){ printf '%s' "$1" | timeout "${QT:-120}" ssh $SSHO root@$NODE 'sh -s' 2>/dev/null | tr -d '\r'; }
+qrs(){ local o rc i; for i in 1 2 3 4 5 6; do o=$(printf '%s' "$1" | timeout 90 ssh $SSHO root@$NODE 'sh -s' 2>/dev/null); rc=$?; case $rc in 255|124) sleep 10 ;; *) printf '%s' "$o" | tr -d '\r'; [ -n "$o" ] && echo; return $rc ;; esac; done; return 255; }
 qp(){ timeout 60 ssh $SSHO root@$PEER "$@" 2>/dev/null | tr -d '\r'; }
 nbmac(){ qr "batctl n -n 2>/dev/null | tail -n +3 | grep -qiw -- $1"; }   # <mac> is in $NODE's batman neighbour table; -n: once /etc/bat-hosts is filled after boot, plain `batctl n` prints names (BCM2711-45d7_wlh0), not MACs
 nb02(){ nbmac "$PEERMAC"; }   # on 04: 02 (by its wlh0 MAC) is a neighbour — NOT for a run "as 02" (02 never lists itself): use nbmac <04's MAC> there
@@ -100,8 +104,8 @@ lg_age_say(){
 # ---- #254 S5 slot flock (254-p3-impl §3.7.3; the node half is scripts/node/slotlock-lib-254.sh) ----------------------
 # shellcheck source=scripts/lib/slotlock-254.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/slotlock-254.sh" || { echo "FAIL $PR_UNIT: no slot-lock helper"; exit 2; }
-pr_slot_ticks(){ qr "$SLK_LIB
-slk_ticks"; }
+pr_slot_ticks(){ qrs "$(slk_stdin "$SLK_LIB
+slk_ticks")"; }
 # pr_slot_free <what ran> <ticks before it>: after a step whose helper ran a lock-holding batman-slot verb reported done,
 # the flock is free within 1 s and no process started during the step still has the lock file open (a child that kept
 # fd 9: the missing `9>&-`). Held only by a legitimate process from outside the step (a batman-slot or a child of one,
@@ -114,8 +118,8 @@ slk_ticks"; }
 pr_slot_free(){
 	local o
 	case "$2" in "" | *[!0-9]*) inv "lock check after $1: no start time [$2]"; return 1 ;; esac
-	o=$(qr "$SLK_LIB
-slk_free 1 - $2:\$(slk_ticks)"); say "slot lock after $1: $o"
+	o=$(qrs "$(slk_stdin "$SLK_LIB
+slk_free 1 - $2:\$(slk_ticks)")"); say "slot lock after $1: $o"
 	case "$o" in
 		"SLKFREE ok"*) ok "the slot flock is free <= 1 s after $1 (${o#SLKFREE })" ;;
 		"SLKFREE leak"*) no "the slot flock is still held after $1 by what the step started: ${o#SLKFREE leak }" ;;
@@ -207,14 +211,21 @@ pr_acquire(){
 	o=$(pl acquire "$1"); grep -q '^LEASE ' <<< "$o" || { echo "FAIL lease: $o"; return 1; }
 	say "$o"
 	# what an earlier run left in its undo journal (a reboot mid-arm, the host gone): replayed in host mode under THIS
-	# lease (254-h4 §5.7); anything still left after that is a FAIL of the preconditions
-	o=$(pl undo-pending)
+	# lease (254-h4 §5.7); anything still left after that is a FAIL of the preconditions. THIS run's own lines are not
+	# an earlier run's: `undo-replay` skips RUN_ID (scripts/node/prov-lease-254.sh:107) and this run finishes them itself
+	# (undo-done inline, or its pr_end / undo). A re-acquire after one of this run's own reboots (pr_find after an
+	# apply, with the journalled rm-hold of prov-update-254's ud_hold still todo until ud_land) must not count them
+	# (device run 2026-11-23 ud36c trial: "undo still left after the replay: UNDO-PENDING <this run> 1 todo - rm-hold").
+	o=$(pr_undo_others)
 	if [ -n "$o" ]; then
 		say "undo left by an earlier run: $(echo $o)"; o=$(QT=1260 pl undo-replay); say "$(echo $o)"
-		o=$(pl undo-pending); [ -z "$o" ] || { echo "FAIL undo still left after the replay: $(echo $o)"; return 1; }
+		o=$(pr_undo_others); [ -z "$o" ] || { echo "FAIL undo still left after the replay: $(echo $o)"; return 1; }
 	fi
+	o=$(pl undo-pending | grep "^UNDO-PENDING $RUN "); [ -z "$o" ] || say "this run's own undo lines (finished by this run): $(echo $o)"
 	return 0
 }
+# pr_undo_others: the pending undo lines of every run but this one ("UNDO-PENDING <run> <id> todo <bind> <action…>")
+pr_undo_others(){ pl undo-pending | grep -v "^UNDO-PENDING $RUN "; }
 pr_lease_renew(){	# <+secs>: lease and deadman now + secs; the run deadline moves too
 	local s=${1#+} o; o=$(pl renew "$s"); grep -q '^ARMED' <<< "$o" || { no "lease renew +$s: $o"; return 1; }
 	PR_DEADLINE=$(( $(mono) + s )); return 0

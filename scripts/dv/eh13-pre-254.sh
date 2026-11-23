@@ -56,7 +56,7 @@ f=$(qr "$VCGET"); [ "$((f))" = 1 ] && ok "tryboot flag reads 1 after apply" || n
 o=$(QT=600 q "batman-slot stage-root $E/nosq 2>/dev/null; echo rc=\$?"); say "stage-root: $(echo $o)"
 grep -q '^rc=0$' <<< "$o" && grep -qE '^/dev/mmcblk0p4$' <<< "$o" && ok "stage-root prints B's root device only" || no "stage-root: $(echo $o)"
 f=$(qr "$VCGET"); [ "$((f))" = 0 ] && ok "tryboot flag 0 after stage-root (disarmed)" || no "tryboot flag after stage-root: [$f]"
-o=$(qr "$SLOTLK"'m=$(mktemp -d); mount -o ro /dev/mmcblk0p3 $m && { ls $m | grep -c "^BATMAN-BAD$"; umount $m; }; rmdir $m')
+o=$(qrs "$(slk_stdin "$SLOTLK"'m=$(mktemp -d); mount -o ro /dev/mmcblk0p3 $m && { ls $m | grep -c "^BATMAN-BAD$"; umount $m; }; rmdir $m')")
 if slk_leak "$o"; then no "BATMAN-BAD on B not read, the slot flock is held by an orphan: $(grep '^SLOTLK-BUSY' <<< "$o")"
 elif slk_busy "$o"; then inv "BATMAN-BAD on B not read: $(grep '^SLOTLK-BUSY' <<< "$o")"
 else [ "$o" = 1 ] && ok "B's boot FAT carries BATMAN-BAD" || no "BATMAN-BAD on B: [$o]"; fi
@@ -65,7 +65,7 @@ q "rm -rf $E"
 
 # 5. back to S0: restore cycle, B = V again, finish
 pr_end wrote-b
-o=$(qr "$SLOTLK"'m=$(mktemp -d); mount -o ro /dev/mmcblk0p3 $m && { ls $m | grep -c "^BATMAN-BAD$"; umount $m; }; rmdir $m')
+o=$(qrs "$(slk_stdin "$SLOTLK"'m=$(mktemp -d); mount -o ro /dev/mmcblk0p3 $m && { ls $m | grep -c "^BATMAN-BAD$"; umount $m; }; rmdir $m')")
 if slk_leak "$o"; then no "BATMAN-BAD on B after the rewrite not read, the slot flock is held by an orphan: $(grep '^SLOTLK-BUSY' <<< "$o")"
 elif slk_busy "$o"; then inv "BATMAN-BAD on B after the rewrite not read: $(grep '^SLOTLK-BUSY' <<< "$o")"
 else [ "$o" = 0 ] && ok "B's boot FAT has no BATMAN-BAD after the rewrite" || no "BATMAN-BAD on B after the rewrite: [$o]"; fi

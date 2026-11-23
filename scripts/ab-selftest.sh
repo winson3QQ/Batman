@@ -92,7 +92,7 @@ is_slot() { [[ ${1:-} =~ ^[AB]$ ]]; }
 # shellcheck source=scripts/lib/slotlock-254.sh
 . "$(dirname "$0")/lib/slotlock-254.sh" || exit 2
 sshl() {                             # sshn under the slot lock; a SLOTLK-BUSY line goes to $BUSYF, not to the caller
-  local o; o=$(timeout 60 ssh "${SSHOPTS[@]}" "root@$NODE" "${SLOTLK}$1" 2>&1)
+  local o; o=$(slk_stdin "${SLOTLK}$1" | timeout 60 ssh "${SSHOPTS[@]}" "root@$NODE" 'sh -s' 2>&1)   # stdin: the lib is over dropbear's ~8 KB command limit
   if slk_busy "$o"; then grep '^SLOTLK-BUSY' <<<"$o" >> "$BUSYF"; grep -v '^SLOTLK-BUSY' <<<"$o"; return 1; fi
   echo "$o"
 }

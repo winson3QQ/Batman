@@ -6,6 +6,10 @@
 #            (held for SLK_TRIES s, run dir unusable, open fails) the output holds a "SLOTLK-BUSY <why>" line and
 #            nothing else ran: the caller judges INVALID (slk_busy) — except a LEAK line (slk_leak), which is FAIL.
 #   SLK_LIB  the node lib alone (for slk_free / slk_ticks in a remote command)
+#   slk_stdin <remote script>  the script to feed on STDIN to `ssh … sh -s`. Never pass SLOTLK / SLK_LIB in ssh's argv:
+#            the nodes' dropbear resets a command over ~8 KB ("8000: ok", "9000: Connection reset by peer", device run
+#            2026-11-23) and the lib is ~12 KB, so every such call failed with no output. One brace group with stdin
+#            from /dev/null: nothing in it can read the rest of the script text.
 #   slk_busy <output>   rc 0 when <output> carries a SLOTLK-BUSY line (nothing was done on the node)
 #   slk_leak <output>   rc 0 when that line is "SLOTLK-BUSY LEAK": the lock is held by an orphan with no batman-slot
 #                       among its ancestors (a leaked fd 9: every slot verb is rc 14 until it exits or the node
@@ -19,6 +23,7 @@ slk_take || exit 1
 "
 	slk_busy(){ grep -q '^SLOTLK-BUSY' <<< "$1"; }
 	slk_leak(){ grep -q '^SLOTLK-BUSY LEAK' <<< "$1"; }
+	slk_stdin(){ printf '{\n%s\n} </dev/null\n' "$1"; }
 else
 	echo "FAIL scripts/lib/slotlock-254.sh: $_slk_f missing — refusing to mount a boot FAT without the slot lock" >&2
 	SLOTLK='echo "SLOTLK-BUSY the harness lacks scripts/node/slotlock-lib-254.sh"; exit 1
@@ -26,5 +31,6 @@ else
 	SLK_LIB=$SLOTLK
 	slk_busy(){ grep -q '^SLOTLK-BUSY' <<< "$1"; }
 	slk_leak(){ grep -q '^SLOTLK-BUSY LEAK' <<< "$1"; }
+	slk_stdin(){ printf '{\n%s\n} </dev/null\n' "$1"; }
 	false
 fi
