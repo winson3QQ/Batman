@@ -1,0 +1,39 @@
+# ud-recover-v7.txt — the 254-v16-ud.md §7.1 block as design v7 had it (git show d0a97dc:docs/design/254-v16-ud.md, blob a6dc9aa66d12): a negative control of scripts/dv/test-ud-recover-254.sh, never run on a node
+# --- step 0a: host lock. If a step prints "a stale lock (host crash / TaskStop)", check that no harness runs, then run the
+#     rm -rf that message names (prov-254.sh:181-188).
+# --- step 0b: read-only state (no lease needed)
+ssh root@@NODE@ 'cut -c1-8 /proc/sys/kernel/random/boot_id; cut -d. -f1 /proc/uptime; batman-slot active;
+  batman-slot is-trial; echo trial_rc=$?; cat /opt/batdata/state/dv-prov-dirty; cat /tmp/run/batman-dv/bt/lease-prov 2>&1;
+  ls -la /tmp/run/batman-dv/bt/@DEAD@ 2>&1; cat /tmp/run/batman-dv/@DEAD@/ud9.pid 2>&1'
+#   - lease-prov names @DEAD@ in THIS boot with expiry > uptime: its lease and deadman are live. Wait until
+#     uptime >= expiry + 60 (up to ~2 h for the trial arm; the deadman then replays @DEAD@'s journal and removes the
+#     lease, ble-lib-254.sh:349-363). Repeat 0b. No later step may run before that: every acquire would refuse
+#     (ble-lib-254.sh:302-305).
+#   - a later step's acquire prints "run @DEAD@ did not clean up (lease expired, no deadman left)": stop here.
+#     NEEDS-PERSON beyond this block. The prov lease has no recover command (section 7.1 note).
+#   - the dead run's staging dir is NOT removed by hand: the next acquire's gc_rundirs removes it once no lease and no
+#     live deadman names it, and prints its listing (ble-lib-254.sh:317-326).
+# --- step 0b2: only if 0b printed a pid from ud9.pid (same boot only; after a reboot the pidfile and the watcher are gone)
+ssh root@@NODE@ 'p=$(cat /tmp/run/batman-dv/@DEAD@/ud9.pid 2>/dev/null); case "$p" in ""|*[!0-9]*) echo NO-PID; exit 0;; esac;
+  [ -d /proc/$p ] || { echo GONE; exit 0; }; set -- $(cat /proc/$p/stat);
+  if [ "$5" = "$p" ] && tr "\0" " " < /proc/$p/cmdline | grep -q ud9-watch-254.sh; then kill -TERM -- -$p; sleep 1;
+  [ -d /proc/$p ] && echo STILL-ALIVE || echo KILLED; else echo NOT-THE-WATCHER; fi'
+# --- step 0c: only if 0b shows slot B. A held trial: wait for its revert, then repeat 0b. A committed B, or a trial
+#     without hold: back to A FIRST, with a lease but WITHOUT the journal replay (pr_stage + pl acquire, not
+#     pr_acquire). back_to_a's own pr_find then acquires and replays on A, after the reboot.
+PR_UNIT=prov-update-254 bash -c '. scripts/dv/prov-254.sh; pr_lock; PR_DEADLINE=$(( $(mono) + 3600 )); r=1
+  pr_stage && pl acquire 3600 | grep -q "^LEASE " && { back_to_a; r=$?; }; pl release; pr_unlock; exit $r'
+# --- step 1: replay @DEAD@'s journal under a NEW run id (undo-replay skips its own run, prov-lease-254.sh:100);
+#     the lease is released whether the replay succeeded or not
+PR_UNIT=prov-update-254 bash -c '. scripts/dv/prov-254.sh; pr_lock; PR_DEADLINE=$(( $(mono) + 3600 )); pr_acquire 3600; r=$?
+  pl release; pr_unlock; exit $r'
+# --- step 2: restore @DEAD@'s snapshot, rewrite B, finish. PR_WROTE_B is set after sourcing (prov-254.sh:47 resets
+#     it); PR_DM_BASE = the dead run's deadman lines already logged (prov-254.sh:569-571)
+PR_UNIT=prov-update-254 RUN=@DEAD@ PR_V=@V@ PR_BASE=member PR_S0_STATE=member bash -c '. scripts/dv/prov-254.sh
+  PR_WROTE_B=1; pr_lock; PR_BEGUN=1; PR_SNAPPED=1; PR_DEADLINE=$(( $(mono) + 7200 ))
+  PR_DM_BASE=$(qr "grep -c \"run=@DEAD@ prov deadman\" /opt/batdata/log/ble-dm-254.log 2>/dev/null"); PR_DM_BASE=${PR_DM_BASE:-0}
+  pr_acquire 7200 && PR_FINAL=1 pr_restore && pr_brewrite && pr_finish_snap; r=$?; pr_release; exit $r'
+# --- step 3: read-only end evidence, as pr_end gives it: status phase 0, no reason, no sha (section 4.1); no watcher
+PR_UNIT=prov-update-254 bash -c '. scripts/dv/prov-254.sh; pr_lock; PR_DEADLINE=$(( $(mono) + 600 )); pr_acquire 600 &&
+  pr_h0 && pr_pc_place && pr_pc h0.pem -- update-status "$H0" | grep "^RESULT update.status"
+  q "ps w | grep \"[u]d9-watch\" || echo NO-WATCHER"; pl release; pr_keys_drop; pr_unlock'

@@ -1,0 +1,7 @@
+# ud-recover-v5.txt — the 254-v16-ud.md §7.1 block as design v5 had it (git show 3ab6d27:docs/design/254-v16-ud.md, blob 484d8bd3f500): a negative control of scripts/dv/test-ud-recover-254.sh, never run on a node
+DEAD=<run from dv-prov-dirty>; V=<BATMAN_VERSION of S0, slot A>
+# 1. replay the dead run's journal: a NEW run id, so undo-replay treats DEAD as "another run" (prov-lease-254.sh:100)
+PR_UNIT=prov-update-254 bash -c '. scripts/dv/prov-254.sh; pr_lock; pr_acquire 3600 && pl release; pr_unlock'
+# 2. restore DEAD's snapshot, rewrite B, finish (clears the dirty flag)
+PR_UNIT=prov-update-254 RUN=$DEAD PR_V=$V PR_WROTE_B=1 PR_BASE=member PR_S0_STATE=member bash -c '. scripts/dv/prov-254.sh; pr_lock; PR_BEGUN=1; PR_SNAPPED=1; \
+  pr_acquire 7200 && PR_FINAL=1 pr_restore && pr_brewrite && pr_finish_snap; pr_release'

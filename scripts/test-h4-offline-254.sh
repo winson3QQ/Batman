@@ -39,5 +39,21 @@ t "dv-prov-tools wslx retry (stub wsl.exe)" '^TEST-WSLX: [1-9][0-9]* passed, 0 f
 # and the node p5 restore with p5 left mounted, run unmodified in a mount namespace (FAILs where none can be made)
 t "02 slot contract (pr_begin before pr_acquire, as02 / restore02 / part 1 refusal, PR_USES_02 lint)" '^================ test-pr02: [1-9][0-9]* passed, 0 failed' bash "$REPO/scripts/dv/test-pr02-254.sh"
 t "p5 restore with p5 mounted (mount namespace, harness mounts only)" '^p5-restore-ns: [1-9][0-9]* passed, 0 failed$' bash "$REPO/tests/prov-p1/p5-restore-ns.sh"
+# #254 v1.6 g4 PR B (docs/design/254-v16-ud.md §9): provclient (go vet + test as the repo owner: its module cache), the
+# helper decoder check (the real node.Handle, offline module cache), the stdout / stderr contract (root), signrel is
+# above; the generators; the undo actions in a mount namespace; the UD9 watcher on a stub /proc; the unit's judges and
+# host flows; the manual recovery block's dry run
+OWNER=$(stat -c %U "$REPO"); GO=$OWNER_HOME/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.linux-amd64/bin/go
+asowner(){ if [ "$(id -u)" = 0 ] && [ "$OWNER" != root ]; then runuser -u "$OWNER" -- env HOME="$OWNER_HOME" PATH="$(dirname "$GO"):/usr/bin:/bin" GOTOOLCHAIN=local "$@"; else env PATH="$(dirname "$GO"):$PATH" GOTOOLCHAIN=local "$@"; fi; }
+gotest(){ (cd "$1" && asowner env GOFLAGS="$2" GOPROXY=off go vet ./... && asowner env GOFLAGS="$2" GOPROXY=off go test -count=1 ./... 2>&1 | tail -3); }
+t "provclient go vet + test (bodies, key-1 reasons, sha / version, no passphrase-derived output, golden vectors)" '^ok[[:space:]]+batman-provclient' gotest "$REPO/tests/tools/provclient" -mod=vendor
+t "provclient-helpercheck: the vectors through the real node.Handle (pre-UD shape ESchema 20, new shape past the schema)" '^ok[[:space:]]+batman-provclient-helpercheck' gotest "$REPO/tests/tools/provclient-helpercheck" -mod=mod
+if [ "$(id -u)" = 0 ]; then t "provclient black-box: exec / proxy stdout byte-identical, caps on stderr only (root)" '^provclient-blackbox: 3 passed, 0 failed$' env GO="$GO" bash "$REPO/tests/tools/provclient/blackbox.sh"
+else tbad "provclient black-box needs root (node mode drops to uid 471)"; fi
+t "UD payload generators: per-generator acceptance + negative controls" '^test-p3-payloads: [1-9][0-9]* passed, 0 failed$' bash "$REPO/scripts/dv/test-p3-payloads-254.sh"
+t "undo: ssid-restore / rm-hold / undo-done / replay order (namespace)" '^[1-9][0-9]* PASS / 0 FAIL$' bash "$REPO/tests/judges/h4/test-undo-ud-254.sh"
+t "UD9 watcher on a stub /proc (go gate, fresh dd only, kill / cut order, no global sync, p3 re-read)" '^test-ud9-watch: [1-9][0-9]* passed, 0 failed$' bash "$REPO/scripts/dv/test-ud9-watch-254.sh"
+t "prov-update-254 judges + host flows (pr_pc refusal, cut poll, undo before restore)" '^test-prov-update: [1-9][0-9]* passed, 0 failed$' env H4_PY="$PY" bash "$REPO/scripts/dv/test-prov-update-254.sh"
+t "UD-RECOVER block dry run (stub node, real prov-254.sh)" '^test-ud-recover: [1-9][0-9]* passed, 0 failed$' bash "$REPO/scripts/dv/test-ud-recover-254.sh"
 t "P3 unit table (gen-p3-units --check)" '^gen-p3-units: ok, [1-9][0-9]* rows in [1-9][0-9]* units' python3 "$REPO/scripts/dv/gen-p3-units.py" --check
 echo "$P passed, $F failed"; [ $F = 0 ]

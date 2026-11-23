@@ -53,8 +53,15 @@ jobs:
           [ "$rc" != 0 ] || { echo "::error::SLK_TEST_HOLD=1 passed: the holder checks are blind"; exit 1; }
           n=$(grep -c 'the case judged nothing' "$RUNNER_TEMP/slneg.log")
           [ "$n" -ge 10 ] || { echo "::error::$n 'the case judged nothing' lines, want >= 10 (5 hold cases x 2 shells)"; exit 1; }
-      - name: "#254 preflight P9 node judge on fixtures ([all] / wbox slots / prov leftovers) under busybox ash"
+      - name: "#254 preflight P9 node judge on fixtures ([all] / wbox slots / prov leftovers, the UD-RECOVER block) under busybox ash"
         run: bash tests/prov-p1/p9-judge.sh scripts/node/prov-p9-254.sh
+      - name: "#254 v1.6 g4 PR B — the UD9 watcher on a stub /proc, the manual recovery block's dry run (stub node, real prov-254.sh)"
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          bash scripts/dv/test-ud9-watch-254.sh || rc=1
+          bash scripts/dv/test-ud-recover-254.sh || rc=1
+          exit $rc
       - name: "#254 rollback arm / launcher / rbfix offline — every §22.1 precondition, FAIL-RECOVERED (+ openmanetd), FAIL-NEEDS-PERSON, rbfix preconditions, pty drop + plain-& negative control"
         run: bash tests/prov-p1/rbarm.sh
       - name: "#254 prov-misc dry-run arm offline — atomic pid + presence, judge (order / hold / cap / lingering member), node-side INLOOP, session scan under /proc churn"
@@ -105,6 +112,13 @@ jobs:
           python signrel.py --selftest
       - name: "#254 H4 offline judges (254-h4 §16) — cap / hs / secrets, each with its bad-log cases"
         run: python tests/judges/h4/test-judges.py
+      - name: "#254 v1.6 g4 PR B — UD payload generators (acceptance + negative controls), prov-update-254 judges and host flows"
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          bash scripts/dv/test-p3-payloads-254.sh || rc=1
+          H4_PY=python bash scripts/dv/test-prov-update-254.sh || rc=1
+          exit $rc
 
   prov-p1:
     runs-on: ubuntu-latest
@@ -144,6 +158,12 @@ jobs:
         with:
           go-version: '1.26'
       - run: cd feed/batman-prov/src && GOFLAGS=-mod=vendor GOTOOLCHAIN=local go vet ./... && GOFLAGS=-mod=vendor GOTOOLCHAIN=local go test ./...
+      - name: "#254 v1.6 g4 PR B — provclient (vet + test, golden vectors) and the helpercheck module (the vectors through the real node.Handle)"
+        run: |
+          (cd tests/tools/provclient && GOFLAGS=-mod=vendor GOTOOLCHAIN=local go vet . && GOFLAGS=-mod=vendor GOTOOLCHAIN=local go test -count=1 .)
+          (cd tests/tools/provclient-helpercheck && GOFLAGS=-mod=mod GOTOOLCHAIN=local go vet ./... && GOFLAGS=-mod=mod GOTOOLCHAIN=local go test -count=1 -v ./...)
+      - name: "#254 v1.6 g4 PR B — provclient black-box (root): exec / proxy stdout byte-identical, the caps line on stderr only"
+        run: sudo env PATH="$PATH" HOME="$HOME" GOCACHE=/tmp/gocache-root GO="$(command -v go)" bash tests/tools/provclient/blackbox.sh
       # the prov_test seams (killpoints, version marker) and the root-only sock tests (SO_PEERCRED, socket-dir chown):
       # without the tag and root they never ran in CI (they t.Skip). Any SKIP here is a FAIL (254-h23 §23.9 gap review).
       - name: "#254 P1 Go unit tests as root with -tags prov_test (seams, sock)"
