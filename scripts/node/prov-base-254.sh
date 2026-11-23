@@ -33,7 +33,7 @@ RDL=${PROV_BASE_TEST_ROOT:-}/usr/lib/batman/rundir.sh
 LOCK=$RUNDIR/cfgsave.lock; P5=/dev/mmcblk0p5
 DVD=$RUNDIR-dv   # harness scratch next to the run dir: /tmp/run/batman-dv (root 0755 /tmp/run, procd)
 DIRTY=$ST/dv-prov-dirty; MARK=/etc/.dv-prov-mark-$RUN
-STATEFILES="lock-status mesh-expected mesh-joined prov-state prov-counters ble-ok ota-armed.mesh autocommit-hold-commit autocommit-hold-once autocommit-skip-once bad-slot autocommit.timeout"   # autocommit.timeout: state-set by prov-provd-wbox-254, restored here
+STATEFILES="lock-status mesh-expected mesh-joined prov-state prov-counters ble-ok ota-armed.mesh autocommit-hold-commit autocommit-hold-once autocommit-skip-once bad-slot autocommit.timeout update-last"   # autocommit.timeout: state-set by prov-provd-wbox-254, restored here; update-last: the helper's update record (254-v16-ud §4.1), kept byte for byte
 HOLDER=$DVD/batman-config-save-dvhold
 umask 077
 say() { echo "$*"; }

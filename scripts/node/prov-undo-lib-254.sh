@@ -22,6 +22,7 @@ UKD=/tmp/run/batman-prov-test
 UCNT=/tmp/run/batman-dv/undo-test
 U_PENDING=""	# P3 defines the pending-update path (pending-del): until then the action is refused (CRIT)
 U_DEVOPEN=""	# P3 defines the dev-open flag path (rm-file): until then only /tmp/run/batman-dv/ paths
+UHOLD=/opt/batdata/state/autocommit-hold-commit	# rm-hold: the one fixed path (254-v16-ud §4.3)
 
 urun_ok() { case "$1" in ""|*[!A-Za-z0-9_-]*) return 1 ;; esac; }
 ulog() {	# <run> <msg>: the run's undo log on p6 (same checks as dm_log), and stdout
@@ -51,6 +52,23 @@ u_path_ok() {	# rm-file: under /tmp/run/batman-dv/ (no .., no symlink anywhere o
 	return 0
 }
 u_name_ok() { case "$1" in ""|*[!$2]*) return 1 ;; esac; return 0; }	# <s> <bracket class body, unquoted: a range>, e.g. a-z_
+# ssid-restore's argument (254-v16-ud §4.3): "-" (no ssid at S0) or lower-case hex of 1-32 bytes with no NUL (00) and no
+# newline (0a) byte. The executor rebuilds each journal line with an unquoted `set -- $(awk …)`, so only these words
+# can ever be replayed: no glob character, no blank.
+u_hex_ok() {
+	[ "$1" = - ] && return 0
+	case "$1" in ""|*[!0-9a-f]*) return 1 ;; esac
+	[ $(( ${#1} % 2 )) = 0 ] && [ ${#1} -le 64 ] || return 1
+	_uh=$1; while [ -n "$_uh" ]; do case "${_uh%"${_uh#??}"}" in 00|0a) return 1 ;; esac; _uh=${_uh#??}; done
+	return 0
+}
+# udecode <hex>: the bytes, on stdout, without a trailing newline; constant formats only, the value never goes through an
+# unquoted expansion (a CR byte is kept; a newline cannot occur: u_hex_ok refuses 0a)
+udecode() {
+	_uh=$1; _uv=""
+	while [ -n "$_uh" ]; do _uv="$_uv$(printf "\\$(printf %03o "0x${_uh%"${_uh#??}"}")")"; _uh=${_uh#??}; done
+	printf %s "$_uv"
+}
 uvalid() {	# <run> <action> [args...]
 	_vr=$1; _va=$2; shift 2
 	case "$_va" in
@@ -67,13 +85,15 @@ uvalid() {	# <run> <action> [args...]
 	rm-file) [ $# = 1 ] && u_path_ok "$1" ;;
 	kill-pg) [ $# = 2 ] && isint "$1" && [ "$1" -gt 1 ] && u_name_ok "$2" a-z0-9- ;;
 	pending-del) [ $# = 0 ] && [ -n "$U_PENDING" ] ;;
-	ap-restore) false ;;	# P3 (key 20): C0 written back through halow-setkey; refused before P3
+	ap-restore) false ;;	# reserved (254-v16-ud §4.3: no ap-on in the UD PR), still refused
+	ssid-restore) [ $# = 1 ] && u_hex_ok "$1" ;;
+	rm-hold) [ $# = 0 ] ;;
 	test-count) [ $# -ge 1 ] && [ $# -le 2 ] && u_name_ok "$1" a-z0-9- && { [ $# = 1 ] || [ "$2" = stall ] || [ "$2" = fail ] || [ "$2" = slow ]; } ;;
 	*) false ;;
 	esac
 }
 # where a newly registered action goes, and what it is bound to (§5.7 "撐過重開")
-uwhere() { case "$1" in uci-restore|svc-enable) echo "p6 slot:$(uslot)" ;; p5-save) echo "p6 -" ;; kill-pg) echo "tmp boot:$(bootid)" ;; *) echo "tmp -" ;; esac; }
+uwhere() { case "$1" in uci-restore|svc-enable|ssid-restore) echo "p6 slot:$(uslot)" ;; p5-save|rm-hold) echo "p6 -" ;; kill-pg) echo "tmp boot:$(bootid)" ;; *) echo "tmp -" ;; esac; }
 umaxid() { cat "$UJT/$1/journal" "$UJP/$1/journal" 2>/dev/null | awk 'BEGIN{m=0} $1+0>m{m=$1+0} END{print m}'; }
 ujwrite() {	# <journal> <line>: append atomically (copy + mv), sync (p6)
 	_t=$1.tmp; { [ -f "$1" ] && cat "$1"; echo "$2"; } > "$_t" && chmod 600 "$_t" && mv "$_t" "$1" && sync
@@ -103,7 +123,7 @@ umark_done() {	# <journal> <id>
 }
 
 # ---- actions (each idempotent; rc 0 = the state is back and checked) ------------------------------------------------
-ubudget() { case "$1" in fw-start) echo 120 ;; p5-save) echo 180 ;; svc-start|svc-enable|bt-start) echo 60 ;; uci-*) echo 30 ;; test-count) echo 120 ;; *) echo 20 ;; esac; }
+ubudget() { case "$1" in fw-start) echo 120 ;; p5-save) echo 180 ;; svc-start|svc-enable|bt-start) echo 60 ;; uci-*|ssid-restore) echo 30 ;; test-count) echo 120 ;; *) echo 20 ;; esac; }
 umaster() { basename "$(readlink "/sys/class/net/$1/master" 2>/dev/null)" 2>/dev/null; }
 uns_has() { ip netns list 2>/dev/null | awk '{print $1}' | grep -qx "$1"; }
 uact() {	# <run> <mode> <action> [args...]   (the caller runs it in a subshell without fd 9)
@@ -136,6 +156,17 @@ uact() {	# <run> <mode> <action> [args...]   (the caller runs it in a subshell w
 	rm-shutdown-reason)	# the trial label `batman-slot apply` leaves in the run dir (E-H13 pre-step: no reboot follows)
 		. /usr/lib/batman/rundir.sh || return 1; rm -f "$RUNDIR/shutdown.reason"; [ ! -e "$RUNDIR/shutdown.reason" ] ;;
 	pending-del) rm -f "$U_PENDING"; [ ! -e "$U_PENDING" ] ;;
+	ssid-restore)	# the S0 AP ssid back (hex or "-"), committed under the product's umask, then read back exactly
+		umask 022
+		if [ "$1" = - ]; then
+			uci -q delete wireless.default_radio0.ssid; uci -q commit wireless || return 1
+			[ -z "$(uci -q get wireless.default_radio0.ssid)" ]
+		else
+			_sv=$(udecode "$1"); [ -n "$_sv" ] || return 1
+			uci -q set "wireless.default_radio0.ssid=$_sv" && uci -q commit wireless || return 1
+			[ "$(uci -q get wireless.default_radio0.ssid)" = "$_sv" ]
+		fi ;;
+	rm-hold) rm -f "$UHOLD"; [ ! -e "$UHOLD" ] ;;
 	test-count)	# test-h4-undo.sh only: count each execution; "stall" hangs the HOST executor (no lim); "fail" fails;
 			# "slow" takes 90 s in host mode (the lease runs out while the host executor works)
 		[ -d "$UCNT" ] || mkdir -m 700 "$UCNT"; ( umask 077; echo "$_xm $1" >> "$UCNT/$_xr.count" )
@@ -271,3 +302,20 @@ undo_pending() {
 	return 0
 }
 undo_runs() { undo_pending | awk '{print $2}' | sort -u; }
+# undo_done <run> <id>: the unit did the inverse inline and checked it; the line is marked done (254-v16-ud §4.3). An
+# unknown id (or one already done) is a FAIL: the line stays todo, so the journal still replays it (fail-closed)
+undo_done() {
+	isint "$2" || { fail "undo-done: id [$2]"; return 1; }
+	for _j in $(ujournals "$1"); do
+		if awk -v id="$2" '$1==id && $2=="todo" {f=1} END {exit !f}' "$_j"; then umark_done "$_j" "$2" && { ulog "$1" "done inline $2"; echo "UNDO-DONE $2"; return 0; }; fi
+	done
+	fail "undo-done: no todo line $2 in run $1's journal"; return 1
+}
+# ssid_hex: the S0 AP ssid read and encoded ON the node (the host strips CR bytes), decoded again with the executor's own
+# udecode and compared byte for byte: "HEX=<hex>|- RT=ok", or "HEX=? RT=bad" for a value the replay would refuse
+ssid_hex() {
+	_sv=$(uci -q get wireless.default_radio0.ssid)
+	[ -z "$_sv" ] && { echo "HEX=- RT=ok"; return 0; }
+	_sh=$(printf %s "$_sv" | hexdump -v -e '1/1 "%02x"')
+	if [ -n "$_sh" ] && [ "$_sh" != - ] && u_hex_ok "$_sh" && [ "$(udecode "$_sh")" = "$_sv" ]; then echo "HEX=$_sh RT=ok"; else echo "HEX=? RT=bad"; return 1; fi
+}

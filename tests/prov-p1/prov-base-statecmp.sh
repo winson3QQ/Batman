@@ -76,4 +76,12 @@ printf 'protB=1.0
 protB=2.0
 ' > $D/now-x/identity; PROTB_FROM=1.0 PROTB_TO=2.0 run 1 "protB VB twice (a second line) -> FAIL, not both dropped"
 echo same > $D/snap/identity; echo same > $D/now-x/identity
+# 254-v16-ud §4.1: update-last (the helper's update record) is a state file — whole-file sha. An update-last created
+# after the snapshot, or a changed one, must DIFF (with the pre-UD STATEFILES the same trees gave diffs=0)
+ul='{"sha":"aa","from_version":"1.5.14-wsl.35","to_version":"1.5.14-wsl.35"}'
+base; run 0 "update-last absent on both sides"
+base; setstate now-x update-last "$ul"; run 1 "update-last created after the snapshot -> DIFF"
+base; setstate snap update-last "$ul"; setstate now-x update-last "$ul"; run 0 "the S0 update-last kept byte for byte -> no DIFF"
+base; setstate snap update-last "$ul"; setstate now-x update-last "${ul/aa/bb}"; run 1 "update-last rewritten (another sha) -> DIFF"
+base; setstate snap update-last "$ul"; run 1 "the S0 update-last deleted -> DIFF"
 rm -rf $R; echo "STATECMP fails=$fails"; [ $fails = 0 ]

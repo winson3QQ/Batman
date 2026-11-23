@@ -14,6 +14,8 @@
 #   state                   lease, deadman, markers
 #   undo-add <action> [args] register an undo action for this run (254-h4 §5.7; prov-undo-lib-254.sh picks tmpfs / p6)
 #   undo                    host-mode undo executor for this run, under the lease lock (the host renews first)
+#   undo-done <id>          the unit did that line's inverse inline and checked it (254-v16-ud §4.3); unknown id = FAIL
+#   ssid-hex                read-only: the S0 AP ssid as "HEX=<hex>|- RT=ok|bad" (encoded on the node, round trip)
 #   undo-pending            read-only: every run's actions not done yet
 #   undo-replay             host mode for every OTHER run with something left (the next run's preflight, own lease)
 # The deadman (dm-fire, after <secs> + 5 without a renew): the undo executor (254-h4 §5.7: segment 1 = faults,
@@ -32,9 +34,9 @@ NORM=/opt/batdata/state/dv-prov-normalising
 UPH=/overlay/upper/usr/bin/batman-provhelper   # read only (cmp); never written or removed here
 
 cmd_stage_check() {
-	for t in "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$DIR/prov-undo-lib-254.sh" "$DIR/prov-ethsim-254.sh" "$SELF"; do file_ok "$t" || die "$t is not a root regular file with one link"; done
+	for t in "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$DIR/prov-undo-lib-254.sh" "$DIR/prov-ethsim-254.sh" "$DIR/ud9-watch-254.sh" "$SELF"; do file_ok "$t" || die "$t is not a root regular file with one link"; done
 	dir_ok "$DIR" drwx------ || die "$DIR is not a root 0700 directory"
-	sha256sum "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$DIR/prov-undo-lib-254.sh" "$DIR/prov-ethsim-254.sh" "$SELF" | sed "s#$DIR/##"
+	sha256sum "$DIR/ble-lib-254.sh" "$DIR/prov-wbox-254.sh" "$DIR/prov-undo-lib-254.sh" "$DIR/prov-ethsim-254.sh" "$DIR/ud9-watch-254.sh" "$SELF" | sed "s#$DIR/##"
 }
 role_fire_restore() {	# $1 run (or "recover")
 	# a cut-off judge first: it could kill provd / stop bluetoothd / set bondable after anything below (round-2 B m1)
@@ -96,6 +98,8 @@ case "$c" in
 	provd-check) provd_check ;;
 	undo-add) held; undo_add "$RUN_ID" "$@"; _x=$?; unlock; exit $_x ;;
 	undo) held; undo_run "$RUN_ID" host; _x=$?; unlock; exit $_x ;;
+	undo-done) held; undo_done "$RUN_ID" "${1:-}"; _x=$?; unlock; exit $_x ;;
+	ssid-hex) ssid_hex ;;
 	undo-pending) undo_pending ;;
 	undo-replay) held; _x=0; for _ur_ in $(undo_runs); do [ "$_ur_" = "$RUN_ID" ] && continue; echo "REPLAY $_ur_"; undo_run "$_ur_" host || _x=1; done; unlock; exit $_x ;;	# no restart: provd came back on its own (review A-M4)
 	radio-restore) held; radio_restore; radio_clean && echo "RADIO clean"; unlock ;;	# pr_release; under our lease only
