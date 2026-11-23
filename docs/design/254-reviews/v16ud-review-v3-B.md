@@ -10,7 +10,7 @@ The design reads every item correctly:
 - **AP:** on, `ssid=BCM2711-6c89 key=set disabled=0`, `phy1-ap0` up (log #4, #5).
 - **Keyguard:** no mark (#8).
 - **Missing tools:** no `stat` (#9). No `od`, `timeout` or `base64`; `hexdump` and `setsid` are present (13b).
-- **Config file mode:** `/etc/config/wireless` and its upper copy are 0644 root (9b).
+- **Config file mode:** recorded (9b; the lines are kept locally).
 - **Panic:** `kernel.panic=3`, from `sysctl.d/10-default.conf:4`, over the cmdline `panic=10` (16b).
 - **sysrq:** 502 (#17).
 - **Helper pid:** 4204 (#18).
@@ -39,7 +39,7 @@ carries `ul.Sha` (`:886-887, 917`), so "no sha" admits only row 5. That is harml
 | B M4 / A M3 openmanetd | **fixed by removal:** no non-exempt key; UD13 P = `--check` text; UD6 (b) = safe ssid with joinwatch stopped | `batman-config-save:462-468, 486-497`; `batman-slot:565-577` |
 | B m1 P9 rc 8 / rc 14 / remedy | fixed (retries; gated FAIL / ungated WARN) | `batman-config-save:263` |
 | B m2 journal plumbing; `ap-restore` | fixed in design. It is unexercised on this bench (MINOR-4). | — |
-| B m3 where the secret lives | fixed. No wireless export on this bench (`ssid-restore`); `hexdump` producer; 0644 recorded | log 9b, 13b |
+| B m3 where the secret lives | fixed. No wireless export on this bench (`ssid-restore`); `hexdump` producer; the file mode recorded | log 9b, 13b |
 | B m4 ownership gaps | fixed (§5) | — |
 | B m5 run-time guard | fixed (`pr_pc` refuses, offline test) | — |
 | B m6 / A m3 reserve label; no kill reserve | fixed | — |

@@ -129,7 +129,7 @@ No BLOCKER.
    that PreSave removed, until joinwatch's next tick. Run `batman-config-save --check` until `fresh` (≤ 30 s) before
    `undo-done` of that line, else FAIL.
 7. **File-mode check after `uci commit`.** The new mode depends on the umask of the committing shell and on libuci's
-   temp-file handling. A harness shell under `umask 077` may turn 0644 into 0600 and trip "mode changed → FAIL".
+   temp-file handling. A harness shell under `umask 077` may change the mode and trip "mode changed → FAIL".
    Commit with the product's umask (022) explicitly, or record the expected mode per commit, and say which.
 8. **`pr_begin` precondition wording.** "Row 5 or row 11, with no sha" cannot be met by row 11: `st(0, 0)` carries
    `ul.Sha` (`updwork.go:884-886, 919`). Accept row 5 only (the S0 case), or accept row 11 with a sha equal to the

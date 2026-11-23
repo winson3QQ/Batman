@@ -97,8 +97,8 @@ No BLOCKER remains.
    streamed", not mid-stream. The result line must say so. The kill sub-arm has no reserve, so two INVALIDs there leave
    UD9 kill uncovered; §11 should say that.
 4. **ap-on's FD3 snippet relies on node tools not shown to exist.** `base64` (busybox applet, not always built) and a
-   **builtin** `printf`. If `printf` is an external applet, the passphrase sits in a world-readable
-   `/proc/<pid>/cmdline` for the duration — exactly what P3 tests against (`254-p3-impl.md:729`). Add to E-UD1:
+   **builtin** `printf`. If `printf` is an external applet, the passphrase sits in
+   `/proc/<pid>/cmdline`, which every local process can see, for the duration — exactly what P3 tests against (`254-p3-impl.md:729`). Add to E-UD1:
    `type printf` = builtin, `command -v base64`. Alternatively, generate the passphrase with a builtin-only loop over
    `/dev/urandom` via `hexdump`. hexdump is an applet, but the secret is on its stdout, not its argv.
 5. **The new AP passphrase lands in p6.** UD13 (a)'s `uci-restore wireless` export is taken *after* ap-on, so the

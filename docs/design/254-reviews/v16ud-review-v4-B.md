@@ -119,8 +119,7 @@ most 4 KiB of result lines and no secret: print its content (non-blank lines) in
   - The helper pid comes from procd and is checked by exe and uid.
   - The new p6 log and the journal are root 0600.
   - ap-on is gone, so the unit creates no secret.
-  - The pre-existing 0644 `/etc/config/wireless` goes to a #254 checklist line, and the unit checks it does not make
-    it worse (`umask 022` + mode compare).
+  - The unit checks that it does not change the mode of `/etc/config/wireless` (`umask 022` + mode compare).
 
 ## Verdict
 

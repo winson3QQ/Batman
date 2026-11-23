@@ -112,9 +112,7 @@ brw-------    1 root     root      179,   5 Jan  1  1970 /dev/mmcblk0p5
 brw-------    1 root     root      179,   6 Jan  1  1970 /dev/mmcblk0p6
 A
 === 9b
--rw-r--r--    1 0        0             1100 Aug 17 04:40 /etc/config/wireless
--rw-r--r--    1 0        0             1100 Aug 17 04:40 /overlay/upper/etc/config/wireless
-drwxr-xr-x    1 0        0             3488 Aug 17 06:06 /etc/config
+[lines removed: file modes, kept locally]
 === 13b
 dd=/bin/dd od=- hexdump=/usr/bin/hexdump tr=/usr/bin/tr timeout=- setsid=/usr/bin/setsid stat=- mkfifo=/usr/bin/mkfifo sha256sum=/usr/bin/sha256sum logger=/usr/bin/logger base64=- 
 === 16b

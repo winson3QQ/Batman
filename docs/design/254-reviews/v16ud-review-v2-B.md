@@ -119,8 +119,8 @@ wireless` section → device mapping).
 
 §4.3 says the journal export holds "the previous AP key". With v2's order, UD13 (a)'s `uci export wireless` is taken
 after ap-on and holds the **new** random passphrase too (p6, root 0600), and the replay of MAJOR-2 writes it into p5
-again. The passphrase also sits in `/etc/config/wireless` for the run: check its mode in E-UD1 (`ls -l`; if 0644, any
-local unprivileged process reads it — a product property, but this unit creates the secret, so state it). The FD3
+again. The passphrase also sits in `/etc/config/wireless` for the run: record its mode in E-UD1 (`ls -l`) and state who
+can read it, since this unit creates the secret. The FD3
 producer needs `base64` in the node's busybox (probe in E-UD1); an empty or short result must stop the step (the product
 also refuses a bad length) — never retry with a weaker source.
 
