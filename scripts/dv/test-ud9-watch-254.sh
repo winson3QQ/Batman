@@ -99,4 +99,9 @@ for want in ok bad; do
 	grep -qE "^UD9-OBS fd1=$([ $want = ok ] && echo /dev/mmcblk0p4 || echo /dev/null) pos=[0-9]+,[0-9]+,[0-9]+ sq=$SQ result=$want$" <<< "$LOGL" && ! acted \
 		&& ok "observe: fd 1 $([ $want = ok ] && echo is || echo is not) B's root -> result=$want" || no "observe $want: [$LOGL]"
 done
+# /proc/uptime with a fraction of 08 / 09: the start time must still be read (it is invalid octal in $(( ))); else T0 is
+# empty and the 900 s deadline sits at uptime 900 s: a watcher started at 1000.08 s would time out at once
+mkproc 2000 "${STREAM[@]}"; echo "1000.08 50.00" > "$TR/proc/uptime"
+( sleep 2; echo "1899.50 50.00" > "$TR/proc/uptime"; sleep 2; touch "$TR/tmp/run/batman-dv/$RUNID/ud9.stop" ) & runw kill
+grep -qx 'UD9-MISS stop before go' <<< "$LOGL" && ! acted && ok "start uptime 1000.08: the deadline is start + 900 s (no early timeout)" || no "uptime .08: [$LOGL]"
 echo "test-ud9-watch: $P passed, $F failed"; [ $F = 0 ] && [ $P -gt 0 ]

@@ -30,7 +30,9 @@ case "$BDEV" in /dev/mmcblk0p[0-9]) ;; *) exit 2 ;; esac
 [ -n "$UR" ] || [ "$(id -u)" = 0 ] || exit 2
 LATE=$((SQ - 8388608)); HALF=$((SQ / 2))
 LOG=$LOGD/dv-ud9-$RUN.log
-upc() { read -r _u _ < "$PROC/uptime"; _s=${_u%.*}; _c=${_u#*.}; echo $(( _s * 100 + ${_c:-0} )); }	# centiseconds
+# centiseconds; the fraction loses one leading 0 first: "08" / "09" are invalid octal in $(( )) (ash and dash), and an
+# empty T0 put the 900 s deadline at uptime 900 s
+upc() { read -r _u _ < "$PROC/uptime"; _s=${_u%.*}; _c=${_u#*.}; _c=${_c#0}; echo $(( _s * 100 + ${_c:-0} )); }
 _n=0
 wline() {	# one 128-byte slot in place, fsync of the log only; then syslog
 	printf '%-127.127s\n' "$1" | dd of="$LOG" bs=128 seek=$_n count=1 conv=notrunc,fsync 2>/dev/null; _n=$((_n + 1))
