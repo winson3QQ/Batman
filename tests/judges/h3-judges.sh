@@ -24,7 +24,7 @@ rel(){	# <PR_PERSON> <release answer> <deadman count> <PR_DM_BASE>: run pr_relea
 	  pw(){ echo "pw $*" >> "$W/calls"; echo "UNBIND-ALL ok"; }
 	  q(){ echo "q $*" >> "$W/calls"; }
 	  pl(){ echo "pl $*" >> "$W/calls"; case "$1" in release) echo "$RELA" ;; renew) echo "ARMED $2 s" ;; undo) echo "${UNDOA:-UNDO undo_run host end rc=0}" ;; radio-restore) echo "RADIO clean" ;; provd-reset) echo "PROVD ok pid=1" ;; *) echo "STATE x" ;; esac; }
-	  qr(){ echo "$DMN"; }
+	  qr(){ case "$*" in *UD9W*) echo "UD9W ${UD9A:-0}" ;; *) echo "$DMN" ;; esac; }   # the UD9 watcher check (#254 v1.6 g4 PR B)
 	  RELA=$2 DMN=$3; eval "$src"; pr_release )
 }
 : > "$W/calls"; o=$(rel 0 RELEASED 0 0)
@@ -36,6 +36,7 @@ grep -q '^pl radio-restore' "$W/calls" && grep -q '^pl provd-reset' "$W/calls" &
 # 254-h4 §5.7: the host-mode undo runs under a renewed lease; something it left is a FAIL
 : > "$W/calls"; o=$(rel 0 RELEASED 0 0)
 grep -q '^pl renew 1200' "$W/calls" && grep -q '^pl undo$' "$W/calls" && tok "pr_release: renew + host-mode undo before the release" || tbad "pr_release undo calls: [$(tr '\n' '|' < "$W/calls")]"
+o=$(UD9A=1 rel 0 RELEASED 0 0); grep -q '^FAIL a ud9-watch is still alive after the run: 1 process' <<< "$o" && tok "pr_release: a live ud9-watch after the run FAILs (254-v16-ud §1.5-7)" || tbad "pr_release with a live watcher: [$(echo $o)]"
 o=$(UNDOA='UNDO FAIL 2 link-del h4v0 (rc 1)' rel 0 RELEASED 0 0); grep -q '^FAIL undo: UNDO FAIL 2 link-del' <<< "$o" && tok "pr_release: an undo that left something FAILs" || tbad "pr_release with a failed undo: [$(echo $o)]"
 o=$(UNDOA=$'UNDO seg1 rm /tmp/batman-fault.x undo_run host end rc=0\nUNDO FAIL 2 link-del h4v0 (rc 1)\nUNDO undo_run host end rc=1' rel 0 RELEASED 0 0); grep -q '^FAIL undo: UNDO FAIL 2 link-del' <<< "$o" && tok "pr_release: an end line inside another line is not the end line" || tbad "pr_release with a forged end line: [$(echo $o)]"
 o=$(rel 0 "FAIL lease is not ours or expired" 0 0)
