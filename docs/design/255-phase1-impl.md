@@ -1,8 +1,8 @@
-# #255 第 1 期實作設計：bench 上以 608B 作為節點身分（v4）
+# #255 第 1 期實作設計：bench 上以 608B 作為節點身分（v5）
 
-範圍：把 bench 上的空白 ATECC608B（`255-608b-config.md` v6 的設定）接成節點的身分後端，並讓協定、app、驗證工具配合。**只在開發版生效**：field 版 app 第 1 期之後仍拒絕所有節點（量產根要等選定量產晶片與 #256）。**第 1 期的晶片映像不是發行產物**，只裝在 bench 節點上。
+範圍：把 bench 上的空白 ATECC608B（`255-608b-config.md` v7 的設定）接成節點的身分後端，並讓協定、app、驗證工具配合。**只在開發版生效**：field 版 app 第 1 期之後仍拒絕所有節點（量產根要等選定量產晶片與 #256）。**第 1 期的晶片映像不是發行產物**，只裝在 bench 節點上。
 不含：信任模型（第 2 期）、量產晶片、secure boot、晶片背書、入庫計數器（晶片設定 §10）。
-依據：`255-608b-config.md` v6；`255-key-authority.md` v3.1（K13–K16、K20、K21 約束本期）；`255-threat-model.md` v2.1。
+依據：`255-608b-config.md` v7；`255-key-authority.md` v3.1（K13–K16、K20、K21 約束本期）；`255-threat-model.md` v2.1。
 基準：main 4eba26d，加上 PR 1（#379，`Identity` 介面，未 merge）。節點路徑以 `feed/batman-prov/src/` 為根；app 的 Rust 以 `app/rust/` 為根。標記：✅ 對過原始碼；⚠️ 推論或未驗證。
 
 | 版本 | 審查 |
@@ -10,7 +10,8 @@
 | v1 | A：REJECT（1 / 7 / 14）；B：REJECT（2 / 10 / 12）。兩位都同意 PR 1 縮成純重構後可先做（已做，#379） |
 | v2 | 拿掉背書；建置決定後端；主機端回答認領挑戰。與晶片設定 v4 一起審：A：0 / 4 / 13，APPROVE-WITH-CHANGES；B：0 / 7 / 9，REJECT |
 | v3 | `sn` 維持節點 id；開機順序不變；H1；驗證矩陣。與晶片設定 v5 一起審：A：0 / 3 / 16，APPROVE-WITH-CHANGES；B：1 / 7 / 15，REJECT |
-| v4 | PR 順序可執行（PR 2 的晶片映像只跑 helper 層的測項）；憑證只在沒有身分快取時寫入；讀 `sn` / 欄位 4 的 app 路徑補齊；晶片的 ECDH 失敗不被吞掉；H0 / H1 / H2 分工；拿掉 OTA 後端欄位。對應：`255-reviews/v6set-changes.md` |
+| v4 | PR 順序可執行（PR 2 的晶片映像只跑 helper 層的測項）；憑證只在沒有身分快取時寫入；讀 `sn` / 欄位 4 的 app 路徑補齊；晶片的 ECDH 失敗不被吞掉；H0 / H1 / H2 分工；拿掉 OTA 後端欄位。與晶片設定 v6 一起審：A：0 / 2 / 15；B：0 / 4 / 16。兩位都是 APPROVE-WITH-CHANGES |
+| v5 | 憑證大小預算；`CheckMac` 回傳錯誤；PR 2 晶片節點上跑哪些測項；H0 四個簽章迴圈與逾時；對照表改正；外來後端檢查兩種映像都做。對應：`255-reviews/v7set-changes.md` |
 
 ## 0. 決定（技術細節，由作者定案並說明理由）
 
@@ -36,7 +37,7 @@
 - 保存：身分「只寫一次」，`batman-config-save --prov-only` 拒絕與 p5 不同的身分（`:435-436`），覆蓋層與 p5 不同就凍結（`:429-431`，`boot.go:112-114`）。
 - 試用開機：provd 連上 helper 滿 60 秒後 helper 寫 `$RUNDIR/provd-stable`（`stable.go:30-50`）；autocommit 每次輪詢重讀；`is-trial` 回傳碼不是 1 一律當試用（`trial.go:31-35`）。
 - OTA：發行資訊的簽章內容只接受固定的鍵（`release.go:262-264`）；app 推的更新只比對板子名稱（`update.go:311-313`）。
-- 驗證工具：`provclient node claim / claim-attacker / claim-attacker-chal / replay` 在節點上以 root 讀 `claim.secret`（`tests/tools/provclient/main.go:517`）；擁有者的簽章由主機端回答，`SIGN` → 簽章者的迴圈有三份：`prov-lib-254.sh:52-68`、`prov-254.sh`、`fresh-254.sh:77-93`；`prov-lib-254.sh:12` 把所有輸出 tee 進執行紀錄。preflight 今天只讀 `BATMAN_VERSION`，並要求全部節點同版本（`dv-preflight.sh:32, 41-42`）。
+- 驗證工具：`provclient node claim / claim-attacker / claim-attacker-chal / replay` 在節點上以 root 讀 `claim.secret`（`tests/tools/provclient/main.go:517`）；擁有者的簽章由主機端回答，`SIGN` → 簽章者的迴圈有四份：`prov-lib-254.sh:52-68`、`prov-254.sh`、`fresh-254.sh:77-93`、`prov-bench-s0-254.sh:335-352`（`pcn`）；`prov-lib-254.sh:12` 把所有輸出 tee 進執行紀錄。preflight 今天只讀 `BATMAN_VERSION`，並要求全部節點同版本（`dv-preflight.sh:32, 41-42`）。
 - 登入基準（#329）：連線到讀完狀態 2.8–5.6 秒；10 次登入 9 次 ≤ 20 秒（`329-app-uiux.md:998, 1021`）。
 
 ## 2. 節點端
@@ -50,9 +51,10 @@
 | `Cert()` | 自簽 `dev:` 憑證 | 槽 8 讀出後截到外層 DER 的長度；DER 之後不是全 0 = 未燒錄完成 |
 | `ECDHPub()`、`ECDH(peer)` | 檔案 ECDH 金鑰 | 槽 2，明文輸出；晶片錯誤回「暫時失敗」（§2.4） |
 | `SignPurpose(p, fields)` | DAC 簽 | 只接受 `Session`：槽 0 外部簽章（直通 nonce 載入 `SHA-256(label ‖ fields)` 再簽）；`Peer` 拒絕 |
-| `CheckMac(chal, resp)` | 軟體計算 | 晶片的 CheckMac，槽 5（晶片自己用它的序號） |
+| `CheckMac(chal, resp)` | 軟體計算，錯誤永遠是 nil | 晶片的 CheckMac，槽 5（晶片自己用它的序號）；晶片錯誤回「暫時失敗」 |
 | `Backend()` | "file" | "se" |
 
+- **`CheckMac` 改成回傳 `(bool, error)`**（PR 2）：今天回 `bool`（`identity.go:21-22`），晶片錯誤會被當成「回應錯誤」，在 `claim.replay` 還會計入每小時 10 次的失敗上限（`node.go:620-636`），晶片一次不穩就能讓擁有者一小時內無法復原（審查 v6set-A M2）。`claimVerify`（`node.go:574-575`）與 `claim.replay` 把錯誤回成可重試的錯誤碼，不計入失敗次數。檔案後端永遠回 nil，行為不變。
 - 晶片序號在節點端只出現在晶片內部、身分快取的 `chip_sn` 與憑證擴充欄位，不經過 `SN()`。
 - `SignPurpose` 的用途是固定列舉：PR 3 加 `Session`（`"batman-node-session-v1" ‖ h`，`h` 剛好 32 位元組）；刪除 `Static`；`ECDH` 只留給檔案後端；`Peer` 只留給檔案後端（`peers/challenge` 今天被拒絕，`session.go:62`；晶片後端沒有用途就不帶，審查 v5set-A m8）。
 
@@ -70,8 +72,8 @@
 
 **順序與今天相同**：`boot.Run` → 載入身分 → `applyState` → 計時器 → `BootFinish` → `Listen`。晶片映像改這幾處：
 
-1. **`identSum`**（不讀晶片）：快取 5 個檔案存在且 sha 清單正確 = 有身分；`backend` 不是 "se" = **「有身分、但是別的後端」**，`boot.Run` 在依 rc 分支之前就判 `unknown(backend-mismatch)`，不寫、不作廢任何東西（覆蓋層與 p5 都檢查；審查 v5set-B m4）。
-2. **`Env.Generate`（rc 7 / 9）**：只在常駐程式裡 = 「讀晶片，晶片已燒錄（S4）就寫出身分快取」；晶片無回應或未燒錄 → 錯誤 → `unknown(generate-failed)`。`--boot` 這類命令列模式裡的 `Generate` 一律回「只有常駐程式能讀晶片」的錯誤，所以命令列模式不碰晶片（審查 v5set-B m1）。
+1. **`identSum`**（不讀晶片；**兩種映像共用**）：依 `backend` 的檔案清單齊全且 sha 清單正確 = 有身分；`backend` 與這個映像的後端不同 = **「有身分、但是別的後端」**，`boot.Run` 在依 rc 分支之前就判 `unknown(backend-mismatch)`，不寫、不作廢、不產生任何東西（覆蓋層與 p5 都檢查）。檔案映像也做這個檢查，所以 #255 之後的檔案映像在 rc 7 / 9 也不會蓋掉晶片快取產生軟體身分（審查 v6set-A、v6set-B）。`backend-mismatch` 與 `identity-mismatch` 一樣：不重試、不打開 socket。
+2. **`Env.Generate`（rc 7 / 9）**：寫快取時先寫暫存目錄、完成後改名（斷電在中途 = 沒有快取，下次開機再產生）。只在常駐程式裡 = 「讀晶片，晶片已燒錄（S4）就寫出身分快取」；晶片無回應或未燒錄 → 錯誤 → `unknown(generate-failed)`。`--boot` 這類命令列模式裡的 `Generate` 一律回「只有常駐程式能讀晶片」的錯誤，所以命令列模式不碰晶片（審查 v5set-B m1）。命令列模式的 `copyDir` 等今天呼叫 `keystore.Load` 的地方，在晶片映像只讀快取檔案。
 3. **載入身分**（今天 `select {}` 的位置）：載入快取並與晶片比對——快取的 `sn` 與 `chip_sn` 等於晶片的、`node.cert` 等於槽 8 的憑證且結構相符（晶片設定 §2，節點不驗開發根簽章）。
    - 相符 → 往下照常。
    - 晶片無回應或未燒錄 → 等待後重試整個 `boot.Run` + 載入。等待從 10 秒開始，每次加倍，最長 5 分鐘（每次重跑都會掛載 p5）。重跑得到的新結果取代原本的判斷（`n.Verdict`、`BootFinish` 用的值）。`prov-state` 只在內容改變時寫（`writeProvState` 先比對；#104）。
@@ -87,7 +89,9 @@
   - `psks.get`：任何一個 ECDH 失敗就整個回錯誤，**不省略**；provd 對非成功的回應在下一個週期重試並保留舊的一組（`server.go:513`）（審查 v5set-A M2）。
   - `openSecrets`：晶片錯誤回可重試的錯誤碼，不是 `EBadObject`。
   - 開機完成未完成的無線變更時：晶片錯誤歸類為暫時性（`transientCheck`），`.txn` 保留、下次再試。
-- **試用中服務後晶片失敗**：helper 刪除 `provd-stable`，並設一個與 `stableWriter.done` 並列的旗標，這次開機不再寫它；試用不會被確認。helper 是 `provd-stable` 唯一的寫者。
+  - 所有解開已存的網路密碼的路徑都經過 `decryptSecrets`，它今天對任何失敗都回 nil：呼叫者 `openStoredSecrets`、`netRoot`（`psks` 的會員 PSK）、`finishWantsRadio` 與完成無線變更的路徑，都改成分辨「晶片暫時失敗」與「資料錯誤」。
+  - `CheckMac`：見 §2.1。
+- **試用中服務後晶片失敗**：同一個序列立刻重試一次；**重試也失敗**才刪除 `provd-stable`，並設一個與 `stableWriter.done` 並列的旗標，這次開機不再寫它，試用不會被確認（一次短暫的錯誤不會讓好的 OTA 回退，審查 v6set-B）。helper 是 `provd-stable` 唯一的寫者。
 - autocommit 已確認之後晶片才失敗：確認不撤回（不在本期範圍）；helper 照常服務並重試。
 - 沒有 A/B 的卡（`is-trial` 回 2）：不再寫 `provd-stable`，但沒有回退；helper 照常服務並重試。
 
@@ -117,12 +121,13 @@
 |---|---|
 | Go | build tag `prov_se`；`Makefile` 由 `BATMAN_PROV_SE=1` 帶入。DV 的 `se-fail` 單元需要 `prov_test` + `prov_se` 的白箱晶片映像：`build-board.sh --wbox`、`lint-wbox.sh` 一起支援 |
 | 重新建置 | firmware fork 的 `build-board.sh` 比照 `prov_test`，記錄上次的參數，不同就清掉 helper 的建置。firmware repo 的 PR，列在 §9 |
+| I2C 設定 | `dtparam=i2c_arm=on` 在 firmware 的 `distroconfig.txt`，兩種板子、兩種映像共用，OTA 不會帶（審查 v6set-B）。做法：加進共用檔，兩種映像都開；bench 晶片節點本來就是重燒卡。檔案映像多開一個 I2C 匯流排，E0b 確認不影響現有裝置。⚠️ firmware repo 的檔案未在本 repo 查證 |
 | 版本標記 | `batman-provhelper --version` 印出後端；`/etc/batman-build` 加 `BATMAN_PROV_BACKEND=se`（只有晶片映像加；沒有 = 檔案映像）。晶片映像的 `BATMAN_VERSION` 與同一個 commit 的檔案映像相同（preflight 要求全部節點同版本） |
 | OTA | **不改**。後端不符的更新一定會在試用時回退：晶片映像到檔案節點 → `backend-mismatch`；#255 之後的檔案映像到晶片節點 → 檔案後端拒絕 `backend=se`；#255 之前的映像到晶片節點 → `identity-lost`。三種都不會打開 socket，`provd-stable` 不寫（審查 v5set-B M7） |
 | shell | `prov-lock.sh` 的 `PROV_IDFILES` 與 `prov_ident_ok`、`batman-config-save` 的 `--prov-identity` 與 `--prov-get` 檢查（`:229, 521-536`）、`96-batman-config-migrate` 的複製（`:158-163`）改成依 `backend` 決定檔案清單：file = 今天的 6 個；se = `backend sn node.cert chip_sn` 加 5 行以內的 `sha256` |
 | 映像內容 | 晶片映像要有 `kmod-i2c-bcm2835`、`kmod-i2c-dev`、`dtparam=i2c_arm=on` 與 `/dev/i2c-1` 權限規則，經 board diffconfig（絕不裸跑 `make defconfig`）。今天的映像只有 `kmod-i2c-brcmstb`（`boards-and-builds.md:136`） |
 | 出貨閘門 | 晶片映像不發行，閘門只檢查**發行的檔案映像**不含 se 後端、假晶片、`se-lab`、`se-sign`、不含鎖定指令的實驗建置、或 `prov_test` × `prov_se` |
-| CI | `go test` 加 `-tags prov_se` 與 `-tags prov_se,prov_test` 兩步（H1），有哨兵：找不到 `prov_se` 測試就 FAIL。PR 2 之前這一步在 main 上是紅的，照既有的先例標明（`ci.yml:172`） |
+| CI | `go test` 加 `-tags prov_se` 與 `-tags prov_se,prov_test` 兩步（H1），有哨兵：找不到 `prov_se` 測試就 FAIL。PR 2 之前這一步在 main 上是紅的，照既有的先例標明（`ci.yml:172`）。`dv-sbx` 加一個 `prov_se,prov_test` 的 helper 建置 |
 
 ## 3. 協定
 
@@ -142,18 +147,19 @@
 
 | 項目 | 內容 |
 |---|---|
-| 格式 | X.509 v3，完整 DER，≤ 416 位元組（槽 8；E15，PR D 時在開發者電腦上先算）；簽章演算法 ecdsa-with-SHA256，外層與 TBS 的 AlgorithmIdentifier 必須相同 |
-| 簽發者 | 開發根（P-256，自簽 CA，只用於 bench） |
-| 主體 | CN = `se:<device_id>`；serialNumber = `<device_id>` |
+| 格式 | X.509 v3，完整 DER，**≤ 416 位元組**（槽 8）；簽章演算法 ecdsa-with-SHA256，外層與 TBS 的 AlgorithmIdentifier 必須相同 |
+| 大小預算 | 兩位審查以 Python `cryptography` 實際建出 v4 的格式，是 448–469 位元組，放不下（審查 v6set-A M1、v6set-B M1）。v5 拿掉三樣沒有用的東西：主體的 serialNumber（晶片樣式的節點 id 由 CN 與主體金鑰決定）、BasicConstraints（app 只接受開發根直接簽發、結構固定的憑證，不建憑證鏈，CA 旗標沒有作用）、長的簽發者名稱（開發根的 CN 用 1–2 個字元）；序號欄位用 1–8 位元組；私有 OID 盡量短。預估約 390 位元組。PR D 的 CI 以最大可能的值（簽章 72 位元組、所有整數取最長）建出憑證，斷言 ≤ 416；做不到就改用槽 8 + 槽 9 兩個槽（只改最終影像的槽 9 設定，變體不受影響），晶片設定改版再審 |
+| 簽發者 | 開發根（P-256，自簽，只用於 bench），CN 1–2 個字元 |
+| 主體 | 只有 CN = `se:<device_id>` |
 | 主體金鑰 | 槽 1 公鑰 |
-| 擴充欄位 | BasicConstraints CA:FALSE；私有 OID，非關鍵，內容 CBOR `{0: 槽 0 公鑰, 2: 槽 2 公鑰, 7: 晶片序號 9 位元組}`（公鑰 33 位元組壓縮格式，解壓時檢查在曲線上）。其他任何關鍵擴充欄位 → 拒絕 |
+| 擴充欄位 | 只有一個：私有 OID，非關鍵，內容 CBOR `{0: 槽 0 公鑰, 2: 槽 2 公鑰, 7: 晶片序號 9 位元組}`（公鑰 33 位元組壓縮格式，解壓時檢查在曲線上）。其他任何擴充欄位 → 拒絕 |
 | 有效期間 | 2020-01-01 起（同 `DevCert`，`keystore.go:102-104`）到 9999-12-31。沒有任何驗證者檢查時間 |
 
 ### 3.2 app 的驗證（`nodecert.rs` 與讀它的地方）
 
 - **樣式判斷**：以開發版 app 裡的開發根公鑰驗憑證簽章，通過且 CN 以 `se:` 開頭 = 晶片樣式；自簽且 CN 以 `dev:` 開頭 = 檔案樣式；其他一律拒絕。不依簽發者名稱的文字判斷。欄位組合必須完全符合該樣式。
-- 兩種樣式共同（`common()`）：`device_id = hex(第 7 欄)`，且等於憑證主體 serialNumber（今天的規則）。
-- 晶片樣式另外：`device_id = hex(SHA-256(憑證主體金鑰)[:9])`、CN = `se:<device_id>`；擴充欄位剛好 0、2、7 三項。
+- 兩種樣式共同（`common()`）：`device_id = hex(第 7 欄)`。檔案樣式照今天要求主體 serialNumber 等於它；晶片樣式改為要求 CN = `se:<device_id>`（晶片樣式的憑證沒有 serialNumber，以控制大小）。
+- 晶片樣式另外：`device_id = hex(SHA-256(憑證主體金鑰)[:9])`；擴充欄位剛好 0、2、7 三項。
 - **`id/prove`**：收到 msg2 後立刻送，驗 `"batman-node-session-v1" ‖ h` 的簽章，**要求 low-s**，公鑰 = 檔案樣式的憑證金鑰 / 晶片樣式擴充欄位的槽 0 公鑰；驗過之前不送任何其他請求，也不保存任何東西（`claimflow.rs:168-182` 的 `PersistPending` 移到證明之後）。三個交握驗證點都要做：`loginflow`、`claimflow`、`replayflow`。
 - **認領回應用的序號**：`Verified` 加 `claim_sn`（檔案樣式 = 第 7 欄；晶片樣式 = 擴充欄位的晶片序號）。`claimflow.rs:172` 與 `replayflow.rs:204` 都改用它（審查 v5set-A M1）。
 - **`ecdh_pub`**：檔案樣式 = 欄位 4 + `sig_ecdh`；晶片樣式 = 擴充欄位的槽 2 公鑰，都放進 `Verified`。`approve.rs:525` 匯入加入申請時改用 `verify_offline` 的結果，不直接讀欄位 4。
@@ -169,14 +175,14 @@
 
 ### 3.4 測試向量（H2）
 
-晶片樣式與負向向量：晶片序號 ≠ 節點 id（假晶片也是）；**晶片樣式的 `claim/replay` 回應**與**晶片樣式加入申請的匯入**（兩者在今天的程式上 FAIL）；晶片樣式多了欄位 4 或 6；擴充欄位的槽 0 公鑰被換掉；擴充欄位多一項或少一項；未知的關鍵擴充欄位；CN 或 serialNumber 與 `SHA-256(主體金鑰)[:9]` 不符；開發根簽的 `dev:`；自簽的 `se:`；field 版拿到有效的晶片 `node_cert`（`verify_first_contact` 與 `verify_offline` 都要 `Untrusted`）；`id/prove` 的簽章換成另一條連線的；high-s 的 `id/prove` 簽章 → 拒絕。`fakeMsg2` 的長度要等於真實 msg2（`noise.go:108-109`），並檢查晶片樣式的 msg2 在框架與 MTU 限制內。
+晶片樣式與負向向量：最大可能大小的晶片憑證 ≤ 416 位元組；晶片序號 ≠ 節點 id（假晶片也是）；**晶片樣式的 `claim/replay` 回應**與**晶片樣式加入申請的匯入**（兩者在今天的程式上 FAIL）；晶片樣式多了欄位 4 或 6；擴充欄位的槽 0 公鑰被換掉；擴充欄位多一項或少一項；未知的關鍵擴充欄位；CN 或 serialNumber 與 `SHA-256(主體金鑰)[:9]` 不符；開發根簽的 `dev:`；自簽的 `se:`；field 版拿到有效的晶片 `node_cert`（`verify_first_contact` 與 `verify_offline` 都要 `Untrusted`）；`id/prove` 的簽章換成另一條連線的；high-s 的 `id/prove` 簽章 → 拒絕。`fakeMsg2` 的長度要等於真實 msg2（`noise.go:108-109`），並檢查晶片樣式的 msg2 在框架與 MTU 限制內。
 
 ## 4. 驗證工具與測試（三個 harness PR，都比對應的產品 PR 先進 main）
 
 ### 4.1 H0：主機端回答認領挑戰（v1.6 打完 tag 之後 merge）
 
-- **`MAC` 行**：`provclient node claim`、`claim-attacker`、`claim-attacker-chal`、`replay` 在節點上不再讀 `claim.secret`，改成在 stdout 輸出 `MAC <ClientChal hex>`；主機端 `provclient mac` 依**節點清單**找到這台的紀錄，用紀錄裡的序號（檔案節點 = 節點 `sn`；晶片節點 = 晶片序號）與秘密算出回應，回 `MACR <hex>`。三份 `SIGN` 迴圈（`prov-lib-254.sh:52-68`、`prov-254.sh`、`fresh-254.sh:77-93`）都加 `MAC` 分支。
-- **檔案節點的秘密**：每次**產生新身分之後**（執行開始時，以及每個重建 p5、產生新身分的單元在那一步之後）以 `scp` 直接存成檔案，不經過 stdout（`prov-lib-254.sh:12` 會把 stdout 寫進執行紀錄）。存放處是 Windows 使用者自己的暫存目錄（`%LOCALAPPDATA%\Temp` 下，Windows ACL 只有該使用者能讀；Git Bash 在 NTFS 上的 `chmod` 無效），`trap` 在每一種結束時刪除（審查 v5set-A m13、v5set-B M4）。
+- **`MAC` 行**：`provclient node claim`、`claim-attacker`、`claim-attacker-chal`、`replay` 在節點上不再讀 `claim.secret`，改成在 stdout 輸出 `MAC <ClientChal hex>`；主機端 `provclient mac` 依**節點清單**找到這台的紀錄（節點清單：H0 在 harness 加一個檔案，以節點名稱為鍵，記錄後端與紀錄的位置；節點換 IP 不影響。若 harness 已有節點清單就加欄位），用紀錄裡的序號（檔案節點 = 節點 `sn`；晶片節點 = 晶片序號）與秘密算出回應，回 `MACR <hex>`。四份 `SIGN` 迴圈（`prov-lib-254.sh:52-68`、`prov-254.sh`、`fresh-254.sh:77-93`、`prov-bench-s0-254.sh:335-352`）都加 `MAC` 分支；CI 加一條檢查：每個處理 `SIGN` 的地方都有 `MAC` 分支。`provclient` 等主機回答時有逾時（30 秒，與簽章相同），逾時 = 單元 FAIL，不會卡住（審查 v6set-B M3）。
+- **檔案節點的秘密**：每次**產生新身分之後**（執行開始時，以及每個重建 p5、產生新身分的單元在那一步之後）以 `scp` 把 `claim.secret` 與 `sn` 一起直接存成檔案，不經過 stdout（`prov-lib-254.sh:12` 會把 stdout 寫進執行紀錄）。存放處是 Windows 使用者自己的暫存目錄（`%LOCALAPPDATA%\Temp` 下，Windows ACL 只有該使用者能讀；Git Bash 在 NTFS 上的 `chmod` 無效），`trap` 在每一種結束時刪除（審查 v5set-A m13、v5set-B M4）。
 - **log 洩漏檢查搬到主機端**：`prov-claim-254.sh:49-51`、`scripts/node/prov-p1-254.sh:63-66` 改成把 logread 複製回主機比對；另加一條：執行紀錄裡不得出現任何秘密。
 - **preflight**：讀 `BATMAN_PROV_BACKEND`（沒有 = file），與節點清單比對，不同就拒絕。今天的節點清單都標 file、映像都沒有這個鍵，所以 v1.6 的執行不受影響。
 - **負向對照**：把節點上的 `claim.secret` 暫時移開——舊工具在 `claim.secret` 讀取失敗，新工具照常 PASS；之後移回。並在 v1.6 的映像上跑一次全套確認不退步。
@@ -184,10 +190,11 @@
 
 ### 4.2 H1：晶片節點的單元（PR D 之後、PR 2 merge 之前；前提是 §10 Q8 已決定）
 
-- `se-fail`（白箱晶片映像）：開機時晶片無回應；試用中無回應 → 回退；**試用中服務後才失敗**（注入後立刻送一個會碰晶片的請求，如 `claim.verify`，再等 autocommit 的輪詢）→ 不確認；已認領、開機時晶片無回應、有未完成的無線變更 → 晶片恢復後變更完成；**PSK 取得時晶片無回應 → 恢復後會員可登入**（今天的 `psks()` 會 FAIL）。
+- `se-fail`（白箱晶片映像）：開機時晶片無回應；試用中無回應 → 回退；**試用中服務後才失敗**（注入後立刻送一個會碰晶片的請求，如 `claim.verify`，再等 autocommit 的輪詢）→ 不確認；已認領、開機時晶片無回應、有未完成的無線變更 → 晶片恢復後變更完成；**PSK 取得時晶片無回應**：在 helper 層以 `provclient` 呼叫 `psks.get`，故障中回錯誤、恢復後回完整的一組（今天的 `psks()` 會回成功但少了 PSK，所以 FAIL）；**`claim.replay` 時晶片無回應**：回可重試的錯誤，失敗計數不增加（今天的程式計數增加，FAIL）。
 - 開機的後端檢查：rc 0 與 rc 7（p5 有身分、沒有紀錄）各放一份 `backend=file` 的身分 → `backend-mismatch`，不寫任何東西。
 - 晶片映像不產生 `node.key`（負向對照：一個 wbox 修補讓晶片映像退回檔案後端，這條必須 FAIL）。
-- 以 provd 的 uid `open("/dev/i2c-1")` → EACCES（負向對照：權限 0644 的假裝置讓它 FAIL）；承租容器內 → ENOENT。
+- **每個案例各有一個變異體當負向對照**（例如拿掉 `provd-stable` 撤回、拿掉 `psks` 的錯誤回傳、拿掉 `CheckMac` 的錯誤分辨），在 H1 的 PR 裡列出。
+- 以 provd 的 uid `open("/dev/i2c-1")` → EACCES（負向對照：權限 0644 的假裝置讓它 FAIL；`prov-wbox` 的 bind 允許清單加 `/dev/i2c-1`）；承租容器內 → ENOENT。
 - 燒錄拒絕：常駐在跑、試用開機、序號不符、已有身分快取時 `se-burn cert`。
 - CI 的 `prov_se` 兩步與哨兵。
 - **shell 與 CI 測試的晶片版本**：`tests/prov-p1/cfgsave-identity-freeze.sh`、`cfgsave-provget-rc10.sh`、`cfgsave-frozen-nomount.sh`、`sbx/cases/cfgsave.sh`、`sbx/cases/helper.sh`、`prov-lock-init.sh` 各加晶片快取的案例；`tests/wbox/96-noprov.patch`、`96-norestore.patch` 確認仍能套用。
@@ -195,16 +202,19 @@
 
 | 單元 | 讀什麼 / 假設什麼 | 晶片節點上 |
 |---|---|---|
-| `prov-provd-254`、`prov-provd-wbox-254` | `identity/sn` | 照常 |
+| `prov-provd-254`、`prov-provd-wbox-254` | `identity/sn`；需要 provd 組出 `node_cert` | PR 2 的晶片節點上**不能跑**（PR 2 的 provd 仍呼叫 `sign.static`，晶片後端拒絕，provd 不會就緒，`server.go:337, 531`）；PR 3 起照常 |
 | `prov-overlay-wipe-254`、`fresh-254` | `node.cert` | 照常；但 `fresh-254.sh:45` 的 `prov_files` 計數在晶片節點是 5 |
 | `chain1-254` | `prov_files=7`（`:201`）；重建 p5 後「新身分」（`:162-207`） | 改：晶片節點期望 5 個檔案、重建 p5 後**同一個** `device_id`（C5） |
 | `prov-bench-s0-254` | 重建 p5 後記下「新的序號」（`:44, 68`） | 改：晶片節點期望同一個 `device_id` |
-| `prov-chain0-254` | `node.key` | 改：斷言 `node.key` 不存在 |
+| `prov-chain0-254` | `node.key` | 改：今天的「沒有 `node.key`」在晶片節點上永遠成立，判不出東西；改為斷言快取剛好 5 個檔案、`backend=se`、沒有任何私鑰檔、`sn` 等於晶片的（退回檔案後端的變異體讓它 FAIL） |
 | `prov-sec-254`（兩處） | `node.key` 權限與負向對照 | 改：判 `/dev/i2c-1` 權限，0644 假裝置為負向對照 |
-| `prov-p1-254`、`prov-claim-254` | `claim.secret` | H0 已改為主機端 |
+| `prov-p1-254` | `claim.secret`；`node.key`、`ecdh.key` 的權限（`:39-41`） | 秘密：H0 已改為主機端；權限：晶片節點改判快取檔權限與 `/dev/i2c-1` |
+| `prov-claim-254` | `claim.secret` | H0 已改為主機端 |
+| `prov-p2-254`（`scripts/node`） | 等 provd 的 log「re-signing node_cert」 | H2 隨 `node_cert` v2 調整 |
 | `prov-downgrade-254` | 裝舊映像 | 改成負向測試：sysupgrade 到舊映像 → 凍結 `identity-lost` → 試用回退 |
 | `prov-legacy-upgrade-254`、`negctl-old-slot` | 舊映像、拿掉 p5 紀錄 | H1 實跑判斷；任何要在晶片節點上拿掉的單元先問使用者 |
 
+- **PR 2 晶片節點上的範圍**：只跑 helper 層（經 `helper.sock`）的單元與上表標為可跑的單元；需要 provd 或 app 的單元（上表標「不能跑」的）到 PR 3 才跑。這是 PR 2 → PR 3 之間暫時少跑，不是從全套拿掉；PR 3 的全套把它們都跑回來。
 - 證據：在變異體與 PR 2 之前的產品上 FAIL，在 PR 2 的 rc 上 PASS。
 
 ### 4.3 H2：v2 協定的測試資料與工具（PR 3 merge 之前）
@@ -281,6 +291,10 @@
 | 換憑證 / 換開發根 | — | 只能重燒卡後 `se-burn cert`、再認領（晶片設定 §5.3）；已有快取時 `se-burn cert` 拒絕；快取寫出後槽 8 被改 → 凍結 | H1、PR 2 |
 | 把檔案節點改成晶片節點（v1.6 之後） | — | 只能重燒卡：使用者同意後重燒晶片映像（A/B 卡）→ `se-burn` → 認領。會清掉 p6 的承租資料；app 裡舊的紀錄由使用者刪除。這違反「模擬已部署 = 只 sysupgrade」的角色規則一次，要使用者同意 | 手動，結果附在 #255 |
 | 燒錄中斷電 | — | 晶片設定 §5.2，從讀回狀態接續 | 假晶片 CI；F1 手動 |
+| `Generate` 寫快取時斷電 | 今天的產生流程 | 快取先寫暫存目錄再改名：斷電 = 沒有快取 → 下次開機 rc 7 再產生（同一顆晶片、同一個身分） | PR 2：killpoint |
+| 第一次保存到 p5 時斷電 | 今天的行為 | 同今天（保存是今天的程式）；快取由晶片決定，重新保存結果相同 | DV 既有 |
+| `sysupgrade -n`（不保留設定） | 覆蓋層清空、p5 保留 → rc 0 還原 | 同；還原的快取再與晶片比對 | DV（bench 晶片節點） |
+| 開機時 p5 讀不到（rc 1 / 8） | 今天的行為 | 同今天；載入時以覆蓋層的快取與晶片比對 | DV 既有 |
 | 認領中斷電 | 紀錄交易 | 同 | DV 既有 |
 | I2C 驅動 | — | 編進映像、開機載入；開啟失敗 = 無回應，重試 | E0b |
 | 晶片映像裝到沒有 `/dev/i2c-1` 的機器 | — | 無回應 → 不服務、重試 | CI |
@@ -297,6 +311,7 @@
   - 燒錄時的節點：開發根相信節點回報的公鑰，所以只在剛燒好卡、開發者在場時燒錄；`se-sign` 拒絕重複的槽 1 公鑰。
   - 被攻破的受測節點對驗證工具：主機端依節點清單選紀錄與序號，不依節點輸出。
   - 開發根外洩：能做出開發版 app 信任的假節點；開發版不對外，field 版不信任它。
+  - 供應鏈：晶片是向經銷商買的空白品，由我們設定；不同型號在 E1 / `se-burn` 的版本檢查被擋下；版本相同但行為不同的仿冒品 bench 接受，量產晶片另議（晶片設定 §10）。
 - **秘密**：認領秘密只在開發者電腦與晶片裡；經 stdin 傳一次；不進 repo、log、命令列參數。檔案節點秘密的主機副本只在每次執行的暫存目錄。開發根私鑰加密存放，與燒錄紀錄分開。晶片的 ECDH 明文輸出經過 I2C（bench 接受）。
 - **失敗時**：拿不到身分就不服務（fail-closed）；任何不一致都凍結，不自動修正；晶片的暫時錯誤不被當成成功或「物件錯誤」。
 - 本期不改變：PSK、網路密碼的保管、認領鎖定。
@@ -334,7 +349,7 @@
 | Q5 | **登入時間**：量測後把差異交給使用者決定（K15） | 量測後 |
 | Q6 | 入庫計數器（U9）移到選量產晶片時，U9 的措辭到時一起確認 | 告知 |
 | Q7 | **K13 的例外**：升級到 PR 3 那一版時，若試用失敗自動回退，已換成新版 app 的手機登不進回退後的節點；復原是在手機上裝回前一版 app（`adb install -r -d`）或重新 OTA。只影響 bench，只發生一次 | 待使用者確認 |
-| Q8 | **bench 晶片節點**：需要一台 Pi 4 + HaLow 跑晶片映像。(a) 把 02 或 04 改成晶片節點（每次發行的檔案映像全套只剩一台檔案節點）；(b) 另備第三台 Pi 4 + HaLow。另外：實驗台若是 Pi 4，可以兼作 H1 / PR 2 的晶片節點（要換掉 Raspberry Pi OS、裝 A/B 卡），但沒有 HaLow 就跑不了 mesh 測項 | **H1 之前要決定** |
+| Q8 | **bench 晶片節點**：需要一台 Pi 4 + HaLow 跑晶片映像。(a) 把 02 或 04 改成晶片節點（每次發行的檔案映像全套只剩一台檔案節點）；(b) 另備第三台 Pi 4 + HaLow。另外：實驗台若是 Pi 4，可以兼作 H1 / PR 2 的晶片節點（要換掉 Raspberry Pi OS、裝 A/B 卡），但沒有 HaLow 就跑不了 mesh 測項。決定時一併寫明：哪片 HAT 焊哪顆晶片、HaLow 模組是否要在 HAT 之間移動 | **H1 之前要決定** |
 
 ## 11. 尚未查證
 
