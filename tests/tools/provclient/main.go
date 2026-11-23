@@ -362,6 +362,9 @@ type client struct {
 	h       []byte
 	signIn  *bufio.Scanner
 	retried bool // the one reconnect after a close on the first request
+	// oprequest mode only (cmdOpRequest): requests are captured instead of sent, signatures made with a local key
+	fake func(verb string, args cmap) (uint64, cmap)
+	key  *ecdsa.PrivateKey
 }
 
 // callTimeout: PROVCLIENT_TIMEOUT_S (default 30). The claim-lock fix's busy path (a held config-save lock) makes one
@@ -377,6 +380,9 @@ func callTimeout() time.Duration {
 }
 
 func (cl *client) call(verb string, args cmap) (uint64, cmap) {
+	if cl.fake != nil {
+		return cl.fake(verb, args)
+	}
 	cl.id++
 	req := cEnc(cmap{{uint64(1), verb}, {uint64(2), cl.id}, {uint64(3), args}})
 	cl.c.SetDeadline(time.Now().Add(callTimeout()))
@@ -419,6 +425,9 @@ func (cl *client) call(verb string, args cmap) (uint64, cmap) {
 }
 
 func (cl *client) sign(purpose string, msg []byte) []byte {
+	if cl.key != nil {
+		return signLowS(cl.key, msg)
+	}
 	fmt.Printf("SIGN %s %s\n", purpose, hex.EncodeToString(msg))
 	if !cl.signIn.Scan() {
 		die("signer gone")
@@ -696,7 +705,47 @@ func main() {
 		cmdKeygen(os.Args[2])
 	case "selftest":
 		selftest(os.Args[2])
+	case "oprequest":
+		cmdOpRequest(os.Args[2:])
 	default:
 		die("unknown mode %q", os.Args[1])
+	}
+}
+
+// cmdOpRequest: oprequest <keyfile> <h hex> <nonce_helper hex> -- <op> [args] — the P3 op's requests exactly as node mode
+// builds them (the same p3Op code path; only the transport differs): the helper's nonce is the given one, the owner-op
+// is signed with <keyfile>, and every request other than "nonce" is printed as "REQ <verb> <args hex>" instead of sent.
+// tests/tools/provclient-helpercheck feeds them to the real node.Handle (#254 v1.6 g4 PR B: bulk.open answered code 3
+// "owner-op signature / nonce" on 04). Test tool only: no socket, no privilege drop.
+func cmdOpRequest(a []string) {
+	if len(a) < 5 || a[3] != "--" {
+		die("usage: oprequest <keyfile> <h hex> <nonce_helper hex> -- <op> [args]")
+	}
+	h, err1 := hex.DecodeString(a[1])
+	nh, err2 := hex.DecodeString(a[2])
+	if err1 != nil || err2 != nil || len(h) != 32 || len(nh) != 32 {
+		die("oprequest: h and nonce_helper are 32 bytes of hex")
+	}
+	args := a[4:]
+	cl := &client{h: h, key: loadKey(a[0])}
+	cl.fake = func(verb string, x cmap) (uint64, cmap) {
+		if verb == "nonce" {
+			return 0, cmap{{uint64(1), make([]byte, 32)}, {uint64(2), nh}}
+		}
+		fmt.Printf("REQ %s %s\n", verb, hex.EncodeToString(cEnc(x)))
+		return 0, cmap{}
+	}
+	hexArg := func(i int) []byte {
+		if len(args) <= i {
+			die("%s: argument %d missing", args[0], i)
+		}
+		b, err := hex.DecodeString(args[i])
+		if err != nil {
+			die("%s: argument %d not hex", args[0], i)
+		}
+		return b
+	}
+	if !p3Op(cl, args[0], args, nil, hexArg) {
+		die("oprequest: %q is not a P3 op", args[0])
 	}
 }
