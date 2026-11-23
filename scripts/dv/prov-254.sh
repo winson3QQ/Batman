@@ -923,6 +923,20 @@ pr_claim(){
 # pr_info: "state=<s> gen=<g> owners=<n> rm=<r>"
 pr_info(){ pr_pc owner.pem -- info | sed -n 's/^RESULT info.state code=0 state=\([a-z]*\) gen=\([0-9]*\) owners=\([0-9]*\) rm=\([a-z0-9]*\).*/state=\1 gen=\2 owners=\3 rm=\4/p'; }
 pr_keys_drop(){ wsl_ rm -rf "$WSLK"; q "rm -rf $PCD"; }
+# ud_owner_scan (#254 v1.6 g4 PR B, 254-v16-ud §4.4 item 1, §7.1 step 3): read-only, who owns the node's record.
+# One line: "UDSCAN v=<v> state=<s> gen=<g> rm=<r> sha=<sha256 of prov.cbor> keys=<fp,…> H0-IN-RECORD=yes|no", where each
+# fp is sha256[:16 hex] of the hex of a 65-byte public point in the record (owner, enc, admin keys: public values only)
+# and H0 = the bench owner key (pr_h0; "no" when H0 is unset or not a 65-byte point). Nothing secret is read or printed.
+ud_owner_scan(){ local o h=${H0:-} m
+	[[ $h =~ ^04[0-9a-f]{128}$ ]] || h=none
+	o=$(qr "x=\$(hexdump -v -e '1/1 \"%02x\"' /etc/batman-prov/prov.cbor 2>/dev/null); echo \"META \$(head -1 /etc/batman-prov/prov.meta 2>/dev/null)\"
+		echo \"SHA \$(sha256sum < /etc/batman-prov/prov.cbor 2>/dev/null | cut -c1-64)\"
+		echo \"KEYS \$(printf '%s' \"\$x\" | grep -o '584104[0-9a-f]\{128\}' | cut -c5- | while read -r k; do printf '%s' \"\$k\" | sha256sum | cut -c1-16; done | tr '\n' ',')\"
+		case \"\$x\" in *$h*) echo H0IN=yes ;; *) echo H0IN=no ;; esac")
+	m=$(sed -n 's/^META //p' <<< "$o")
+	k=$(sed -n 's/^KEYS //p' <<< "$o"); k=${k%,}
+	echo "UDSCAN v=$(field "$m" v) state=$(field "$m" state) gen=$(field "$m" gen) rm=$(field "$m" rm) sha=$(sed -n 's/^SHA //p' <<< "$o") keys=${k:-none} H0-IN-RECORD=$(sed -n 's/^H0IN=//p' <<< "$o")"
+}
 
 # ---- member on a random test mesh (254-p1-impl §4.4 single node: 04 alone, channel unchanged, never JOINED) ----------
 # pr_member: claim + net-apply --first (key made on the node) -> member; then, as every member -> OTA (§4.3 F33),

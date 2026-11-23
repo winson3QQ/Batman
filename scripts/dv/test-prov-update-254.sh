@@ -166,7 +166,11 @@ mkdir -p "$T/smoke/out/1.5.14-wsl.36/ekh-bcm2711"; head -c 4096 /dev/urandom > "
 head -c 4096 /dev/urandom > "$T/smoke/gen.tgz"
 smoke_stubs='
 H0=04$(printf "%0128d" 0); OUTS=$UDT/smoke/out; TOOLS=$UDT/smoke; NODE=10.9.9.9
-pr_begin(){ return 0; }; pr_h0(){ return 0; }; pr_pc_place(){ return 0; }; pr_end(){ echo "STUB pr_end $*"; }
+pr_begin(){ return 0; }; pr_h0(){ return 0; }; pr_pc_place(){ return 0; }; pr_end(){ echo "STUB pr_end $*"; echo member > "$UDT/smoke/state"; }
+UD_S0_DIR=$UDT/smoke/s0; [ -s "$UDT/smoke/state" ] || echo member > "$UDT/smoke/state"
+pr_keys(){ ENC=04$(printf "%0128d" 1); return 0; }; pk_proof(){ return 0; }; pr_needs_person(){ echo "NEEDS-PERSON $*"; echo NP >> "$UDT/smoke/calls"; }
+pr_info(){ echo "state=$(cat "$UDT/smoke/state") gen=2 owners=1 rm=1"; }
+nbmac(){ [ "${SMOKE_NB:-yes}" = yes ]; }; qp(){ case "$*" in *"logread"*) echo "x batman-dv-ud: mark y" ;; *"echo \"META"*) printf "META v=1 state=member gen=4 sha=ab rm=1\nTXN=no\nPS helper member member - radio\n" ;; esac; }
 pr_lease_renew(){ return 0; }; pr_slot_ticks(){ echo 1; }; pr_slot_free(){ ok "slot flock free (stub)"; }; sleep(){ :; }
 hostp(){ echo "$UDT/smoke/gen.tgz"; }; boot8(){ echo abcd1234; }
 wsl_(){ case "$*" in
@@ -180,14 +184,22 @@ pr_pc(){ local pb=new a op; for a in "$@"; do [ "$a" = PCBIN=old ] && pb=old; do
 	while [ "$1" != -- ]; do shift; done; op=$2
 	[ $pb = new ] && echo "PROVCLIENT caps=uc2,bo2,rk1,pg2,nopsk"
 	case "$op" in
-		update-check) if [ $pb = old ]; then echo "RESULT update.check code=20"; else echo "RESULT update.check code=0 ok=true ram=1"; fi ;;
 		update-status) echo "RESULT update.status code=0 phase=0 percent=0" ;;
 		bulk-open) echo "RESULT bulk.open code=0 ssid=\"s\" ip=\"10.41.0.1\" port=8095 expires=900" ;;
 		bulk-close) echo "RESULT bulk.close code=0" ;;
-		update-prepare|update-apply) echo "RESULT update.${op#update-} code=24 reason=15" ;;
+		update-prepare|update-apply) echo "${op}" >> "$UDT/smoke/calls"; echo "RESULT update.${op#update-} code=24 reason=15" ;;
+		claim) echo claim >> "$UDT/smoke/calls"; echo "${SMOKE_CLAIM:-claimed}" > "$UDT/smoke/state"; echo "RESULT claim.verify code=0 tag=x adv=y pw=z" ;;
+		update-check) echo update-check >> "$UDT/smoke/calls"; if [ $pb = old ]; then echo "RESULT update.check code=20"; else echo "RESULT update.check code=0 ok=true ram=1"; fi ;;
+		net-apply) echo net-apply >> "$UDT/smoke/calls"; case " $* " in *" PROVCLIENT_NET_QUIET=1 "*) ;; esac
+			if [ "${SMOKE_JOIN:-ok}" = ok ]; then echo member > "$UDT/smoke/state"; echo "RESULT net.apply code=0 version=1 net_id=ab mesh_id=withheld"; else echo "RESULT net.apply code=24"; fi ;;
 	esac; }
 q(){ case "$*" in *"joinwatch stop"*) rm -f "$UDT/smoke/jw" ;; *"joinwatch start"*) touch "$UDT/smoke/jw" ;; esac; return 0; }
 qr(){ case "$*" in
+	*"prov.cbor"*hexdump*|*hexdump*"prov.cbor"*) printf "META v=1 state=%s gen=2 sha=ab rm=1\nSHA ab\nKEYS f1,\nH0IN=yes\n" "$(cat "$UDT/smoke/state")" ;;
+	*"grep -cFf"*) printf "KEY=0 rc=1\nMESH=0 rc=1\nMESHSYS=0 rc=1\n" ;;
+	*".txn"*) [ "${SMOKE_TXN:-no}" = yes ] && echo TXN || echo NOTXN ;;
+	*"batman-config-save --check >/dev/null"*) n=$(cat "$UDT/smoke/csn" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$UDT/smoke/csn"; echo "${SMOKE_CS:-0}" | cut -d" " -f$n | grep . || echo "${SMOKE_CS##* }" ;;
+	*"prov-state"*) echo "${SMOKE_F6:-radio}" ;;
 	*"echo \"mac="*) echo "mac=88:a2:9e:b5:6c:89 slot=A ver=1.5.14-wsl.36 trial_rc=1 dt_try=00000000 hold=[] held=0 badslot=[] up=100 boot=abcd1234" ;;
 	*BATMAN_BOARD*) echo ekh-bcm2711 ;;
 	*"halow-setkey --status"*) echo "ap default_radio0 ssid=x key=set disabled=0" ;;
@@ -223,4 +235,99 @@ if ! grep -q 'unbound variable' <<< "$o" && grep -q '^STUB pr_end wrote-b' <<< "
 else bad "arm_write smoke (upload absent): rc=$rc $(grep -E 'unbound|absent|STUB pr_end' <<< "$o" | tail -4 | tr '\n' '|')"; fi
 o=$(bash -c "$src; $smoke_stubs; pr_pc(){ while [ \"\$1\" != -- ]; do shift; done; echo \"RESULT \$2 code=0\"; }; ud_status >/dev/null; ud_sync; echo \"INV=\$invalid\"" 2>&1)
 grep -q '^INVALID prov-update-254: provclient printed no caps line' <<< "$o" && grep -q '^INV=1$' <<< "$o" && ok "a verdict made inside \$(…) (no caps line in ud_status) is printed and counted" || bad "subshell verdict: $(tr '\n' '|' <<< "$o" | cut -c1-200)"
+# ---- design v11 (254-v16-ud §4.4): temporary ownership by H0, the member join, pre-row checks, leak greps, 02's record.
+# Each block drives the real functions against a stubbed node; on 5bce2c9 (before v8-v11) these functions do not exist
+# and every case below fails (negative control, PR body).
+H0HEX=$(printf "%0128d" 0); ENCHEX=$(printf "%0128d" 1)
+smoke_run(){ rm -f "$T/smoke/calls" "$T/smoke/csn" "$T/smoke/state"; rm -rf "$T/smoke/s0"; bash -c "$src; $smoke_stubs; $1" 2>&1; }
+# (1) the v11 start and end on arm_refuse: S0 scan saved, H0 claim, guard, the record at the end = S0, the unit log grepped
+o=$(smoke_run 'RUN=pupdate2540000000001; arm_refuse'); s0f=$T/smoke/s0/pupdate2540000000001.txt
+grep -q '^PASS prov-update-254: 04 claimed by H0 for this arm' <<< "$o" && grep -q '^claim$' "$T/smoke/calls" && grep -q '^UDSCAN v=1 state=member gen=2 rm=1 sha=ab keys=f1 H0-IN-RECORD=yes$' "$s0f" \
+	&& grep -q "^PASS prov-update-254: 04's record at the end = S0" <<< "$o" && grep -q '^PASS prov-update-254: leak check (the unit log incl. pr_end / pr_abort)' <<< "$o" \
+	&& ok "v11 start/end: S0 owner scan written, H0 claim, the end record compared with S0, the unit log leak-grepped" || bad "v11 start/end: $(grep -E 'claim|S0|leak|INVALID' <<< "$o" | head -6 | tr '\n' '|')"
+grep -qE "$H0HEX|$ENCHEX" <<< "$o" && bad "the arm's output carries a full public point" || ok "the arm's output carries no full key point (fingerprints only)"
+# (2) an unclaimed start: INVALID, nothing claimed, no snapshot
+o=$(bash -c "$src; $smoke_stubs; echo unclaimed > \"\$UDT/smoke/state\"; rm -f \"\$UDT/smoke/calls\"; pr_begin(){ echo PR_BEGIN; }; arm_refuse" 2>&1); rc=$?
+grep -q '^INVALID prov-update-254: start state \[unclaimed\]' <<< "$o" && [ $rc = 2 ] && ! grep -q '^PR_BEGIN' <<< "$o" && ! grep -qs '^claim$' "$T/smoke/calls" \
+	&& ok "an unclaimed 04 at the start: INVALID rc 2, no pr_begin, no claim" || bad "unclaimed start: rc=$rc $(grep -E 'start state|PR_BEGIN|claim' <<< "$o" | head -3 | tr '\n' '|')"
+# (3) the guard: a claim that does not leave H0 the owner ends the arm INVALID (never FAIL), restore still runs, no owner-op sent
+o=$(SMOKE_CLAIM=legacy smoke_run 'arm_refuse'); rc=$?
+grep -q '^INVALID prov-update-254: H0 not an owner' <<< "$o" && ! grep -q '^FAIL' <<< "$o" && grep -q '^STUB pr_end' <<< "$o" && ! grep -qs '^update-' "$T/smoke/calls" \
+	&& ok "guard: H0 not an owner after the claim -> INVALID, the restore runs, no owner-op sent" || bad "guard: $(grep -E 'H0 not|FAIL|STUB' <<< "$o" | head -3 | tr '\n' '|') calls=[$(tr '\n' ' ' < "$T/smoke/calls" 2>/dev/null)]"
+o=$(bash -c "$src
+	for c in 'state=claimed H0-IN-RECORD=yes|state=claimed owners=1|claimed|ok' 'state=claimed H0-IN-RECORD=no|state=claimed owners=1|claimed|inv' \
+		'state=claimed H0-IN-RECORD=yes|state=claimed owners=2|claimed|inv' 'state=member H0-IN-RECORD=yes|state=member owners=1|claimed|inv' \
+		'state=member H0-IN-RECORD=yes|state=claimed owners=1|member|inv' 'UDSCAN v=1 state=member gen=3 rm=1 sha=ab keys=f1 H0-IN-RECORD=yes|state=member gen=3 owners=1 rm=1|member|ok'; do
+		IFS='|' read -r a b w e <<< \"\$c\"; v=\$(ud_guard_judge \"\$a\" \"\$b\" \"\$w\"); [ \"\${v%% *}\" = \"\$e\" ] || echo \"BAD [\$c] -> [\$v]\"; done" 2>&1)
+[ -z "$o" ] && ok "ud_guard_judge: 6 cases (H0 in record, owners=1, state = the arm's want)" || bad "ud_guard_judge: $o"
+o=$(bash -c "$src; fails=0; ud_c3 'RESULT update.prepare code=3' prep; ud_c3 'RESULT update.prepare code=3 signed-for=x' p2; ud_c3 'RESULT update.apply code=24' p3" 2>&1)
+[ "$(grep -c '^FAIL' <<< "$o")" = 1 ] && grep -q '^FAIL prov-update-254: prep: code 3' <<< "$o" && ok "ud_c3: a code 3 under the guard is a FAIL; other codes are not" || bad "ud_c3: $o"
+# (4) the member join: PROVCLIENT_NET_QUIET passed, a NETCFG line is a FAIL, a failed join keeps its reason
+o=$(bash -c "$src; $smoke_stubs; ud_mark(){ UDM=m; }; pr_pc(){ echo \"ARGS \$*\" >> \"\$UDT/smoke/pcargs\"; echo 'RESULT net.apply code=0 version=1 net_id=ab mesh_id=withheld'; }; ud_join && echo JOINED" 2>&1)
+grep -q '^JOINED' <<< "$o" && grep -q 'PROVCLIENT_NET_QUIET=1 -- net-apply --first' "$T/smoke/pcargs" && ok "ud_join: net-apply with PROVCLIENT_NET_QUIET=1, code 0 + mesh_id=withheld -> joined" || bad "ud_join: $o"
+o=$(bash -c "$src; $smoke_stubs; ud_mark(){ UDM=m; }; pr_pc(){ echo 'NETCFG mesh_id=x'; echo 'RESULT net.apply code=0 version=1 net_id=ab mesh_id_sha=12'; }; ud_join || echo \"NOTJOINED \$UDJOINWHY\"" 2>&1)
+grep -q '^FAIL prov-update-254: member join: provclient printed NETCFG' <<< "$o" && grep -q '^NOTJOINED net.apply' <<< "$o" && ok "ud_join: a provclient without the quiet mode (NETCFG, mesh_id_sha) -> FAIL + not joined" || bad "ud_join quiet: $o"
+# (5) the pre-row checks on arm_trial: each failure -> item 7 (INVALID member rows, no prepare / apply, 02 judged, the end);
+# the good case and an rc 8 that clears on a retry reach the rows
+for c in 'ok||||ok' 'cs8|SMOKE_CS="8 8 8 0"|||ok' 'txn|SMOKE_TXN=yes|||inv' 'cs8x4|SMOKE_CS="8 8 8 8"|||inv' 'cs5|SMOKE_CS=5|||inv' \
+	'f6|SMOKE_F6=-|||inv' 'nb|SMOKE_NB=no|||person' 'join|SMOKE_JOIN=no|||inv'; do
+	IFS='|' read -r n e _ _ want <<< "$c"
+	o=$(eval "$e" smoke_run "'mono(){ local x; x=\$(cat \"\$UDT/smoke/mono\" 2>/dev/null || echo 0); echo \$((x + 60)) > \"\$UDT/smoke/mono\"; echo \$x; }; ud_leak_ring(){ case \"\$1\" in \"right after the member join\") echo ROWS-REACHED; exit 0 ;; *) echo \"RING \$1\" ;; esac; }; arm_trial'"); rm -f "$T/smoke/mono"
+	case $want in
+		ok) grep -q '^ROWS-REACHED' <<< "$o" && grep -q '^PASS prov-update-254: 04 is a member of the bench mesh' <<< "$o" && ! grep -q '^INVALID' <<< "$o" \
+			&& ok "pre-row $n: the rows run" || bad "pre-row $n: $(grep -E 'INVALID|pre-row|member' <<< "$o" | head -3 | tr '\n' '|')" ;;
+		*) grep -q '^INVALID prov-update-254: member rows (UD1, UD2, UD4, UD5, UD10)' <<< "$o" && ! grep -q '^ROWS-REACHED' <<< "$o" && ! grep -qsE '^update-(prepare|apply)' "$T/smoke/calls" \
+			&& grep -q "^PASS prov-update-254: 02's record unchanged over the arm" <<< "$o" && grep -q '^STUB pr_end wrote-b' <<< "$o" \
+			&& { [ $want != person ] || grep -q '^NEEDS-PERSON member join: 02' <<< "$o"; } \
+			&& ok "pre-row $n: item 7 (INVALID member rows, no prepare / apply, 02 judged, pr_end)" || bad "pre-row $n: $(grep -E 'INVALID|NEEDS|member join|ROWS' <<< "$o" | head -4 | tr '\n' '|')" ;;
+	esac
+done
+# (6) the leak greps: the node-side command run here (uci / logread stubbed), patterns from a pipe, never empty
+mkdir -p "$T/lk/bin" "$T/lk/d"; BID=$(cut -c1-8 /proc/sys/kernel/random/boot_id)
+printf '#!/bin/sh\ncase "$3" in *.key) printf "%%s" "$FX_KEY" ;; *.mesh_id) printf "%%s" "$FX_MESH" ;; esac\n' > "$T/lk/bin/uci"
+printf '#!/bin/sh\ncat "$FX_RING"\n' > "$T/lk/bin/logread"; chmod 755 "$T/lk/bin/uci" "$T/lk/bin/logread"
+lk_stubs='UDLS=$UDT/lk/d; qr(){ PATH="$UDT/lk/bin:$PATH" sh -c "$1"; }; boot8(){ cut -c1-8 /proc/sys/kernel/random/boot_id; }'
+export FX_KEY=fixture-key-0001 FX_MESH=fixture-mesh-0001 FX_RING=$T/lk/ring
+lk(){ bash -c "$src; $lk_stubs; fails=0; invalid=0; $1" 2>&1; }
+ring0(){ printf '%s\n' "Nov 23 10:00:00 kernel: [    0.000000] Booting" "Nov 23 10:00:01 batman-dv-ud: mark M1" "Nov 23 10:00:02 batman-provhelper[9]: verb update.check" "$@" > "$FX_RING"; }
+lkcase(){ local name=$1 want=$2 mode=$3 arg=$4 o; shift 4; ring0 "$@"; o=$(lk "ud_leak_ring '$name' $mode '$arg'")
+	if grep -qE "$want( prov-update-254:)? leak check \($name\)" <<< "$o" && ! grep -qF -e "$FX_KEY" -e "$FX_MESH" <<< "$o" && ! ls "$T/lk/d" | grep -q leak; then ok "leak $name -> $want"; else bad "leak $name want $want: $o"; fi; }
+lkcase clean PASS boot "$BID"
+lkcase key-in-ring FAIL boot "$BID" "Nov 23 10:00:03 batman-provhelper[9]: k=$FX_KEY"
+lkcase key-in-system-line FAIL boot "$BID" "Nov 23 10:00:03 hostapd: $FX_KEY"
+lkcase id-in-our-line FAIL mark M1 "Nov 23 10:00:03 batman-config-save: $FX_MESH"
+lkcase id-in-system-line INFO boot "$BID" "Nov 23 10:00:03 wpa_supplicant[3]: mesh $FX_MESH joined"
+lkcase mark-lost INVALID mark M9
+lkcase boot-changed INVALID boot 00000000
+printf '%s\n' "Nov 23 10:00:05 batman-dv: x" > "$FX_RING"; o=$(lk "ud_leak_ring 'ring-start' boot '$BID'")
+grep -q '^INVALID prov-update-254: leak check (ring-start): logread window lost (LEAK-NOWINDOW ring start)' <<< "$o" && ok "leak ring-start: a ring not starting at the boot -> INVALID window lost" || bad "leak ring-start: $o"
+ring0 "x"; o=$(FX_KEY= lk "ud_leak_ring 'empty-key' boot '$BID'")
+grep -q '^INVALID prov-update-254: leak check (empty-key): pattern unreadable (empty mesh key)' <<< "$o" && ! grep -q '^PASS' <<< "$o" && ok "leak empty key: INVALID pattern unreadable, no grep run" || bad "leak empty key: $o"
+o=$(FX_MESH= lk "ud_leak_ring 'empty-id' boot '$BID'")
+grep -q '^INVALID prov-update-254: leak check (empty-id): pattern unreadable (empty mesh id)' <<< "$o" && ok "leak empty id: INVALID pattern unreadable" || bad "leak empty id: $o"
+o=$(bash -c "$src; for c in 'KEY=x rc=1|MESH=0 rc=1' 'KEY=0 rc=2|MESH=0 rc=1' 'KEY=0 rc=1|MESH=0 rc=2' 'KEY=0 rc=1|MESH=0 rc=1|MESHSYS=0 rc=2' 'KEY=0 rc=1' ''; do ud_leak_judge j \"\$(tr '|' '\n' <<< \"\$c\")\" | head -1; done" 2>&1)
+[ "$(grep -c '^INVALID leak check (j): did not run' <<< "$o")" = 6 ] && ok "leak judge: a non-integer count, grep rc 2 or a missing count -> INVALID did not run (6 cases)" || bad "leak judge did-not-run: $o"
+printf 'x %s\n' "$FX_KEY" > "$T/lk/unitlog"; o=$(lk "q(){ :; }; scp(){ while [ \$# -gt 2 ]; do shift; done; cp \"\$1\" \"\${2#*:}\"; }; ud_leak_file 'unit log' \"\$UDT/lk/unitlog\"")
+grep -q '^FAIL prov-update-254: leak check (unit log): the mesh key appears 1 time' <<< "$o" && ! ls "$T/lk/d" | grep -q . && ok "leak file: the unit log copied to the scratch, grepped there, removed" || bad "leak file: $o [$(ls "$T/lk/d")]"
+# (7) review v11 A m2 / B m2: the trial boot's ring again at its last controllable point; a key line written after the
+# landing grep is caught; a boot that already changed is INVALID window lost
+ring0; o=$(lk "PR_LAND_BOOT=$BID; ud_leak_ring landing boot $BID; printf '%s\n' 'Nov 23 10:30:00 batman-provhelper[9]: k=$FX_KEY' >> \"\$FX_RING\"; ud_late_ring 'UD1: before the release' $BID")
+grep -q '^PASS prov-update-254: leak check (landing)' <<< "$o" && grep -q '^FAIL prov-update-254: leak check (UD1: before the release): the mesh key' <<< "$o" && ok "late ring (UD1): a key line written after the landing grep -> FAIL" || bad "late ring UD1: $o"
+ring0; o=$(lk "PR_LAND_BOOT=$BID; ud_leak_ring landing boot $BID; printf '%s\n' 'Nov 23 10:30:00 batman-provhelper[9]: k=$FX_KEY' >> \"\$FX_RING\"; qr(){ case \"\$1\" in *autocommit.deadline*) echo 1000 ;; *uptime*) u=\$(cat \"\$UDT/lk/up\" 2>/dev/null || echo 800); echo \$((u + 50)) > \"\$UDT/lk/up\"; echo \$u ;; *) PATH=\"\$UDT/lk/bin:\$PATH\" sh -c \"\$1\" ;; esac; }; sleep(){ :; }; ud2_late; echo UP=\$(cat \"\$UDT/lk/up\")"); rm -f "$T/lk/up"
+grep -q '^FAIL prov-update-254: leak check (UD2: the B trial boot, last HELD sample before the deadline): the mesh key' <<< "$o" && grep -q '^UP=1000$' <<< "$o" && ok "late ring (UD2): waits to deadline - 60 s, a key line written after landing -> FAIL" || bad "late ring UD2: $o"
+o=$(lk "PR_LAND_BOOT=$BID; boot8(){ echo 0000beef; }; qr(){ case \"\$1\" in *autocommit.deadline*) echo 1000 ;; *uptime*) echo 10 ;; esac; }; ud2_late")
+grep -q '^INVALID prov-update-254: leak check (UD2: the B trial boot before its revert): logread window lost (boot 0000beef)' <<< "$o" && ok "late ring (UD2): the boot changed before the grep -> INVALID window lost" || bad "late ring UD2 lost: $o"
+o=$(lk "qr(){ echo; }; ud2_late"); grep -q '^INVALID prov-update-254: UD2: no autocommit deadline' <<< "$o" && ok "late ring (UD2): no deadline -> INVALID window lost" || bad "late ring UD2 no deadline: $o"
+ring0; o=$(lk "ud_late_ring 'UD1: before back_to_a' 00000000"); grep -q '^INVALID prov-update-254: leak check (UD1: before back_to_a): logread window lost' <<< "$o" && ok "late ring (UD1): the B boot already gone -> INVALID window lost" || bad "late ring UD1 lost: $o"
+# (8) 02 (review v11 A m1): each listed format matches once, benign lines do not; the record equal at start and end
+o=$(bash -c "$src"'; IFS="|" read -ra a <<< "$UD_02FMT"; n=0; for x in "${a[@]}"; do l=$(sed "s/\\\\//g" <<< "$x"); c=$(ud_02_match "Nov 23 batman-provhelper[7]: ${l}tail" | grep -c .); [ "$c" = 1 ] || echo "BAD [$l] $c"; n=$((n + 1)); done; echo "N=$n"
+	for b in "verb update.check refused: code 20 (arg 1: want 0 bytes)" "p5 stale only in keys P3 added: --save rc 0" "bulk.open: window 900 s" "net.apply ok"; do [ -z "$(ud_02_match "x batman-provhelper[7]: $b")" ] || echo "BENIGN-MATCH [$b]"; done
+	[ -z "$(ud_02_match "x other[1]: commit: x")" ] || echo "OTHER-TAG-MATCH"' 2>&1)
+[ "$o" = "N=20" ] && ok "02 log formats: 20 formats match once each, benign helper lines and other tags do not (secondary signal)" || bad "02 formats: $o"
+S='META v=1 state=member gen=4 sha=ab rm=1
+TXN=no
+PS helper member member - radio'
+o=$(bash -c "$src; ud_02_judge \"\$1\" \"\$1\" ''; ud_02_judge \"\$1\" \"\${1/gen=4/gen=5}\" ''; ud_02_judge \"\$1\" \"\${1/- radio/- off}\" ''; ud_02_judge \"\${1/TXN=no/TXN=yes}\" \"\${1/TXN=no/TXN=yes}\" ''; ud_02_judge '' '' ''; ud_02_judge \"\$1\" \"\$1\" LOST; ud_02_judge \"\$1\" \"\$1\" 'x batman-provhelper[3]: commit: gen 5'" _ "$S" 2>&1)
+[ "$(sed -n 1p <<< "$o" | cut -c1-4)$(sed -n 3p <<< "$o" | cut -c1-4)$(sed -n 5p <<< "$o" | cut -c1-4)$(sed -n 7p <<< "$o" | cut -c1-4)$(sed -n 9p <<< "$o" | cut -c1-4)$(sed -n 12p <<< "$o" | cut -c1-7)$(sed -n 14p <<< "$o" | cut -c1-4)" = PASSFAILFAILFAILFAILINVALIDFAIL ] \
+	&& ok "02 judge: equal -> PASS; gen / prov-state field / .txn / empty -> FAIL; lost log -> INVALID; a state-changing line -> FAIL" || bad "02 judge: $(tr '\n' '|' <<< "$o")"
 echo "test-prov-update: $P passed, $F failed"; [ $F = 0 ] && [ $P -gt 0 ]
