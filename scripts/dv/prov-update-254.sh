@@ -228,7 +228,7 @@ ud_begin(){	# common start: lease, tools, H0, S0 status, AP on, wireless mode, p
 	local d; d=$(ud_s0_status "$PR_UST0"); [ "$d" = ok ] || { inv "${d#inv }"; PR_UST0=""; pr_end; pr_result; exit 2; }
 	o=$(qr 'halow-setkey --status 2>/dev/null | grep "^ap "'); say "AP: $o"
 	case " $o " in *" disabled=0 "*) ok "phone AP on at the start" ;; *) inv "phone AP off ($o): every upload row is INVALID (v4: no ap-on step)"; pr_end; pr_result; exit 2 ;; esac
-	WMODE0=$(wmode); [ -n "$WMODE0" ] || { inv "the wireless file's mode unreadable"; pr_end; pr_result; exit 2; }
+	WMODE0=$(wmode); [ -n "$WMODE0" ] || { inv "the wireless file's mode could not be read"; pr_end; pr_result; exit 2; }
 	PAYH=$(ls "$OUTS/$V_NOW/ekh-bcm2711/"*-ab-payload.tar.gz 2>/dev/null | head -1)
 	[ -n "$PAYH" ] || { inv "no payload tar for $V_NOW under $OUTS"; pr_end; pr_result; exit 2; }
 	PAYW=/home/yello/out/$V_NOW/ekh-bcm2711/$(basename "$PAYH"); PSHA_V=$(sha256sum < "$PAYH" | cut -c1-64)
