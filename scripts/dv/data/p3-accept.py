@@ -167,28 +167,31 @@ def mutate_make(vp, op):
     start = off + max(4096, size // 4)
     room = off + size - start
 
-    def gz(z, extra=b""):
+    def gz(z, extra=None):   # extra = the FEXTRA data (b"" is a field of 2 B: XLEN 0); None = no field
         s = bytearray(s0)
         s[start:start + z] = bytes(z)
         s = bytes(s)
         c = zlib.compressobj(9, zlib.DEFLATED, -15)
         body = c.compress(s) + c.flush()
-        hdr = b"\x1f\x8b\x08" + bytes([4 if extra else 0]) + b"\0\0\0\0" + b"\x02\x03"
-        if extra:
+        hdr = b"\x1f\x8b\x08" + bytes([4 if extra is not None else 0]) + b"\0\0\0\0" + b"\x02\x03"
+        if extra is not None:
             hdr += struct.pack("<H", len(extra)) + extra
         return hdr + body + struct.pack("<II", zlib.crc32(s) & 0xffffffff, len(s) & 0xffffffff)
 
-    if len(gz(room)) > L:
-        sys.exit("even zeroing %d bytes leaves the stream longer than V" % room)
+    # the target is a gap of at least 2 B (an FEXTRA field costs 2 B + data, so a gap of exactly 1 B cannot be filled —
+    # aiming at <= L - 2 instead of <= L: 1 in 40 offline runs landed on gap 1 and FAILed, 2026-11-23)
+    T = L - 2
+    if len(gz(room)) > T:
+        sys.exit("even zeroing %d bytes leaves the stream longer than V - 2" % room)
     lo, hi = 0, room
     while lo < hi:
         mid = (lo + hi) // 2
-        if len(gz(mid)) <= L:
+        if len(gz(mid)) <= T:
             hi = mid
         else:
             lo = mid + 1
     out = None
-    for z in range(lo, min(lo + 4096, room) + 1):
+    for z in range(lo, min(lo + 4096, room) + 1):   # the deflate length is not strictly monotone in z: step on
         g = L - len(gz(z))
         if g == 0:
             out = gz(z)
