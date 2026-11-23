@@ -185,6 +185,17 @@ func reasonOf(r cmap) (uint64, bool) {
 	return v, ok
 }
 
+// fmtUpdateCheck renders an OK update.check reply, update-check-resp {1: ok bool, ? 2: reason uint, 3: RAM}: a refusal
+// is an OK reply {1: false, 2: reason, 3: RAM} (feed/batman-prov/src/node/update.go:270, passed through by provd,
+// provd/update.go:47), so its reason is key 2. Key 1 is the bool here: reasonOf (key 1) is for ERROR bodies only.
+func fmtUpdateCheck(r cmap) string {
+	s := fmt.Sprintf(" ok=%v ram=%v", r.get(1), r.get(3))
+	if rs, ok := r.get(2).(uint64); ok {
+		s += fmt.Sprintf(" reason=%d", rs)
+	}
+	return s
+}
+
 // signArgsOverride: PROVCLIENT_SIGN_ARGS_SHA for update-prepare / update-apply (nil when unset); fatal otherwise
 func signArgsOverride(op string) []byte {
 	v, set := os.LookupEnv("PROVCLIENT_SIGN_ARGS_SHA")
@@ -439,11 +450,8 @@ func p3Op(cl *client, op string, args []string, fd3 map[string]string, hexArg fu
 		}
 		code, r := cl.call("update.check", body)
 		extra := ""
-		if code == 0 && r != nil { // update-check-resp {1 ok, ? 2 reason, 3 RAM}
-			extra = fmt.Sprintf(" ok=%v ram=%v", r.get(1), r.get(3))
-			if rs, ok := reasonOf(r); ok {
-				extra += fmt.Sprintf(" reason=%d", rs)
-			}
+		if code == 0 && r != nil {
+			extra = fmtUpdateCheck(r)
 		}
 		fmt.Println(resultLine("update.check", code, r, extra))
 	case "update-prepare", "update-apply":

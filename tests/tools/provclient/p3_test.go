@@ -310,3 +310,25 @@ func TestFmtStatusTeam(t *testing.T) {
 		}
 	}
 }
+
+// TestUpdateCheckRefusalReason: a refusal is an OK reply {1: false, 2: reason, 3: RAM} (node/update.go:270); the
+// reason is key 2 (device run 2026-11-23: every UD7 refusal printed no reason because key 1, the bool, was read).
+func TestUpdateCheckRefusalReason(t *testing.T) {
+	// the helper's bytes for cbor.M(1, false, 2, 11, 3, 0): a3 01 f4 02 0b 03 00
+	v, rest, err := cDec([]byte{0xa3, 0x01, 0xf4, 0x02, 0x0b, 0x03, 0x00})
+	refused, isMap := v.(cmap)
+	if err != nil || len(rest) != 0 || !isMap {
+		t.Fatalf("decode: %v %v %T", err, rest, v)
+	}
+	if got := resultLine("update.check", 0, refused, fmtUpdateCheck(refused)); got != "RESULT update.check code=0 ok=false ram=0 reason=11" {
+		t.Fatalf("refusal: %q", got)
+	}
+	okr := cmap{{uint64(1), true}, {uint64(3), uint64(147960218)}}
+	if got := resultLine("update.check", 0, okr, fmtUpdateCheck(okr)); got != "RESULT update.check code=0 ok=true ram=147960218" {
+		t.Fatalf("accept: %q", got)
+	}
+	// an ERROR reply keeps its reason at key 1 (node.go errBody)
+	if got := resultLine("update.check", 24, cmap{{uint64(1), uint64(15)}}, ""); got != "RESULT update.check code=24 reason=15" {
+		t.Fatalf("error: %q", got)
+	}
+}
