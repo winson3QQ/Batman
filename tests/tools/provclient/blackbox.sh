@@ -17,7 +17,7 @@ P=0; F=0; ok(){ echo "ok   $*"; P=$((P + 1)); }; no(){ echo "FAIL $*"; F=$((F + 
 OH=$(getent passwd "$(stat -c %U "$(dirname "$0")")" | cut -d: -f6)
 TC=$OH/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.linux-amd64/bin/go
 [ -n "${GO:-}" ] || { [ -x "$TC" ] && GO=$TC; } || GO=go
-( cd "$SRC" && GOFLAGS=-mod=vendor GOTOOLCHAIN=local GOCACHE=$T/gocache CGO_ENABLED=0 "$GO" build -trimpath -o "$T/pc" . ) > "$T/build.log" 2>&1 \
+( cd "$SRC" && GOFLAGS=-mod=vendor GOTOOLCHAIN=local GOCACHE=$T/gocache CGO_ENABLED=0 "$GO" build -buildvcs=false -trimpath -o "$T/pc" . ) > "$T/build.log" 2>&1 \
 	|| { no "build of $SRC: $(tail -3 "$T/build.log" | tr '\n' '|')"; echo "provclient-blackbox: $P passed, $F failed"; exit 1; }
 chmod 755 "$T/pc"
 # 1. exec

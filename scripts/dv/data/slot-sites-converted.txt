@@ -63,3 +63,13 @@
 19	2	scripts/fault-injection.sh	reboot_guarded "${b:0:8}" "$sl" 1 fi-f1
 precheck	2	scripts/daily-validation.sh	local pc='r=$(vcmailbox 0x00030064 4 4 0 2>/dev/null); set -- $r; a=0; f=unread; if [ "${2:-}" = 0x80000000 ] && [ "${5:-}" = 0x80000004 ]; then case "${6:-}" in 0x[0-9a-fA-F]*) a=1; f=$(( $6 )) ;; esac; fi; soc=$(tr "\0" " " < /proc/device-tree/compatible 2>/dev/null)'
 precheck	2	scripts/daily-validation.sh	local full="$pc; if [ \$a = 1 ] && [ \"\$f\" = 0 ]; then $cmd; else echo \"TRYBOOT-NOT-CLEAR answered=\$a flag=\$f soc=\$soc\"; fi"
+# #254 v1.6 g4 PR B (254-v16-ud §2): the entries this PR adds to the lints — an allowlist entry (1u), the GUARD= pins
+# (2c), the new guarded call sites (2) and the watcher's sysrq row (3); none exists on b885a2c, so each is named there
+ud	1	scripts/dv/prov-254.sh	update-prepare|update-apply)
+ud	2	scripts/dv/prov-254.sh	apply_guarded "$gb" "$cmd"
+ud	2	scripts/dv/prov-254.sh	prepare_guarded "$gb" "$cmd"
+ud	2	scripts/dv/prov-update-254.sh	GUARD=apply:"$(boot8)"
+ud	2	scripts/dv/prov-update-254.sh	GUARD=prepare:"$(boot8)"
+ud	2	scripts/dv/prov-update-254.sh	reboot_guarded "$b" A 1 prov-update-254
+ud	2	scripts/dv/prov-update-254.sh	release_guarded "$PR_LAND_BOOT" B
+ud	3	scripts/node/ud9-watch-254.sh	echo b > "$UR/proc/sysrq-trigger"
