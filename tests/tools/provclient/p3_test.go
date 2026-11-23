@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/hex"
+	"os"
 	"strings"
 	"testing"
 )
@@ -105,38 +106,63 @@ func TestP3NeedsFd3(t *testing.T) {
 	}
 }
 
+var testOwner = append([]byte{0x04}, make([]byte, 64)...) // a 65-byte SEC1 point stand-in (only hashed here)
+
 func TestUpdateCheckBody(t *testing.T) {
-	// a minimal manifest {1: "v", 2: "b"} = a2 01 61 76 02 61 62; the body wraps it verbatim: {1: manifest}
+	// a minimal manifest {1: "v", 2: "b"} = a2 01 61 76 02 61 62; the body: {1: bstr(manifest), 2: sha256(owner_pub)}
 	man, _ := hex.DecodeString("a2016176026162")
-	body, err := updateCheckBody(man)
+	kid := hex.EncodeToString(sha(testOwner))
+	body, err := updateCheckBody(man, testOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustHex(t, cEnc(body), "a101"+"a2016176026162")
-	// a realistic one round-trips too (the client does not interpret the manifest)
+	// a2 01 <manifest> 02 58 20 <32 bytes>: key 2 is what the helper requires (update.go:261, "missing arg 2" without it)
+	mustHex(t, cEnc(body), "a201"+"47"+"a2016176026162"+"025820"+kid)
 	full := cEnc(cmap{{uint64(1), "1.5.14-wsl.23"}, {uint64(2), "bcm2711"}, {uint64(3), uint64(126000000)},
 		{uint64(4), make([]byte, 32)}, {uint64(5), []byte{0x82, 0xf6, 0xf6}}, {uint64(6), []any{"1.5.15-wsl.1"}}})
-	body, err = updateCheckBody(full)
+	body, err = updateCheckBody(full, testOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustHex(t, cEnc(body), "a101"+hex.EncodeToString(full))
+	mustHex(t, cEnc(body), "a201"+hex.EncodeToString(cEnc(full))+"025820"+kid)
 	for _, bad := range [][]byte{nil, {0x01}, {0xa1, 0x01}, append(append([]byte{}, man...), 0x00)} {
-		if _, err := updateCheckBody(bad); err == nil {
+		if _, err := updateCheckBody(bad, testOwner); err == nil {
 			t.Errorf("accepted %x as a manifest", bad)
 		}
+	}
+	if _, err := updateCheckBody(man, nil); err == nil {
+		t.Error("accepted an empty owner key")
+	}
+}
+
+func TestBulkOpenBody(t *testing.T) {
+	sum := make([]byte, 32)
+	sum[0] = 0xab
+	b, err := bulkOpenBody(sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// {1: 0, 2: h'ab00..'} = a2 01 00 02 58 20 ...: key 2 is required by bulk.go:42-51
+	mustHex(t, cEnc(b), "a20100025820"+hex.EncodeToString(sum))
+	if _, err := bulkOpenBody(sum[:31]); err == nil {
+		t.Fatal("accepted a 31-byte sha")
 	}
 }
 
 func TestResultLineReason(t *testing.T) {
-	if got := resultLine("settings.set", 24, cmap{{uint64(2), uint64(13)}}, ""); got != "RESULT settings.set code=24 reason=13" {
+	// node.go errBody: an error reply's result is {1: reason}
+	if got := resultLine("update.prepare", 24, cmap{{uint64(1), uint64(15)}}, ""); got != "RESULT update.prepare code=24 reason=15" {
+		t.Fatal(got)
+	}
+	// key 2 of an error body is not a reason (the pre-UD reading): nothing printed
+	if got := resultLine("settings.set", 24, cmap{{uint64(2), uint64(13)}}, ""); got != "RESULT settings.set code=24" {
 		t.Fatal(got)
 	}
 	if got := resultLine("settings.set", 7, cmap{}, ""); got != "RESULT settings.set code=7" {
 		t.Fatal(got)
 	}
-	// on code 0 result key 2 is body data, not a reason
-	if got := resultLine("x", 0, cmap{{uint64(2), uint64(13)}}, " a=1"); got != "RESULT x code=0 a=1" {
+	// on code 0 result key 1 is body data, not a reason
+	if got := resultLine("x", 0, cmap{{uint64(1), uint64(13)}}, " a=1"); got != "RESULT x code=0 a=1" {
 		t.Fatal(got)
 	}
 	if got := resultLine("x", 6, nil, ""); got != "RESULT x code=6" {
@@ -144,29 +170,64 @@ func TestResultLineReason(t *testing.T) {
 	}
 }
 
+// nothing derived from a passphrase reaches an output line: neither the value nor any prefix of its sha256
 func TestNoSecretInOutput(t *testing.T) {
-	want := short([]byte(testPSK))
+	full := hex.EncodeToString(sha([]byte(testPSK)))
+	leaks := func(s string) bool {
+		return strings.Contains(s, testPSK) || strings.Contains(s, full[:8]) || strings.Contains(s, short([]byte(testPSK)))
+	}
 	// a settings map that (against the design) carries the passphrase under key 20
 	s := fmtSettings(cmap{{uint64(1), "n"}, {uint64(2), "TW"}, {uint64(20), cmap{{uint64(1), "team-a"}, {uint64(2), testPSK}}}})
-	if strings.Contains(s, testPSK) || !strings.Contains(s, want) {
-		t.Fatalf("settings leaks or lacks the sha: %q", s)
+	if leaks(s) || !strings.Contains(s, " k20.2=present") {
+		t.Fatalf("settings leaks or lacks k20.2=present: %q", s)
 	}
 	if !strings.Contains(s, "keys=1,2,20") || !strings.Contains(s, ` ssid="team-a"`) || !strings.Contains(s, ` country="TW"`) {
 		t.Fatalf("settings rendering: %q", s)
 	}
-	// bulk-open-resp: key 2 is the passphrase
-	b := fmtBulkOpen(cmap{{uint64(1), "team-a"}, {uint64(2), testPSK}, {uint64(3), "10.41.0.1"}, {uint64(4), uint64(8095)}, {uint64(5), uint64(900)}})
-	if strings.Contains(b, testPSK) || !strings.Contains(b, "psk_sha="+want) || !strings.Contains(b, "port=8095") {
-		t.Fatalf("bulk.open leaks or lacks the sha: %q", b)
+	// bulk-open-resp: key 2 is the passphrase, key 6 the upload bearer
+	bearer := "bearer-0123456789abcdef"
+	b := fmtBulkOpen(cmap{{uint64(1), "team-a"}, {uint64(2), testPSK}, {uint64(3), "10.41.0.1"}, {uint64(4), uint64(8095)}, {uint64(5), uint64(900)}, {uint64(6), bearer}})
+	if leaks(b) || strings.Contains(b, "psk") || strings.Contains(b, bearer) || strings.Contains(b, short([]byte(bearer))) {
+		t.Fatalf("bulk.open leaks: %q", b)
 	}
-	// the whole result line of a settings.set reply echoing the settings
+	if b != ` ssid="team-a" ip="10.41.0.1" port=8095 expires=900` {
+		t.Fatalf("bulk.open rendering: %q", b)
+	}
 	line := resultLine("settings.set(key 20)", 0, nil, ifOK(0, s))
-	if strings.Contains(line, testPSK) {
+	if leaks(line) {
 		t.Fatalf("result line leaks: %q", line)
 	}
-	// an error reply renders no body at all
 	if got := ifOK(24, s); got != "" {
 		t.Fatalf("body rendered on an error: %q", got)
+	}
+}
+
+func TestFmtProgressShaVersion(t *testing.T) {
+	sum := make([]byte, 32)
+	for i := range sum {
+		sum[i] = byte(i)
+	}
+	got := fmtProgress(cmap{{uint64(1), uint64(1)}, {uint64(2), uint64(40)}, {uint64(4), sum}, {uint64(5), "1.5.14-wsl.36+b885a2c.fw302c80b.bench"}})
+	if got != " phase=1 percent=40 sha=0001020304050607 version=1.5.14-wsl.36+b885a2c.fw302c80b.bench" {
+		t.Fatal(got)
+	}
+	if got := fmtProgress(cmap{{uint64(1), uint64(0)}, {uint64(2), uint64(0)}, {uint64(5), "a b"}}); got != " phase=0 percent=0 version=?" {
+		t.Fatal(got)
+	}
+	if got := fmtProgress(cmap{{uint64(1), uint64(0)}, {uint64(2), uint64(0)}, {uint64(4), []byte{1}}}); got != " phase=0 percent=0" {
+		t.Fatal(got)
+	}
+}
+
+func TestSignArgsOverrideUnset(t *testing.T) {
+	t.Setenv("PROVCLIENT_SIGN_ARGS_SHA", "")
+	os.Unsetenv("PROVCLIENT_SIGN_ARGS_SHA")
+	if signArgsOverride("update-prepare") != nil || signArgsOverride("update-check") != nil {
+		t.Fatal("override without the variable")
+	}
+	t.Setenv("PROVCLIENT_SIGN_ARGS_SHA", strings.Repeat("ab", 32))
+	if b := signArgsOverride("update-apply"); len(b) != 32 || b[0] != 0xab {
+		t.Fatalf("override: %x", b)
 	}
 }
 

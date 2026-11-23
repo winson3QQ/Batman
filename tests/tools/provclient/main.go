@@ -43,6 +43,11 @@ import (
 
 const sockPath = "/tmp/run/batman-prov/helper.sock"
 
+// capsLine: what this build does differently from the pre-UD provclient (254-v16-ud §3.1): uc2 = update.check sends
+// key 2, bo2 = bulk.open sends key 2, rk1 = error reasons read from key 1, pg2 = update-progress keys 4 / 5 printed,
+// nopsk = nothing derived from a passphrase is printed. Printed on stderr by helper-socket ops only.
+const capsLine = "PROVCLIENT caps=uc2,bo2,rk1,pg2,nopsk"
+
 func die(f string, a ...any) { fmt.Fprintf(os.Stderr, "provclient: "+f+"\n", a...); os.Exit(2) }
 
 func short(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:8]) }
@@ -440,9 +445,13 @@ func (cl *client) nonce() (node, helper []byte) {
 }
 
 // ownerOp builds a request envelope of type typ with body + owner-op (key 31) signed by the host.
-func (cl *client) ownerOp(typ string, body cmap) []byte {
+func (cl *client) ownerOp(typ string, body cmap) []byte { return cl.ownerOpSigned(typ, body, body) }
+
+// ownerOpSigned: as ownerOp, but the signature covers args_hash(signed) while the envelope carries body (only
+// PROVCLIENT_SIGN_ARGS_SHA uses a signed != body: UD20's negative arm, one variable changed)
+func (cl *client) ownerOpSigned(typ string, body, signed cmap) []byte {
 	_, nh := cl.nonce()
-	ah := sha(cEnc(body))
+	ah := sha(cEnc(signed))
 	sig := cl.sign("owner-op", opInput(cl.h, nh, typ, ah))
 	full := append(cmap{}, body...)
 	full = append(full, kv{uint64(31), cmap{{uint64(1), typ}, {uint64(2), sig}}})
@@ -564,6 +573,9 @@ func cmdNode(args []string) {
 		err := syscall.Exec(args[1], args[1:], []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"})
 		die("exec %s: %v", args[1], err)
 	}
+	// a helper-socket op from here on: the capability line, on STDERR (exec's stdout belongs to the program it runs and
+	// proxy's stdout is its data channel, so neither prints it; 254-v16-ud §3.1)
+	fmt.Fprintln(os.Stderr, capsLine)
 	c, err := net.DialUnix("unixpacket", nil, &net.UnixAddr{Name: sockPath, Net: "unixpacket"})
 	if err != nil {
 		fmt.Printf("CONN-ERR %v\n", err)

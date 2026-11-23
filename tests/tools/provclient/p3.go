@@ -12,23 +12,26 @@ package main
 //	diag-summary <owner_pub>              diag.summary     no        {}                       (ro)
 //	diag-bundle <owner_pub>               diag.bundle      yes       {1: session_id}          -> {1: handle} (P3 shape, §3.5)
 //	diag-read <owner_pub> <handle-hex>    diag.read        no        {1: handle, 2: offset}   (ro; looped until total)
-//	update-check <owner_pub> <manifest>   update.check     no        {1: update-manifest}     manifest = encoded CBOR map, hex
+//	update-check <owner_pub> <manifest>   update.check     no        {1: bstr(manifest), 2: sha256(owner_pub)}
 //	update-prepare <owner_pub> <sha-hex>  update.prepare   yes       {1: sha256(SHA256SUMS)}
 //	update-apply <owner_pub> <sha-hex>    update.apply     yes       {1: sha256(SHA256SUMS)}
 //	update-status <owner_pub>             update.status    no        {}                       (ro)
-//	bulk-open <owner_pub>                 bulk.open        yes       {1: 0}                   purpose 0 = software update
+//	bulk-open <owner_pub> <sha-hex>       bulk.open        yes       {1: 0, 2: sha256(SHA256SUMS)}  purpose 0 = software update
 //	bulk-close <owner_pub>                bulk.close       yes       {}
 //
 // Owner-ops are wrapped exactly as the P2 verbs (cl.ownerOp: envelope type = protocol msg-type, key 31; the helper gets
 // {1: h, 2: envelope}). <owner_pub> is accepted (hex) on every op for a uniform CLI — the signer on the host holds the key.
 //
 // settings.set key 20 (phone-AP SSID + passphrase) comes in on fd 3 ("ssid=…" / "psk=…" lines, read as root before the
-// privilege drop, like net.go's fd 3), never argv. Output never contains the passphrase: its SHA-256 prefix only.
+// privilege drop, like net.go's fd 3), never argv. Output never contains the passphrase, nor anything derived from it
+// (254-v16-ud.md §3.1: "present" only, no hash prefix).
 //
-// reason: the helper's error replies carry an optional reason-code (§3.1.8, §5.3 "helper 錯誤回覆 reason").
-// ⚠️ design: its place in the helper response is not pinned; read here as key 2 of the result map (key 3), mirroring the
-// protocol's error-detail {2 => reason-code} — the response envelope {1 id, 2 code, 3 result} stays as it is. Printed as
-// "reason=<n>" whenever present.
+// reason: the helper's error replies carry an optional reason-code at KEY 1 of the result map (node.go errBody:
+// {1: reason}); printed as "reason=<n>" whenever present (until 254-v16-ud §0.1-7 this read key 2 and never printed it).
+//
+// PROVCLIENT_SIGN_ARGS_SHA=<64 hex> (update-prepare / update-apply only; UD20's negative arm): the owner-op is signed
+// over args_hash({1: that sha}) while the body carries the argv sha; the line shows signed-for=<16 hex>. Any other value,
+// or the variable set on another op, is fatal.
 
 import (
 	"crypto/rand"
@@ -152,19 +155,50 @@ func settingsSetBody(key string, vals []string, fd3 map[string]string) (cmap, er
 	return nil, fmt.Errorf("settings-set: key %d is not one of 1, 2, 10–13, 20", k)
 }
 
-// updateCheckBody: update.check {1: update-manifest}; the manifest is handed over as its encoded CBOR map (must decode).
-func updateCheckBody(manifest []byte) (cmap, error) {
+// updateCheckBody: the helper's update.check {1: manifest BYTES, 2: owner key id} — what provd sends it
+// (provd/update.go: the session's update-check-req {1: update-manifest map} is re-encoded and passed as a bstr, with
+// kid = sha256(owner pub), server.go ownerKID). The manifest must decode as one CBOR map. The pre-UD client sent the map
+// itself and no key 2: bytesArg(a, 1, 0) refused it first, ESchema 20 "arg 1: want 0 bytes" (update.go; found by
+// tests/tools/provclient-helpercheck, 254-v16-ud §0.1-1 named only the missing key 2).
+func updateCheckBody(manifest, ownerPub []byte) (cmap, error) {
 	x, rest, err := cDec(manifest)
 	if _, ok := x.(cmap); err != nil || !ok || len(rest) != 0 {
 		return nil, fmt.Errorf("update-check: the manifest is not one encoded CBOR map")
 	}
-	return cmap{{uint64(1), rawCBOR(manifest)}}, nil
+	if len(ownerPub) == 0 {
+		return nil, fmt.Errorf("update-check: no owner key")
+	}
+	return cmap{{uint64(1), append([]byte(nil), manifest...)}, {uint64(2), sha(ownerPub)}}, nil
 }
 
-// reasonOf: the optional reason-code of a helper reply (see the header): result key 2 when it is a uint
+// bulkOpenBody: bulk.open {1: purpose 0, 2: sha256(SHA256SUMS)} (bulk.go:42-51 requires key 2, 32 bytes)
+func bulkOpenBody(sum []byte) (cmap, error) {
+	if len(sum) != 32 {
+		return nil, fmt.Errorf("bulk-open: sha must be 32 bytes")
+	}
+	return cmap{{uint64(1), uint64(0)}, {uint64(2), sum}}, nil
+}
+
+// reasonOf: the optional reason-code of a helper ERROR reply: result key 1 when it is a uint (node.go errBody)
 func reasonOf(r cmap) (uint64, bool) {
-	v, ok := r.get(2).(uint64)
+	v, ok := r.get(1).(uint64)
 	return v, ok
+}
+
+// signArgsOverride: PROVCLIENT_SIGN_ARGS_SHA for update-prepare / update-apply (nil when unset); fatal otherwise
+func signArgsOverride(op string) []byte {
+	v, set := os.LookupEnv("PROVCLIENT_SIGN_ARGS_SHA")
+	if !set {
+		return nil
+	}
+	if op != "update-prepare" && op != "update-apply" {
+		die("PROVCLIENT_SIGN_ARGS_SHA is only for update-prepare / update-apply, not %s", op)
+	}
+	b, err := hex.DecodeString(v)
+	if err != nil || len(b) != 32 {
+		die("PROVCLIENT_SIGN_ARGS_SHA=%q: want 64 hex", v)
+	}
+	return b
 }
 
 // resultLine formats "RESULT <verb> code=<n>[ reason=<r>]<extra>" — extra already starts with a space or is empty.
@@ -179,8 +213,8 @@ func resultLine(verb string, code uint64, r cmap, extra string) string {
 }
 
 // fmtSettings renders a `settings` map (CDDL): plain for name / country / numbers / the SSID (not a secret: it is on
-// the air, §3.11-6), SHA-256 prefix for any string under key 20 other than the SSID (a passphrase must never be printed —
-// the helper is not supposed to return it, and this client does not trust that).
+// the air, §3.11-6); any other string under key 20 prints only "k20.<n>=present" (a passphrase must never be printed,
+// nor a hash of it — the helper is not supposed to return it, and this client does not trust that).
 func fmtSettings(r cmap) string {
 	if r == nil {
 		return ""
@@ -219,8 +253,8 @@ func fmtSettings(r cmap) string {
 					if e.k == uint64(1) {
 						continue
 					}
-					if s, ok := e.v.(string); ok { // anything else string-valued under key 20 is treated as a secret
-						out += fmt.Sprintf(" k20.%v_sha=%s", e.k, short([]byte(s)))
+					if _, ok := e.v.(string); ok { // anything else string-valued under key 20 is treated as a secret
+						out += fmt.Sprintf(" k20.%v=present", e.k)
 					}
 				}
 			}
@@ -239,7 +273,8 @@ func ifOK(code uint64, s string) string {
 	return s
 }
 
-// fmtProgress renders update-progress {1 phase, 2 percent, ? 3 reason}
+// fmtProgress renders update-progress {1 phase, 2 percent, ? 3 reason, ? 4 sha, ? 5 version} (updwork.go progress):
+// sha = the first 16 hex of key 4 (sha256(SHA256SUMS), not a secret); a version outside the version charset prints "?"
 func fmtProgress(r cmap) string {
 	if r == nil {
 		return ""
@@ -248,15 +283,26 @@ func fmtProgress(r cmap) string {
 	if fr, ok := r.get(3).(uint64); ok {
 		s += fmt.Sprintf(" fail_reason=%d", fr)
 	}
+	if b, ok := r.get(4).([]byte); ok && len(b) == 32 {
+		s += " sha=" + hex.EncodeToString(b)[:16]
+	}
+	if v, ok := r.get(5).(string); ok && v != "" {
+		if !reVersion.MatchString(v) {
+			v = "?"
+		}
+		s += " version=" + v
+	}
 	return s
 }
 
-// fmtBulkOpen renders bulk-open-resp {1 ssid, 2 passphrase, 3 ip, 4 port, 5 expires}: the passphrase as a sha prefix
+var reVersion = regexp.MustCompile(`^[0-9A-Za-z.+-]{1,80}$`)
+
+// fmtBulkOpen renders bulk-open-resp {1 ssid, 2 passphrase, 3 ip, 4 port, 5 expires, 6 bearer}: nothing from keys 2 / 6
 func fmtBulkOpen(r cmap) string {
 	if r == nil {
 		return ""
 	}
-	return fmt.Sprintf(" ssid=%q psk_sha=%s ip=%q port=%v expires=%v", str(r.get(1)), short([]byte(str(r.get(2)))), str(r.get(3)), r.get(4), r.get(5))
+	return fmt.Sprintf(" ssid=%q ip=%q port=%v expires=%v", str(r.get(1)), str(r.get(3)), r.get(4), r.get(5))
 }
 
 // fmtStatus renders status-resp (keys 1–6, 15 as the sorted names of its tstr keys; values of 15 are not printed)
@@ -387,8 +433,7 @@ func p3Op(cl *client, op string, args []string, fd3 map[string]string, hexArg fu
 		}
 		fmt.Println(resultLine("diag.read", code, r, fmt.Sprintf(" total=%d bytes=%d sha=%s", total, len(all), short(all))))
 	case "update-check":
-		hexArg(1)
-		body, err := updateCheckBody(hexArg(2))
+		body, err := updateCheckBody(hexArg(2), hexArg(1))
 		if err != nil {
 			die("%v", err)
 		}
@@ -411,16 +456,28 @@ func p3Op(cl *client, op string, args []string, fd3 map[string]string, hexArg fu
 		if op == "update-apply" {
 			typ, verb = "update/apply", "update.apply"
 		}
-		env := cl.ownerOp(typ, cmap{{uint64(1), sum}})
+		body := cmap{{uint64(1), sum}}
+		extra := ""
+		var env []byte
+		if over := signArgsOverride(op); over != nil {
+			env = cl.ownerOpSigned(typ, body, cmap{{uint64(1), over}})
+			extra = " signed-for=" + hex.EncodeToString(over)[:16]
+		} else {
+			env = cl.ownerOp(typ, body)
+		}
 		code, r := cl.call(verb, cmap{{uint64(1), cl.h}, {uint64(2), env}})
-		fmt.Println(resultLine(verb, code, r, ifOK(code, fmtProgress(r))))
+		fmt.Println(resultLine(verb, code, r, ifOK(code, fmtProgress(r))+extra))
 	case "update-status":
 		hexArg(1)
 		code, r := cl.call("update.status", cmap{})
 		fmt.Println(resultLine("update.status", code, r, ifOK(code, fmtProgress(r))))
 	case "bulk-open":
 		hexArg(1)
-		env := cl.ownerOp("bulk/open", cmap{{uint64(1), uint64(0)}})
+		body, err := bulkOpenBody(hexArg(2))
+		if err != nil {
+			die("%v", err)
+		}
+		env := cl.ownerOp("bulk/open", body)
 		code, r := cl.call("bulk.open", cmap{{uint64(1), cl.h}, {uint64(2), env}})
 		fmt.Println(resultLine("bulk.open", code, r, ifOK(code, fmtBulkOpen(r))))
 	case "bulk-close":
