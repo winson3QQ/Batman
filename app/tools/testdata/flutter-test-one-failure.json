@@ -1,0 +1,23 @@
+Resolving dependencies...
+Downloading packages...
+  cupertino_icons 1.0.9 (2.0.0 available)
+  material_color_utilities 0.13.0 (0.13.1 available)
+  meta 1.18.3 (1.19.0 available)
+! reactive_ble_mobile 5.6.0 from path third_party\reactive_ble_mobile (overridden)
+  test_api 0.7.12 (0.7.15 available)
+  vector_math 2.4.0 (2.4.4 available)
+Got dependencies!
+5 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+{"protocolVersion":"0.1.1","runnerVersion":null,"pid":17700,"type":"start","time":0}
+{"suite":{"id":0,"platform":"vm","path":"/work/app/test/fixture_one_failure_test.dart"},"type":"suite","time":0}
+{"test":{"id":1,"name":"loading /work/app/test/fixture_one_failure_test.dart","suiteID":0,"groupIDs":[],"metadata":{"skip":false,"skipReason":null},"line":null,"column":null,"url":null},"type":"testStart","time":2}
+{"count":1,"time":5,"type":"allSuites"}
+{"testID":1,"result":"success","skipped":false,"hidden":true,"type":"testDone","time":1072}
+{"group":{"id":2,"suiteID":0,"parentID":null,"name":"","metadata":{"skip":false,"skipReason":null},"testCount":2,"line":null,"column":null,"url":null},"type":"group","time":1074}
+{"test":{"id":3,"name":"fixture: a passing test","suiteID":0,"groupIDs":[2],"metadata":{"skip":false,"skipReason":null},"line":4,"column":3,"url":"file:////work/app/test/fixture_one_failure_test.dart"},"type":"testStart","time":1074}
+{"testID":3,"result":"success","skipped":false,"hidden":false,"type":"testDone","time":1085}
+{"test":{"id":4,"name":"fixture: the one failing test","suiteID":0,"groupIDs":[2],"metadata":{"skip":false,"skipReason":null},"line":5,"column":3,"url":"file:////work/app/test/fixture_one_failure_test.dart"},"type":"testStart","time":1085}
+{"testID":4,"error":"Expected: <2>\n  Actual: <1>\n","stackTrace":"package:matcher                                     expect\npackage:flutter_test/src/widget_tester.dart 473:18  expect\ntest\\fixture_one_failure_test.dart 5:47                  main.<fn>\n","isFailure":true,"type":"error","time":1098}
+{"testID":4,"result":"failure","skipped":false,"hidden":false,"type":"testDone","time":1098}
+{"success":false,"type":"done","time":1115}

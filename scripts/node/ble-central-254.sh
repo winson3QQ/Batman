@@ -98,8 +98,8 @@ cmd_restore() {
 role_fire_restore() {	# deadman on 02: kill the sessions; a possibly leaked IRK => reboot (H-U7), else restart bluetoothd
 	if mark_here irk-exposed; then
 		dm_log "$1" "deadman: 02 IRK may have leaked in the flip segment — reboot (H-U7)"
-		rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"
-		batman-slot reboot committed ble-dm-254; exit 0
+		# the disarm check first, then the lease goes, then the reboot (#254 v1.6 group 4 §15): a refusal exits 3 before any rm
+		dm_disarmed || { dm_log "$1" "$DM_NOCLEAR"; mark_set dm-refused "$1"; echo "RECOVER-REFUSED $DM_NOCLEAR"; exit 3; }; rm -f "$BT/lease" "$ST/dm" "$ST/dm.new"; batman-slot reboot committed ble-dm-254; exit 0
 	fi
 	lim 60 /etc/init.d/bluetoothd restart >/dev/null 2>&1; wait_bluetoothd "" >/dev/null
 }

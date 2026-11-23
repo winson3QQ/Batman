@@ -17,6 +17,13 @@
 #     WRONG-STATE boot=… active=… trial=… extra=-|0   a check failed: nothing was done. extra=- : boot / slot / trial
 #                                  did not match (the extra condition was not run: it may act, e.g. disarm a tryboot);
 #                                  extra=0 : they matched and the extra condition failed (round 6 B-MINOR-3)
+# reboot_guarded's 5th argument `-` = no extra condition (true); its 6th, <pre> (#254 v1.6 group 4 §4.1), is a shell
+#   command run only after every check passed and the tryboot is disarmed, right before the reboot; its output goes to
+#   `logger -t slot-guard`. The reboot follows even when <pre> fails (today's ordering: the node is not left half-done
+#   AND unrebooted); the answer is then `PRE-FAILED SENT`, and the caller FAILs. On WRONG-STATE <pre> never runs.
+# commit_guarded <boot8> <active A|B>
+#   `batman-slot commit` only in that boot, on that slot, in an uncommitted trial (is-trial rc 0). No DISARM: a commit
+#   does not reboot. Output: `SENT <the commit's own output>`, or WRONG-STATE (nothing done).
 # release_guarded <boot8> <active A|B> [wait|nowait] [extra shell condition]
 #   `batman-autocommit release` (wait: `--wait`, the default; nowait: without, then "rc=N") only in that boot, on that
 #   slot, in an uncommitted trial: a release that reaches another boot commits whatever trial runs there (round 6
@@ -37,7 +44,8 @@ DISARM='vcmailbox 0x00038064 4 4 0 >/dev/null 2>&1; set -- $(vcmailbox 0x0003006
 # committed` a plain reboot INTO the tryboot slot, batman-slot cmd_reboot; round 6 A-MAJOR-1). Else nothing is sent.
 DISARMED="[ \"\$($DISARM)\" = tryboot_flag=0 ]"
 _sg_cmd(){
-	local b=$1 a=$2 t=$3 why=$4 x=$5 act=$6
+	local b=$1 a=$2 t=$3 why=$4 x=$5 act=$6 pre=${7:-}
+	[ "$x" = - ] && x=true
 	case "$b" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) b=invalid-boot ;; esac
 	case "$a" in A|B) ;; *) a=invalid-slot ;; esac
 	case "$t" in 0|1|any) ;; *) t=invalid-trial ;; esac
@@ -49,8 +57,13 @@ _sg_cmd(){
 	[ "$act" = rollback ] && rb="if batman-slot rollback >/dev/null 2>&1; then $rb; else echo REFUSED; fi"
 	[ "$act" = release ] && rb="batman-autocommit release --wait 2>&1"
 	[ "$act" = release-nowait ] && rb="batman-autocommit release 2>&1; echo rc=\$?"
+	[ "$act" = commit ] && rb="o=\$(batman-slot commit 2>&1); echo \"SENT \$o\""
+	# <pre>: after every check (and DISARMED), before the reboot; its rc decides SENT / PRE-FAILED SENT, the reboot is sent
+	# either way (group 4 §4.1)
+	[ "$act" = reboot ] && [ -n "$pre" ] && rb="p=\$( { $pre; } </dev/null 2>&1 ); pr=\$?; [ -n \"\$p\" ] && printf '%s\n' \"\$p\" | logger -t slot-guard; logger -t slot-guard \"pre-action rc=\$pr\"; (batman-slot reboot committed $why </dev/null >/dev/null 2>&1 &); if [ \$pr = 0 ]; then echo SENT; else echo 'PRE-FAILED SENT'; fi"
 	printf '%s' "b=\$(cut -c1-8 /proc/sys/kernel/random/boot_id 2>/dev/null); a=\$(batman-slot active 2>/dev/null); batman-slot is-trial >/dev/null 2>&1; t=\$?; if [ -n \"\$b\" ] && [ \"\$b\" = '$b' ] && [ \"\$a\" = '$a' ] && { [ '$t' = any ] || [ \"\$t\" = '$t' ]; }; then if { $x; }; then $rb; else echo \"WRONG-STATE boot=\$b active=\$a trial=\$t extra=0\"; fi; else echo \"WRONG-STATE boot=\$b active=\$a trial=\$t extra=-\"; fi"
 }
 rb_guarded(){ _sg_cmd "$1" "$2" "$3" "$4" "${5:-true}" rollback; }
-reboot_guarded(){ _sg_cmd "$1" "$2" "$3" "$4" "${5:-true}" reboot; }
+reboot_guarded(){ _sg_cmd "$1" "$2" "$3" "$4" "${5:-true}" reboot "${6:-}"; }
+commit_guarded(){ _sg_cmd "$1" "$2" 0 commit true commit; }
 release_guarded(){ local m=release; [ "${3:-wait}" = nowait ] && m=release-nowait; _sg_cmd "$1" "$2" 0 release "${4:-true}" "$m"; }

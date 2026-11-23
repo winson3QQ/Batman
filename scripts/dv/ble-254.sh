@@ -6,6 +6,7 @@
 #            bchk_ble_reboot_254 <periph>                (restart keeps the IRK, a reboot replaces it)
 # Needs: REPO, DIR (results dir), scripts/lib/ble-254.sh. Every FAIL line starts with "FAIL".
 . "$REPO/scripts/lib/ble-254.sh"
+. "$REPO/scripts/dv/slot-guard-254.sh"   # the slot guard (#254 v1.6 group 4 §4.2 row 2)
 
 ble_judge_a() {	# tier-A judge on one node (read-only)
 	cat "$REPO/scripts/node/ble-lib-254.sh" "$REPO/scripts/node/ble-privacy-254.sh" | timeout 90 ssh "${BLE_SSHO[@]}" "root@$1" sh -s
@@ -286,12 +287,15 @@ ble_rekey_verified() {	# rekey 04, then prove the KERNEL uses the new IRK: a fre
 	ble_n "$p" 30 periph rekey-verified
 }
 ble_reboot_committed() {	# explicit-partition reboot (E30), wait for the new boot
-	local n=$1 b0 b1 t
+	local n=$1 b0 b1 t sl o
 	b0=$(timeout 15 ssh "${BLE_SSHO[@]}" "root@$n" 'cat /proc/sys/kernel/random/boot_id')
 	# no boot_id before = no reboot proof after (04, 2026-11-01: 02 unreachable while 04 rebooted -> "boot  -> <same id>"
 	# passed although 02 never rebooted)
 	case "$b0" in ????????-*) ;; *) echo "FAIL $n: boot_id unreadable before the reboot [$b0] — not rebooting blind"; return 1 ;; esac
-	timeout 30 ssh "${BLE_SSHO[@]}" "root@$n" 'batman-slot reboot committed ble-254 </dev/null >/dev/null 2>&1 &' ; sleep 20
+	# guarded: this boot, its slot, committed, tryboot disarmed; a refusal keeps irk-exposed (the next preflight FAILs on it)
+	sl=$(timeout 15 ssh "${BLE_SSHO[@]}" "root@$n" 'batman-slot active' | tr -d '\r')
+	o=$(timeout 30 ssh "${BLE_SSHO[@]}" "root@$n" "$(reboot_guarded "${b0:0:8}" "$sl" 1 ble-254)" | tr -d '\r')
+	[ "$o" = SENT ] || { echo "FAIL $n: reboot refused [${o:-no answer}] — not rebooted"; return 1; }; sleep 20
 	for t in $(seq 1 60); do b1=$(timeout 10 ssh "${BLE_SSHO[@]}" "root@$n" 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null); [ -n "$b1" ] && [ "$b1" != "$b0" ] && break; sleep 5; done
 	[ -n "$b1" ] && [ "$b1" != "$b0" ] || { echo "FAIL $n did not come back from reboot within ~5 min (reboot did not happen?)"; return 1; }
 	echo "rebooted $n: boot ${b0:0:8} -> ${b1:0:8}"

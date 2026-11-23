@@ -43,7 +43,7 @@ bchk_prov_claim_254() { cl_fixed "$1" || return 1; cl_need DV_PROV_TOOLS DV_CRYP
 bchk_adr_reconcile_254() { bash "$REPO/scripts/dv/addr-defer-reconcile-254.sh" "$1" 2>&1 | cl_judge '^RESULT addr-defer-reconcile-254 PASS$'; }
 bchk_pty_commit_254() { local v; cl_need DV_OTA_PAYLOAD DV_OTA_PAYLOAD_SHA || return 1
 	v=$(cl_ssh "$1" 20 'sed -n "s/^BATMAN_VERSION=//p" /etc/batman-build')
-	V=$v PAY=$DV_OTA_PAYLOAD PSH16=${DV_OTA_PAYLOAD_SHA:0:16} bash "$REPO/scripts/dv/pty-commit-254.sh" "$1" normal 2>&1 | cl_judge '^RESULT pty-commit normal PASS$'; }
+	DV_DIR=$DIR V=$v PAY=$DV_OTA_PAYLOAD PSH16=${DV_OTA_PAYLOAD_SHA:0:16} bash "$REPO/scripts/dv/pty-commit-254.sh" "$1" normal 2>&1 | cl_judge '^RESULT pty-commit normal PASS$'; }
 # chain1 runs on 04 only (MAC-checked inside); 04's address is the bench store's (prov-dv-254.sh node04_ip)
 bchk_chain1_254() { local v; is_node04 "$1" || { echo "FAIL chain1-254 is 04-only and DNODE $1 is not 04 ($(node04_ip))"; return 1; }
 	cl_need DV_OTA_PAYLOAD DV_OTA_PAYLOAD_SHA DV_PROV_TOOLS || return 1

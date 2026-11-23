@@ -11,6 +11,7 @@
 # Type: 02 hold+back / 04 hold+revert / both A. Side effects: 02 ~15 min (2 reboots), 04 ~45 min off the mesh.
 set -u
 PR_UNIT=prov-ac-fleetchan-254
+PR_USES_02=1   # part 1 OTAs 02 and rolls it back: pr_begin requires 02 A committed on V (254-v16-group4 §13.3)
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
 TRACE=/opt/batdata/log/ota-trace.log
@@ -22,6 +23,7 @@ pwait(){	# <secs> <boot to leave>: 02 back with another boot id -> PS
 }
 part1(){
 	local s b0 hv t
+	pr_need_02 "part 1 (02 OTA + back to A)" || return 1
 	s=$(qp "$ST"); say "02 before: $s"
 	[ "$(field "$s" slot)" = A ] && [ "$(field "$s" trial_rc)" = 1 ] && [ "$(field "$s" ver)" = "$PR_V" ] || { no "02 precondition: A committed on V ($s)"; return 1; }
 	b0=$(field "$s" boot)

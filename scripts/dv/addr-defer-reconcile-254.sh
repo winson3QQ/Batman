@@ -5,12 +5,15 @@
 # "FLIP … VALID"; any missing line = FAIL. Two reboots (`batman-slot reboot committed`), committed node only.
 set -u
 NODE=${1:?usage: $0 <node>}; REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "$REPO/scripts/dv/slot-guard-254.sh"   # reboot_guarded: the reboot checks boot / slot / committed / tryboot on the node
 SSHO="-o BatchMode=yes -o ConnectTimeout=6 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o LogLevel=ERROR -o IdentitiesOnly=yes"
 q(){ timeout 60 ssh $SSHO "root@$NODE" "$@" 2>/dev/null | tr -d '\r'; }
 qrc(){ timeout 60 ssh $SSHO "root@$NODE" "$@" >/dev/null 2>&1; }   # rc = the remote command's rc (q's rc is tr's)
 bid(){ q 'cat /proc/sys/kernel/random/boot_id' | tr -d '\n '; }
 fails=0; ok(){ echo "PASS $*"; }; no(){ echo "FAIL $*"; fails=$((fails + 1)); }
-reboot_c(){ local b0 b t u; b0=$(bid); q "(batman-slot reboot committed adr-254 </dev/null >/dev/null 2>&1 &)"; t=$SECONDS
+# guarded (#254 v1.6 group 4 §4.2 row 1): this boot, the slot it runs, committed; an empty boot id is refused
+reboot_c(){ local b0 b t u sl o; b0=$(bid); sl=$(q 'batman-slot active')
+	o=$(q "$(reboot_guarded "${b0:0:8}" "$sl" 1 adr-254)"); [ "$o" = SENT ] || { no "reboot refused [${o:-no answer}] — not rebooted"; return 1; }; t=$SECONDS
 	while [ $((SECONDS - t)) -lt 900 ]; do sleep 10; b=$(bid); [ -n "$b" ] && [ "$b" != "$b0" ] && break; done
 	[ -n "$b" ] && [ "$b" != "$b0" ] || { no "reboot did not happen within 900 s"; return 1; }
 	while [ $((SECONDS - t)) -lt 900 ]; do u=$(q 'cut -d. -f1 /proc/uptime'); [ "${u:-0}" -ge 120 ] && break; sleep 10; done

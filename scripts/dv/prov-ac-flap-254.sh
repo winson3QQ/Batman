@@ -1,44 +1,78 @@
 #!/bin/bash
-# scripts/dv/prov-ac-flap-254.sh — #254 tier-B unit autocommit (9) (docs/design/254-h23-harness.md §6.2; F14, F42):
-# characterization — a helper that keeps exiting (wbox helper-flap: exit 5 s after serving, procd respawns) does not
-# stop a trial from being judged commit-worthy (BLE health is WARN-only, P-U5). L39's real intent (provd flap) is §6.3.
+# scripts/dv/prov-ac-flap-254.sh — #254 tier-B unit autocommit (9) (docs/design/254-h23-harness.md §6.2; F14, F42;
+# the P3 rule: docs/design/254-v16-group4.md §1): a trial whose helper keeps exiting (wbox helper-flap: exit 5 s after
+# serving, procd respawns it) is NOT commit-worthy — P3 (#324) made the helper running (a) and `provd-stable`
+# written (b) part of health_ok (batman-autocommit `svc batman-provhelper down` / `batman-provd not stable for 60 s
+# yet this boot`), and the deadline revert removes the trial even while it is held. The helper never lives the 60 s
+# that provd-stable needs, so every poll's why is (a) or (b) and HELD cannot occur (deterministic).
 #   precondition: ble-ok present (S0)
-#   -wbox helper-flap hold into B -> the mutant is live (>= 2 "WBOX-helper-flap-f4703b1d: exiting" lines) -> the
-#   helper's health file is this boot's and fresh (not stale, F14) -> the real main's WARN ble line and "is healthy
-#   and HELD" (content recorded) -> in the same trial a background dry run
-#   (AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=<uptime+120>, killed after 180 s; no `timeout`
-#   applet on the node) prints "DRYRUN decision: COMMIT slot B (services 3x10s, mesh samples <n>)" -> back to A.
-#   The mutant slot is never really committed (v4 A-M1); the dry run's own markers (ctl included) are in
-#   autocommit.dry.d since #254 L96 (autocommit.ctl.dry before).
-# Type: hold / A. Side effects: 04 ~45 min, B rewritten twice (wbox, then V), ~4 reboots.
+#   -wbox helper-flap hold into B -> every 10 s in the trial boot, until 30 s before the trial's own deadline
+#   ($RUNDIR/autocommit.deadline), one autocommit.why sample, each logged -> the mutant is live (>= 2
+#   "WBOX-helper-flap-f4703b1d: exiting" lines) and the helper's health file is this boot's and fresh (F14) ->
+#   pr_wait_reverted (HELD = FAIL, a deferral renews the lease, a panic = INVALID; it finds the node again on A) ->
+#   acflap_judge <samples> <revert line>: at least one sample contains (a), and the revert reason is (a) or (b) ->
+#   pr_end revert (bad-slot checked and removed, restore, B back to V).
+# The pre-P3 judgement (HELD + a dry run deciding COMMIT) is gone; its timed dry run (E-H5 #2) is in
+# prov-autocommit-p3-254 (AC1, the healthy case). Offline test of the judge: scripts/dv/test-acflap-254.sh.
+# Type: hold+revert / A. Side effects: 04 ~45 min, B rewritten twice (wbox, then V), ~4 reboots.
 set -u
 PR_UNIT=prov-ac-flap-254
+W=WBOX-helper-flap-f4703b1d
+ACF_A="svc batman-provhelper down"; ACF_B="batman-provd not stable"
+# acflap_judge <samples, one why per line> <TRIAL-REVERTED line>: one line "ACFLAP PASS|FAIL: <why>"; rc 0 = PASS
+acflap_judge(){
+	local s=$1 r=$2 n
+	n=$(printf '%s\n' "$s" | grep -c .)
+	[ "$n" -gt 0 ] || { echo "ACFLAP FAIL: no autocommit.why sample — nothing observed in the trial"; return 1; }
+	printf '%s\n' "$s" | grep -qF -- "$ACF_A" || { echo "ACFLAP FAIL: (a) never observed: no sample of $n contains '$ACF_A'"; return 1; }
+	[ -n "$r" ] || { echo "ACFLAP FAIL: no TRIAL-REVERTED line"; return 1; }
+	case "${r##*reason=}" in
+		*"$ACF_A"*|*"$ACF_B"*) echo "ACFLAP PASS: (a) in $(printf '%s\n' "$s" | grep -cF -- "$ACF_A") of $n samples; revert reason: ${r##*reason=}"; return 0 ;;
+		*) echo "ACFLAP FAIL: the revert reason is neither (a) nor (b): ${r##*reason=}"; return 1 ;;
+	esac
+}
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
-W=WBOX-helper-flap-f4703b1d
+SAMPLES=""
+# sample: autocommit.why every 10 s in the trial boot until 30 s before its deadline; rc 1 when the trial ended early
+sample(){
+	local dl b0 o u w t0
+	dl=$(qr '. /usr/lib/batman/rundir.sh; cat $RUNDIR/autocommit.deadline 2>/dev/null'); b0=$(field "$(qr "$ST")" boot)
+	case "$dl" in ''|*[!0-9]*) no "no autocommit deadline in the trial [$dl]"; return 1 ;; esac
+	say "sampling autocommit.why every 10 s until uptime $((dl - 30)) s (the trial's deadline: $dl s)"; t0=$(mono)
+	while :; do
+		o=$(timeout 30 ssh $SSHO root@$NODE '. /usr/lib/batman/rundir.sh; echo "BOOT=$(cut -c1-8 /proc/sys/kernel/random/boot_id) UP=$(cut -d. -f1 /proc/uptime)"; cat $RUNDIR/autocommit.why 2>/dev/null' 2>/dev/null | tr -d '\r')
+		pr_trial_guard_tick "$b0"
+		case "$o" in
+			"BOOT=$b0 UP="*)
+				u=$(head -1 <<< "$o"); u=${u#*UP=}; w=$(tail -n +2 <<< "$o" | head -1)
+				if [ -n "$w" ]; then SAMPLES="$SAMPLES$w"$'\n'; say "why @${u}s: $w"; else say "why @${u}s: (none yet)"; fi
+				[ "${u:-0}" -ge $((dl - 30)) ] 2>/dev/null && return 0 ;;
+			BOOT=*) no "the trial boot $b0 ended before uptime $((dl - 30)) s (now [$(head -1 <<< "$o")])"; return 1 ;;
+		esac
+		[ $(( $(mono) - t0 )) -gt $(( dl + 300 )) ] && { no "no sample at uptime >= $((dl - 30)) s within $((dl + 300)) s of host time"; return 1; }
+		sleep 10
+	done
+}
 flap(){
 	local n h u r o
 	[ "$(qr "[ -e /opt/batdata/state/ble-ok ] && echo present || echo absent")" = present ] || { no "precondition: no ble-ok at S0"; return 1; }
 	pr_ota_b "$PR_V.dirty.wbox-helper-flap" B || return 1
-	pr_wait_held 480 && ok "HELD (helper-flap trial)" || no "not HELD by uptime 480 s"
+	sample || { [ "$(field "$(qr "$ST")" slot)" = B ] && back_to_a; return 1; }
+	# still in the trial, 30 s before its deadline: the mutant was live and the helper's health file is this boot's
 	n=$(qr "logread | grep -c '$W: exiting'")
 	[ "${n:-0}" -ge 2 ] && ok "mutant live: $n helper exits this boot" || { no "mutant had no effect: $n '$W: exiting' lines"; back_to_a; return 1; }
 	h=$(qr '. /usr/lib/batman/rundir.sh; cat $RUNDIR/batman-prov.health 2>/dev/null'); u=$(qr 'cut -d. -f1 /proc/uptime'); say "health: $h (uptime $u)"
 	case "$h" in "boot_id=$(qr 'cat /proc/sys/kernel/random/boot_id') ts="*) ;; *) no "health file not this boot's: [$h]"; back_to_a; return 1 ;; esac
 	r=${h#*ts=}; r=${r%% *}
 	[ $((u - r)) -le 60 ] 2>/dev/null && ok "health fresh: ts $r, uptime $u" || no "health stale: ts $r, uptime $u"
-	r=$(qr "logread | grep -m1 'autocommit.*WARN ble:'"); say "real main WARN: ${r##*WARN ble: }"
-	r=$(qr "logread | grep -m1 'is healthy and HELD'"); say "real main: ${r##*autocommit*: }"
-	# each line stamped with node seconds since the start: E-H5 #2 (§22.6) = the time to the decision, canary included
-	o=$(QT=260 q "u=\$(cut -d. -f1 /proc/uptime); { AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=\$((u + 120)) batman-autocommit run 2>&1 & p=\$!; ( sleep 180; kill \$p 2>/dev/null ) & w=\$!; wait \$p; kill \$w 2>/dev/null; } | while IFS= read -r l; do echo \"+\$(( \$(cut -d. -f1 /proc/uptime) - u ))s \$l\"; done | grep -E 'DRYRUN decision|PRECOMMIT|health regressed' | tail -4")
-	echo "$o" | sed 's/^/    dry: /'
-	t=$(sed -n 's/^+\([0-9]*\)s DRYRUN decision.*/\1/p' <<< "$o" | head -1); say "E-H5 #2: the dry run decided at +${t:-?}s (canary included; bound 180 s)"
-	o=$(sed 's/^+[0-9]*s //' <<< "$o")
-	grep -qE '^DRYRUN decision: COMMIT slot B \(services 3x10s, mesh samples [0-9]+\)' <<< "$o" \
-		&& ok "dry run: $(grep -m1 'DRYRUN decision' <<< "$o")" || no "dry run: no 'DRYRUN decision: COMMIT slot B' within 180 s"
-	back_to_a || return 1
+	if pr_wait_reverted; then
+		o=$(acflap_judge "$SAMPLES" "$PR_REVERT_LINE") && ok "${o#ACFLAP PASS: }" || no "${o#ACFLAP FAIL: }"
+		pr_end revert; return 0
+	fi
+	[ "$(field "$(qr "$ST")" slot)" = B ] && back_to_a
+	return 1
 }
 pr_begin 3000 || { pr_result; exit 1; }
 flap || { pr_abort "helper-flap"; pr_result; exit 1; }
-pr_end
 pr_result

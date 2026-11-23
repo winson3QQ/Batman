@@ -22,7 +22,14 @@ lk=$(cut -d' ' -f2 "$LABKEY.pub" 2>/dev/null)
 	|| { pr_abort "precondition: the lab key is not in p5 identity/dropbear/authorized_keys — a wipe would lock it out"; pr_result; exit 1; }
 ok "precondition: the lab key is in p5's authorized_keys (restored after the wipe)"
 s=$(qr "$ST"); b0=$(field "$s" boot)
-q "firstboot -y >/dev/null 2>&1; (batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &)"
+# guarded with `firstboot -y` as its pre-action (group 4 §4.1): the wipe runs only after every check passed, so a
+# refusal leaves the upper untouched; a failed wipe still reboots (PRE-FAILED SENT) and the unit FAILs
+o=$(q "$(reboot_guarded "$b0" A 1 prov-dv-254 - 'firstboot -y')")
+case "$o" in
+	SENT) ;;
+	"PRE-FAILED SENT") pr_find 900 "$b0"; pr_abort "firstboot -y failed (the reboot was sent anyway)"; pr_result; exit 1 ;;
+	*) pr_abort "wipe + reboot refused [${o:-no answer}] — nothing wiped"; pr_result; exit 1 ;;
+esac
 pr_find 900 "$b0" || { pr_abort "reboot after the wipe"; pr_result; exit 1; }
 [ "$(qr '[ -e /etc/.dv-prov-mark-'"$RUN"' ] && echo kept || echo gone')" = gone ] && ok "the upper was wiped (the snapshot's overlay marker is gone)" || no "the upper was not wiped (marker still there)"
 pr_pc_place || { pr_abort "place after the wipe"; pr_result; exit 1; }

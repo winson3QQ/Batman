@@ -1,10 +1,11 @@
 #!/bin/bash
 # scripts/dv/prov-autocommit-p3-254.sh — #254 H4 appendix A.10, the RD rows that need no seam (p3-how "n"):
-# autocommit's dry run on the committed slot (AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1, as prov-ac-flap-254) says
+# autocommit's dry run on the committed slot (AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1) says
 # what the real trial decision would be. P3 (254-p3 §3.7.6, D16, D17) adds to the decision: the helper running,
 # provd stable for >= 60 s (helper's $RUNDIR/provd-stable, 254-h4 §5.6), `inet fw4` present, and WARN-only exceptions
 # for a DISABLED provd / helper.
-#   AC1  everything up -> COMMIT (the positive control; also the P of every row below)
+#   AC1  everything up -> COMMIT (the positive control; also the P of every row below); its dry run is timed: E-H5 #2
+#        (moved from prov-ac-flap-254, whose P3 trial is never healthy; #254 g4 §1)
 #   AC3  helper stopped -> REVERT                 (the helper is a P3 health input)
 #   AC6  provd disabled (not just stopped) -> COMMIT + WARN   (D6: a node that chose no BLE is still a node)
 #   AC8  no `inet fw4` table -> REVERT            (D-17: a signed image with a broken include must not be committed
@@ -23,15 +24,20 @@ PR_BASE=member
 . "$(dirname "$0")/prov-254.sh"
 pr_begin 2400 || { pr_result; exit 1; }
 SLOT=$(field "$(qr "$ST")" slot)
-dry(){	# <label>: one dry run (<= 180 s), prints the decision line; DRY = that line
+dry(){	# <label>: one dry run (<= 180 s), prints the decision line; DRY = that line, DRYT = node s to the decision
 	local o
-	o=$(QT=260 q "u=\$(cut -d. -f1 /proc/uptime); { AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=\$((u + 120)) batman-autocommit run 2>&1 & p=\$!; ( sleep 180; kill \$p 2>/dev/null ) & w=\$!; wait \$p; kill \$w 2>/dev/null; }")
+	# each line stamped with node seconds since the start — the timed run of prov-ac-flap-254's old dry-run arm, moved
+	# here unchanged (#254 g4 §1): E-H5 #2 (254-h23 §22.6) = the time to the decision, canary included; AC1 reports it
+	o=$(QT=260 q "u=\$(cut -d. -f1 /proc/uptime); { AUTOCOMMIT_DRYRUN=1 AUTOCOMMIT_FORCE_TRIAL=1 AUTOCOMMIT_TIMEOUT=\$((u + 120)) batman-autocommit run 2>&1 & p=\$!; ( sleep 180; kill \$p 2>/dev/null ) & w=\$!; wait \$p; kill \$w 2>/dev/null; } | while IFS= read -r l; do echo \"+\$(( \$(cut -d. -f1 /proc/uptime) - u ))s \$l\"; done")
+	DRYT=$(sed -n 's/^+\([0-9]*\)s DRYRUN decision.*/\1/p' <<< "$o" | head -1)
+	o=$(sed 's/^+[0-9]*s //' <<< "$o")
 	DRY=$(grep -m1 'DRYRUN decision' <<< "$o"); DRYWARN=$(grep -c 'WARN' <<< "$o")
 	echo "$o" | grep -E 'DRYRUN decision|WARN|revert|REVERT' | head -6 | cut -c1-180 | sed "s/^/    $1: /"
 	[ -n "$DRY" ] || inv "$1: no DRYRUN decision line within 180 s"
 }
 # ---- AC1 positive control
 dry AC1
+say "E-H5 #2: the dry run decided at +${DRYT:-?}s (canary included; bound 180 s)"
 case "$DRY" in *"COMMIT slot $SLOT"*) ok "AC1: everything up -> COMMIT";; *) no "AC1: want COMMIT: [$DRY]";; esac
 # ---- AC3 helper stopped
 q "/etc/init.d/batman-provhelper stop" >/dev/null; sleep 5

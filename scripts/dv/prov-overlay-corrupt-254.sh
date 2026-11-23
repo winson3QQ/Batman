@@ -16,7 +16,8 @@ garbage(){ q 'head -c 512 /dev/urandom > /etc/batman-prov/prov.cbor.dv && mv /et
 pr_begin 3000 || { pr_result; exit 1; }
 m0=$(qr 'cat /etc/batman-prov/prov.meta'); say "prov.meta before: $m0"
 [ "$(garbage)" = GARBAGE ] || { pr_abort "write garbage"; pr_result; exit 1; }
-s=$(qr "$ST"); b0=$(field "$s" boot); q "(batman-slot reboot committed prov-dv-254 </dev/null >/dev/null 2>&1 &)"
+s=$(qr "$ST"); b0=$(field "$s" boot); o=$(q "$(reboot_guarded "$b0" A 1 prov-dv-254)")
+[ "$o" = SENT ] || { pr_abort "reboot refused [${o:-no answer}]"; pr_result; exit 1; }
 pr_find 900 "$b0" || { pr_abort "reboot"; pr_result; exit 1; }
 l=$(qr "logread | grep 'batman-provhelper' | grep -E 'overlay record unusable|boot rc=' | head -3"); echo "$l" | sed 's/^/    /'
 grep -q 'overlay record unusable:' <<< "$l" && ok "helper: overlay record unusable" || no "no 'overlay record unusable:' line"
