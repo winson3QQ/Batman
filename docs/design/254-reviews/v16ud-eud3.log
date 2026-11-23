@@ -1,0 +1,9 @@
+=== MESH-GROUP lines in logread (count only)
+3
+=== lines naming the mesh id, by tag (counts only)
+      1 kernel
+      6 wpa_supplicant_s1g
+=== encryption
+sae
+=== key passes halow-setkey --check-only (rc only)
+rc=0
