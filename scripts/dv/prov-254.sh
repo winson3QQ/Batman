@@ -193,9 +193,9 @@ pr_stage(){
 	local f o h
 	o=$( { cat "$REPO/scripts/node/ble-lib-254.sh"; echo "scratch; d=\$BT/$RUN; [ -e \"\$d\" ] && { echo \"FAIL \$d exists\"; exit 1; }; mkdir -m 700 \"\$d\" && echo STAGED-DIR"; } | timeout 30 ssh $SSHO root@$NODE sh -s 2>&1 | tr -d '\r')
 	grep -q STAGED-DIR <<< "$o" || { echo "FAIL could not create $PRD: $o"; return 1; }
-	scp -q $SSHO "$REPO/scripts/node/ble-lib-254.sh" "$REPO/scripts/node/prov-lease-254.sh" "$REPO/scripts/node/prov-wbox-254.sh" "$REPO/scripts/node/prov-undo-lib-254.sh" "$REPO/scripts/node/prov-ethsim-254.sh" root@$NODE:$PRD/ || { echo "FAIL scp of the node scripts"; return 1; }
+	scp -q $SSHO "$REPO/scripts/node/ble-lib-254.sh" "$REPO/scripts/node/prov-lease-254.sh" "$REPO/scripts/node/prov-wbox-254.sh" "$REPO/scripts/node/prov-undo-lib-254.sh" "$REPO/scripts/node/prov-ethsim-254.sh" "$REPO/scripts/node/ud9-watch-254.sh" root@$NODE:$PRD/ || { echo "FAIL scp of the node scripts"; return 1; }
 	q "chmod 700 $PRD/*"; o=$(pl stage-check) || { echo "$o"; return 1; }
-	for f in ble-lib-254.sh prov-lease-254.sh prov-wbox-254.sh prov-undo-lib-254.sh prov-ethsim-254.sh; do
+	for f in ble-lib-254.sh prov-lease-254.sh prov-wbox-254.sh prov-undo-lib-254.sh prov-ethsim-254.sh ud9-watch-254.sh; do
 		h=$(sha256sum < "$REPO/scripts/node/$f" | cut -c1-64)
 		grep -q "^$h  $f\$" <<< "$o" || { echo "FAIL $f on the node differs from the host copy"; return 1; }
 	done
@@ -461,7 +461,8 @@ pr_compare(){
 # PR_RCYCLE_OUT = the restore output. rc 1 = a step failed (not the compare: the caller judges that)
 pr_restore_cycle(){
 	local o s b0 skip=${1:-}
-	s=$(qr "$ST"); if [ "$(field "$s" trial_rc)" = 0 ]; then back_to_a || { pr_needs_person "restore: cannot leave the trial"; return 1; }; s=$PR_STATE; fi
+	# a trial, or B committed (#254 v1.6 g4 PR B §4.2: prov-update-254's UD1 commits B; back_to_a handles B committed)
+	s=$(qr "$ST"); if [ "$(field "$s" trial_rc)" = 0 ] || [ "$(field "$s" slot)" = B ]; then back_to_a || { pr_needs_person "restore: cannot leave the trial / slot B"; return 1; }; s=$PR_STATE; fi
 	[ "$(field "$s" slot)" = A ] && [ "$(field "$s" trial_rc)" = 1 ] || { pr_needs_person "restore: not on A committed ($s)"; return 1; }
 	pr_lease_renew +1800 || return 1
 	pl restoring set >/dev/null
@@ -564,6 +565,11 @@ pr_release(){
 		grep -q '^RADIO clean' <<< "$o" || no "radio state after the restore: $(echo $o)"
 		o=$(pl provd-reset); case "$o" in *"PROVD ok"*|*"PROVD absent"*) say "$(echo "$o" | tail -1)" ;; *) no "provd after the run: $(echo $o)" ;; esac
 	fi
+	# #254 v1.6 g4 PR B (254-v16-ud §1.5-7): the UD9 watcher's p6 log is printed (UD9-* lines only: positions, sizes,
+	# uptimes, device names) with its sha256 before it is removed, and no ud9-watch may be alive after the run
+	o=$(qr "f=/opt/batdata/log/dv-ud9-$RUN.log; if [ -f \$f ]; then echo \"UD9LOG sha256=\$(sha256sum < \$f | cut -c1-64)\"; tr -s ' ' < \$f | grep -v '^ *\$' | sed 's/^/UD9LOG /'; rm -f \$f; fi; echo \"UD9W \$(ps w | grep -c '[u]d9-watch')\"")
+	grep '^UD9LOG ' <<< "$o" | while IFS= read -r l; do say "p6 watcher log (removed): ${l#UD9LOG }"; done
+	case "$(sed -n 's/^UD9W //p' <<< "$o")" in 0) ;; *) no "a ud9-watch is still alive after the run: $(sed -n 's/^UD9W //p' <<< "$o") process(es) — the UD-RECOVER block, step 0b2" ;; esac
 	# a lease that is no longer ours expired mid-run, and the deadman restored the node behind the unit (review A-M2)
 	o=$(pl release); grep -q RELEASED <<< "$o" && say "lease released" || no "lease release failed — it expired during the run? ($(echo $o))"
 	# PR_DM_BASE: deadman lines an arm caused on purpose (the L83 arms set it after their own); only lines beyond it count,
@@ -572,12 +578,33 @@ pr_release(){
 	[ "${o:-0}" -le "${PR_DM_BASE:-0}" ] || no "the prov deadman acted during the run ($o line(s) for run $RUN in ble-dm-254.log, ${PR_DM_BASE:-0} expected)"
 	PR_BEGUN=0; pr_unlock
 }
+# pr_undo_first: the run's undo journal, host mode, BEFORE pr_restore (#254 v1.6 g4 PR B, 254-v16-ud §4.3): a journal
+# action that fails is a FAIL before any "S0 restored" line; pr_release's own `pl undo` must then find nothing
+pr_undo_first(){ local o
+	if o=$(pl renew "${PR_UNDO_BUDGET:-1200}") && grep -q '^ARMED' <<< "$o"; then
+		o=$(QT=$(( ${PR_UNDO_BUDGET:-1200} + 60 )) pl undo); grep -qx 'UNDO undo_run host end rc=0' <<< "$o" && return 0
+		no "undo before the restore: $(grep -E '^UNDO (FAIL|CRIT|NEEDS|left)' <<< "$o" | tr '\n' '|')"; return 1
+	fi
+	no "lease gone before the undo — the deadman takes over: $(echo $o)"; return 1
+}
+# pr_ust_end: the unit's update.status at the start (PR_UST0, set by a unit after pr_pc_place) must be the end's: phase,
+# reason and sha (254-v16-ud §4.1). Runs after the restore and the B rewrite; no PR_UST0 = nothing to compare.
+pr_ust_end(){ local u
+	[ -n "${PR_UST0:-}" ] || return 0
+	pr_pc_place || { no "update.status at the end: provclient not placed"; return 1; }
+	u=$(pr_pc h0.pem -- update-status "$H0" | grep '^RESULT update.status')
+	if [ "$(pr_ust_key "$u")" = "$(pr_ust_key "$PR_UST0")" ]; then ok "update.status at the end = at the start ($(pr_ust_key "$u"))"
+	else no "base state not restored: update.status [$u], at the start [$PR_UST0]"; return 1; fi
+}
+pr_ust_key(){ local c p r s; c=$(field "$1" code); p=$(field "$1" phase); r=$(field "$1" fail_reason); s=$(field "$1" sha); echo "code=${c:-?} phase=${p:-?} reason=${r:--} sha=${s:--}"; }
 pr_abort(){
 	no "ABORT: $*"
 	if [ "$PR_SNAPPED" = 1 ]; then
+		[ "${PR_PERSON:-0}" = 1 ] || pr_undo_first
 		if PR_FINAL=1 pr_restore; then
 			# a failed B rewrite keeps the snapshot and the dirty flag for the person (finish only when B is V again)
 			if [ "$PR_WROTE_B" = 1 ] && ! pr_brewrite; then pr_needs_person "abort ($*): B rewrite failed"; pr_release; return 1; fi
+			pr_ust_end
 			pr_finish_snap
 		else pr_needs_person "abort ($*): restore failed"; PR_BEGUN=0; pr_unlock; return 1; fi
 	fi
@@ -591,10 +618,12 @@ pr_end(){	# [revert] [wrote-b]
 		if [ "$b" = "slot=B version=$PR_WBOX_VER" ]; then q 'rm -f /opt/batdata/state/bad-slot; sync'; ok "bad-slot = the reverted wbox trial (removed)"
 		else pr_needs_person "bad-slot [$b] is not slot=B version=$PR_WBOX_VER"; return 1; fi
 	fi
+	pr_undo_first
 	PR_FINAL=1 pr_restore || { pr_needs_person "pr_end: restore failed"; return 1; }
 	s=$(qr "$ST")
 	if [ "$PR_WROTE_B" = 1 ] || [ "$(field "$s" protB)" != "[$PR_V]" ]; then pr_brewrite || { pr_needs_person "pr_end: B rewrite failed"; return 1; }
 	else [ "$(qr "$PROTB_LS")" = "$PR_PROTB_LS" ] && ok "slot-B.protected = V, untouched" || no "slot-B.protected changed"; fi
+	pr_ust_end
 	pr_finish_snap || :   # it reports every failure itself (NEEDS-PERSON)
 	if [ -n "${OWNER:-}" ]; then pr_keys_drop; [ "$(wsl_ bash -c "[ -e $WSLK ] && echo left" | tr -d '\r')" = left ] && no "run keys still in $WSLK" || ok "run keys removed"; fi
 	pr_release
@@ -655,6 +684,14 @@ pr_p9(){	# the P9 subset of pr_begin: S0 slot condition, nothing left of an earl
 	o=$( { cat "$REPO/scripts/node/ble-lib-254.sh"; echo 'radio_clean && echo RADIO-CLEAN'; } | timeout 60 ssh $SSHO root@$NODE sh -s 2>&1 | tr -d '\r')
 	grep -qx RADIO-CLEAN <<< "$o" || { echo "FAIL radio / helper left changed by an earlier run (radio-restore needs a lease: RUN_ID=x sh <staged>/prov-lease-254.sh acquire 300, then radio-restore, then release): $(grep '^FAIL' <<< "$o" | tr '\n' '|')"; r=1; }
 	nb02 || { echo "FAIL 02 ($PEERMAC) is not a mesh neighbour of 04 (neighbours: $(field "$o" peers))"; r=1; }
+	# #254 v1.6 g4 PR B (254-v16-ud §1.5-7, §7.1): no UD9 watcher may be alive; a prov-update-254 run left mid-arm gets
+	# the node P9's manual recovery block printed here, with @NODE@ = this unit's node
+	o=$(qr 'ps w | grep -c "[u]d9-watch"'); [ "${o:-0}" = 0 ] || { echo "FAIL a ud9-watch is alive on 04 ($o): the UD-RECOVER block, step 0b2"; r=1; }
+	case "$(qr 'cut -d" " -f1 /opt/batdata/state/dv-prov-dirty 2>/dev/null')" in pupdate254*)
+		o=$( { echo ': P9;'; cat "$REPO/scripts/node/prov-p9-254.sh"; } | timeout 90 ssh $SSHO root@$NODE sh -s 2>&1 | tr -d '\r')
+		case "$NODE" in *[!A-Za-z0-9.-]*) echo "NOTE UD-RECOVER block not printed: NODE [$NODE] is not a plain address" ;;
+			*) sed -n '/^UD-RECOVER-BEGIN /,/^UD-RECOVER-END /p' <<< "$o" | sed "s/@NODE@/$NODE/g" ;; esac ;;
+	esac
 	return $r
 }
 # The 02 slot contract (254-v16-group4 §3.1 / §13.3 / §15). A unit that changes or needs 02's slot sets PR_USES_02=1
@@ -800,14 +837,36 @@ pr_pc_place(){
 	scp -q $SSHO "$TOOLS/provclient-arm64" root@$NODE:/tmp/run/batman-dv/pc.$RUN.upload || { no "provclient upload"; return 1; }
 	[ "$(q "set -e; mkdir -m 0711 $PCD; mv /tmp/run/batman-dv/pc.$RUN.upload $PCD/provclient; chown root:root $PCD $PCD/provclient; chmod 0755 $PCD/provclient; [ \"\$(sha256sum < $PCD/provclient | cut -c1-64)\" = $s ] && echo PCOK")" = PCOK ] \
 		|| { no "provclient placement in $PCD (pre-existing dir / sha)"; return 1; }
+	# the pre-UD provclient (254-v16-ud §1.1 tool pins): $PCD/provclient.old when the tools carry it (its SHA256SUMS line
+	# was checked above); `pr_pc PCBIN=old` selects it
+	if [ -f "$TOOLS/provclient-arm64.pre-ud" ]; then
+		s=$(sha256sum < "$TOOLS/provclient-arm64.pre-ud" | cut -c1-64)
+		scp -q $SSHO "$TOOLS/provclient-arm64.pre-ud" root@$NODE:/tmp/run/batman-dv/pco.$RUN.upload || { no "pre-UD provclient upload"; return 1; }
+		[ "$(q "set -e; mv /tmp/run/batman-dv/pco.$RUN.upload $PCD/provclient.old; chown root:root $PCD/provclient.old; chmod 0755 $PCD/provclient.old; [ \"\$(sha256sum < $PCD/provclient.old | cut -c1-64)\" = $s ] && echo PCOK")" = PCOK ] \
+			|| { no "pre-UD provclient placement in $PCD (sha)"; return 1; }
+	fi
 }
-# pr_pc <key> [FD3=<node-side sh producing the fd-3 lines>] [PRE=<sh>] [POST=<sh>] [ENV=v ...] -- <op> [args]:
+# pr_pc <key> [FD3=<node-side sh producing the fd-3 lines>] [PRE=<sh>] [POST=<sh>] [GUARD=<prepare|apply>:<boot8>]
+#       [PCBIN=old] [ENV=v ...] -- <op> [args]:
+# GUARD (#254 v1.6 g4 PR B, 254-v16-ud §2): an update-prepare / update-apply runs only inside prepare_guarded /
+# apply_guarded (slot-guard-254.sh) — whatever way the op name was built, pr_pc refuses one without a matching GUARD=,
+# prints `no "unguarded <op>"` and sends nothing. PCBIN=old runs $PCD/provclient.old (the pre-UD binary, step 0).
 # provclient on the node; its SIGN lines go to the WSL signer; the fd-3 producer runs ON the node (a mesh key never
 # crosses to the host). PRE / POST run in the SAME ssh session around it (a bind that must not outlive the op even if
 # the op locks new logins out: prov-claim-kp-254's empty authorized_keys).
 pr_pc(){
-	local key=$1 fd3="" pre="" post="" envs="" f W SIGNP line sig out=""; shift
-	while [ "$1" != -- ]; do case "$1" in FD3=*) fd3=${1#FD3=} ;; PRE=*) pre=${1#PRE=} ;; POST=*) post=${1#POST=} ;; *) envs="$envs $1" ;; esac; shift; done; shift
+	local key=$1 fd3="" pre="" post="" envs="" guard="" pcbin=provclient gb f W SIGNP line sig out=""; shift
+	while [ "$1" != -- ]; do case "$1" in FD3=*) fd3=${1#FD3=} ;; PRE=*) pre=${1#PRE=} ;; POST=*) post=${1#POST=} ;; GUARD=*) guard=${1#GUARD=} ;;
+		PCBIN=old) pcbin=provclient.old ;; PCBIN=*) no "pr_pc: $1 (only PCBIN=old)"; return 1 ;; *) envs="$envs $1" ;; esac; shift; done; shift
+	case "${1:-}" in
+		update-prepare|update-apply)
+			[ -n "$guard" ] || { no "unguarded $1: refused, nothing sent"; return 1; }
+			gb=${guard#*:}
+			[ "${guard%%:*}" = "${1#update-}" ] || { no "pr_pc: GUARD=$guard does not match $1: refused, nothing sent"; return 1; }
+			case "$gb" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) no "pr_pc: GUARD boot [$gb] is not a boot8: refused, nothing sent"; return 1 ;; esac
+			[ -z "$fd3$pre$post" ] || { no "pr_pc: FD3 / PRE / POST with a guarded $1: refused"; return 1; } ;;
+		*) [ -z "$guard" ] || { no "pr_pc: GUARD= on $1 (only update-prepare / update-apply)"; return 1; } ;;
+	esac
 	# #254 wireless-txn §19.4: a verb may run a Finish (setkey <= 180 s + a save) and then its own setkey (<= 180 s);
 	# provclient's 30 s default would time out on a slow node while the helper completes the change -> 240 s unless
 	# the unit says otherwise (a timeout means "outcome unknown", never a verdict on the node)
@@ -815,7 +874,8 @@ pr_pc(){
 	f=$(mktemp -d)/p; mkfifo "$f"
 	coproc SIGNP { wsl_ "$TOOLS_WSL/provclient-amd64" sign "$WSLK/$key"; }
 	exec {W}<>"$f"
-	local cmd="$envs $PCD/provclient node $*"
+	local cmd="$envs $PCD/$pcbin node $*"
+	case "${guard%%:*}" in prepare) cmd=$(prepare_guarded "$gb" "$cmd") ;; apply) cmd=$(apply_guarded "$gb" "$cmd") ;; esac
 	[ -n "$fd3" ] && cmd="exec 4<&0; { $fd3; } | $envs $PCD/provclient node $* 3<&0 0<&4"
 	[ -n "$pre$post" ] && cmd="${pre:+$pre >&2; }$cmd; ${post:+$post >&2}"
 	while IFS= read -r line; do

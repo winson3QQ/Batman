@@ -493,6 +493,28 @@ done < "$ALLOW"
 left=$(printf '%s\n' "$left" | grep . || true)
 if [ -z "$left" ]; then ok "lint (1): every slot command in scope is the guard or allowlisted ($(grep -c . <<< "$raw") allowlisted lines)"
 else no "lint (1): slot command outside the guard: $(cut -c1-160 <<< "$left" | tr '\t\n' ': ')"; while IFS=$'\t' read -r f t; do named 1 "$f" "$t"; done <<< "$left"; fi
+# (1u) #254 v1.6 g4 PR B (254-v16-ud §2): every provclient update-prepare / update-apply goes through pr_pc GUARD=: a
+# non-comment line naming either op without "GUARD=" on it is a FAIL unless allowlisted below (file | text | reason);
+# pr_pc refuses one at run time as well (test-prov-update-254.sh)
+cat > "$T/allow1u" <<'AL'
+scripts/dv/prov-254.sh|update-prepare|update-apply)|pr_pc's run-time refusal itself: the case that requires GUARD=
+AL
+raw=$(hits 'update-(prepare|apply)'); left=$raw
+while IFS= read -r line; do
+	[ -n "$line" ] || continue
+	f=${line%%|*}; rest=${line#*|}; txt=${rest%|*}
+	n=$(printf '%s\n' "$raw" | F=$f TX=$txt awk 'BEGIN { FS = "\t" } $1 == ENVIRON["F"] && index($0, ENVIRON["TX"]) > 0' | grep -c .)
+	[ "$n" -ge 1 ] || { no "lint (1u): allowlist entry no longer found: $f [$txt]"; named 1 "$f" "$txt"; }
+	left=$(printf '%s\n' "$left" | F=$f TX=$txt awk 'BEGIN { FS = "\t" } !($1 == ENVIRON["F"] && index($0, ENVIRON["TX"]) > 0)')
+done < "$T/allow1u"
+left=$(printf '%s\n' "$left" | grep -v 'GUARD=' | grep . || true)
+if [ -z "$left" ]; then ok "lint (1u): every update-prepare / update-apply in scope carries GUARD= ($(grep -c . <<< "$raw") lines)"
+else no "lint (1u): update-prepare / update-apply without GUARD=: $(cut -c1-160 <<< "$left" | tr '\t\n' ': ')"; while IFS=$'\t' read -r f t; do named 1 "$f" "$t"; done <<< "$left"; fi
+# (2c) the GUARD= sites themselves, pinned with their form
+printf '%s\n' 'scripts/dv/prov-update-254.sh:GUARD=apply:"$(boot8)"' 'scripts/dv/prov-update-254.sh:GUARD=prepare:"$(boot8)"' | LC_ALL=C sort > "$T/guard.want"
+hits 'GUARD=(prepare|apply):' | while IFS=$'\t' read -r f c; do printf '%s\n' "$c" | grep -oE 'GUARD=(prepare|apply):[^ ]*' | sed "s#^#$f:#"; done | LC_ALL=C sort > "$T/guard.got"
+d=$(diff "$T/guard.want" "$T/guard.got")
+[ -z "$d" ] && ok "lint (2c): $(wc -l < "$T/guard.got") GUARD= sites, forms as pinned" || { no "lint (2c): GUARD= sites differ: $(echo "$d" | grep '^[<>]' | tr '\n' ' ')"; echo "$d" | sed -n 's/^[<>] //p' | while IFS= read -r l; do named 2 "${l%%:*}" "${l#*:}"; done; }
 # (2) every guarded call site, arguments pinned (a changed slot / trial / condition / pre-action is a deliberate edit of
 # this table). Any use of a guard word counts, quoted or not (round 6 A-MINOR-1: `rb_guarded $b A 1 x` was not pinned).
 cat > "$T/sites.want" <<'SITES'
@@ -510,6 +532,10 @@ scripts/dv/prov-254.sh:rb_guarded "$b0" B any prov-dv-254
 scripts/dv/prov-254.sh:reboot_guarded "$b0" A 1 prov-dv-254
 scripts/dv/prov-254.sh:reboot_guarded "$b0" A 1 prov-dv-254
 scripts/dv/prov-254.sh:release_guarded "$rb0" A
+scripts/dv/prov-254.sh:prepare_guarded "$gb" "$cmd"
+scripts/dv/prov-254.sh:apply_guarded "$gb" "$cmd"
+scripts/dv/prov-update-254.sh:reboot_guarded "$b" A 1 prov-update-254
+scripts/dv/prov-update-254.sh:release_guarded "$PR_LAND_BOOT" B
 scripts/dv/prov-ac-fleetchan-254.sh:rb_guarded "$b0" B any prov-dv-254
 scripts/dv/prov-bench-s0-254.sh:rb_guarded "$BA" A 1 s0-slota
 scripts/dv/prov-bench-s0-254.sh:reboot_guarded "$BA" A 0 s0-slota
@@ -535,7 +561,7 @@ scripts/fault-injection.sh:release_guarded "${HB:0:8}" "$tr" nowait
 scripts/fault-injection.sh:release_guarded "${HB:0:8}" "$tr" nowait
 scripts/fault-injection.sh:rb_guarded "${b1:0:8}" B 1 p5-back-to-A
 SITES
-GW='((rb|reboot|release|commit)_guarded|_sg_cmd)'
+GW='((rb|reboot|release|commit|prepare|apply)_guarded|_sg_cmd)'
 hits "${GW}[[:space:]]" | while IFS=$'\t' read -r f c; do printf '%s\n' "$c" | grep -oE "${GW}[[:space:]]+[^)]*" | sed -E 's/[[:space:]]+$//; s#^#'"$f"':#'; done | LC_ALL=C sort > "$T/sites.got"
 LC_ALL=C sort -o "$T/sites.want" "$T/sites.want"
 d=$(diff "$T/sites.want" "$T/sites.got")

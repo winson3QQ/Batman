@@ -16,6 +16,8 @@
 #   undo                    host-mode undo executor for this run, under the lease lock (the host renews first)
 #   undo-done <id>          the unit did that line's inverse inline and checked it (254-v16-ud §4.3); unknown id = FAIL
 #   ssid-hex                read-only: the S0 AP ssid as "HEX=<hex>|- RT=ok|bad" (encoded on the node, round trip)
+#   ssid-set <hex|->        the unit's INLINE inverse of its ssid change: the journal's own ssid-restore action, run now
+#                           (validated as at undo-add); "SSID-SET ok|FAIL"
 #   undo-pending            read-only: every run's actions not done yet
 #   undo-replay             host mode for every OTHER run with something left (the next run's preflight, own lease)
 # The deadman (dm-fire, after <secs> + 5 without a renew): the undo executor (254-h4 §5.7: segment 1 = faults,
@@ -100,6 +102,7 @@ case "$c" in
 	undo) held; undo_run "$RUN_ID" host; _x=$?; unlock; exit $_x ;;
 	undo-done) held; undo_done "$RUN_ID" "${1:-}"; _x=$?; unlock; exit $_x ;;
 	ssid-hex) ssid_hex ;;
+	ssid-set) held; if [ $# = 1 ] && uvalid "$RUN_ID" ssid-restore "$1" && ( uact "$RUN_ID" host ssid-restore "$1" ) 9>&- </dev/null >/dev/null 2>&1; then echo "SSID-SET ok"; _x=0; else echo "SSID-SET FAIL"; _x=1; fi; unlock; exit $_x ;;
 	undo-pending) undo_pending ;;
 	undo-replay) held; _x=0; for _ur_ in $(undo_runs); do [ "$_ur_" = "$RUN_ID" ] && continue; echo "REPLAY $_ur_"; undo_run "$_ur_" host || _x=1; done; unlock; exit $_x ;;	# no restart: provd came back on its own (review A-M4)
 	radio-restore) held; radio_restore; radio_clean && echo "RADIO clean"; unlock ;;	# pr_release; under our lease only

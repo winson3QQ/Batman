@@ -20,14 +20,14 @@
 # sysrq file are read under it; UD9_KILL and UD9_MYSTART replace kill and the own start time there.
 set -u
 MODE=${1:-}; RUN=${2:-}; SQ=${3:-}; BDEV=${4:-}
-R=${UD9_TEST_ROOT:-}
-PROC=$R/proc; LOGD=$R/opt/batdata/log; RD=$R/tmp/run/batman-dv/$RUN; SYSRQ=$R/proc/sysrq-trigger
-KILLC=kill; [ -n "$R" ] && KILLC=${UD9_KILL:-kill}
+UR=${UD9_TEST_ROOT:-}
+PROC=$UR/proc; LOGD=$UR/opt/batdata/log; RD=$UR/tmp/run/batman-dv/$RUN
+KILLC=kill; [ -n "$UR" ] && KILLC=${UD9_KILL:-kill}
 case "$MODE" in observe|kill|cut) ;; *) echo "usage: ud9-watch-254.sh observe|kill|cut <run> <SQ> <bdev>"; exit 2 ;; esac
 case "$RUN" in ''|*[!A-Za-z0-9_-]*) exit 2 ;; esac
 case "$SQ" in ''|*[!0-9]*) exit 2 ;; esac
 case "$BDEV" in /dev/mmcblk0p[0-9]) ;; *) exit 2 ;; esac
-[ -n "$R" ] || [ "$(id -u)" = 0 ] || exit 2
+[ -n "$UR" ] || [ "$(id -u)" = 0 ] || exit 2
 LATE=$((SQ - 8388608)); HALF=$((SQ / 2))
 LOG=$LOGD/dv-ud9-$RUN.log
 upc() { read -r _u _ < "$PROC/uptime"; _s=${_u%.*}; _c=${_u#*.}; echo $(( _s * 100 + ${_c:-0} )); }	# centiseconds
@@ -45,9 +45,9 @@ umask 077
 dd if=/dev/zero bs=4096 count=1 2>/dev/null | tr '\0' ' ' > "$LOG" || exit 3
 sync
 # ---- a process-group leader of its own (setsid), so the journal's kill-pg reaches every child
-set -- $(cat /proc/$$/stat 2>/dev/null | sed 's/.*) //')
+ME=$$; set -- $(cat "/proc/$ME/stat" 2>/dev/null | sed 's/.*) //')
 [ "${3:-}" = "$$" ] || miss "pgid pid=$$ pgid=${3:-?}"
-MYST=${20:-0}; [ -n "$R" ] && MYST=${UD9_MYSTART:-$MYST}
+MYST=${20:-0}; [ -n "$UR" ] && MYST=${UD9_MYSTART:-$MYST}
 T0=$(upc); DL=$((T0 + 90000))
 # ---- nothing before ud9.go (registered first); ud9.stop or the deadline end it
 while [ ! -e "$RD/ud9.go" ]; do
@@ -119,5 +119,5 @@ d=$((u1 - u0)); wline "UD9-PRE-B pos=$p2 fsync_s=$((d / 100)).$((d % 100 / 10))$
 p3=""; while read -r _k _v; do [ "$_k" = pos: ] && { p3=$_v; break; }; done < "$PROC/$DD/fdinfo/1" 2>/dev/null
 case "$p3" in ''|*[!0-9]*) miss "late p3=none" ;; esac
 [ "$p3" -ge "$LATE" ] && miss "late p3=$p3"
-echo b > "$SYSRQ"
+echo b > "$UR/proc/sysrq-trigger"
 exit 0

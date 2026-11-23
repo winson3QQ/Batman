@@ -30,6 +30,13 @@
 #   B-MINOR-5). Output: the release's own output, or WRONG-STATE.
 #   trial: 0 = an uncommitted trial (`batman-slot is-trial` rc 0), 1 = committed, any = either; rc 2 (unknown) matches
 #   only `any`. <boot8> must be 8 lower-case hex digits (a state line's boot=), anything else can never match.
+# prepare_guarded <boot8> <cmd>   (#254 v1.6 g4 PR B, 254-v16-ud §2) <cmd> = the provclient `update-prepare` line,
+#   run only in that boot, on A committed (is-trial rc 1): prepare writes the INACTIVE slot B. Output: <cmd>'s own, or
+#   WRONG-STATE (nothing sent to the helper).
+# apply_guarded <boot8> <cmd>     the same for `update-apply` (it arms the tryboot and reboots), plus DISARMED first: an
+#   armed tryboot left by anything else is cleared and must read 0, else WRONG-STATE extra=0.
+#   Both are reached only through pr_pc GUARD=prepare:<boot8> / GUARD=apply:<boot8> (prov-254.sh), which refuses an
+#   update-prepare / update-apply without one.
 # Callers: anything but SENT is a failure (abort / NEEDS-PERSON), never "go on as if it had been sent". No answer at all
 # (ssh dropped) is not SENT either: the action may or may not have run, so the caller does not guess — it stops and says
 # so (a lost SENT costs a person a look; a guessed one can strand the node).
@@ -52,12 +59,14 @@ _sg_cmd(){
 	case "$why" in *[!A-Za-z0-9._-]*|'') why=invalid-reason ;; esac
 	# a rollback or reboot sent while a tryboot is armed boots the tryboot slot (batman-slot cmd_reboot falls back to a
 	# plain reboot): every one disarms first, and nothing is sent unless the flag then reads 0 (round 7 A-MINOR-4)
-	case "$act" in rollback|reboot) x="{ $x; } && $DISARMED" ;; esac
+	case "$act" in rollback|reboot|apply) x="{ $x; } && $DISARMED" ;; esac
 	local rb="(batman-slot reboot committed $why </dev/null >/dev/null 2>&1 &); echo SENT"
 	[ "$act" = rollback ] && rb="if batman-slot rollback >/dev/null 2>&1; then $rb; else echo REFUSED; fi"
 	[ "$act" = release ] && rb="batman-autocommit release --wait 2>&1"
 	[ "$act" = release-nowait ] && rb="batman-autocommit release 2>&1; echo rc=\$?"
 	[ "$act" = commit ] && rb="o=\$(batman-slot commit 2>&1); echo \"SENT \$o\""
+	# prepare / apply: the provclient line itself (its SIGN round trip stays in the same ssh session)
+	case "$act" in prepare|apply) [ -n "$pre" ] || pre="echo 'NO-COMMAND'"; rb=$pre ;; esac
 	# <pre>: after every check (and DISARMED), before the reboot; its rc decides SENT / PRE-FAILED SENT, the reboot is sent
 	# either way (group 4 §4.1)
 	[ "$act" = reboot ] && [ -n "$pre" ] && rb="p=\$( { $pre; } </dev/null 2>&1 ); pr=\$?; [ -n \"\$p\" ] && printf '%s\n' \"\$p\" | logger -t slot-guard; logger -t slot-guard \"pre-action rc=\$pr\"; (batman-slot reboot committed $why </dev/null >/dev/null 2>&1 &); if [ \$pr = 0 ]; then echo SENT; else echo 'PRE-FAILED SENT'; fi"
@@ -66,4 +75,6 @@ _sg_cmd(){
 rb_guarded(){ _sg_cmd "$1" "$2" "$3" "$4" "${5:-true}" rollback; }
 reboot_guarded(){ _sg_cmd "$1" "$2" "$3" "$4" "${5:-true}" reboot "${6:-}"; }
 commit_guarded(){ _sg_cmd "$1" "$2" 0 commit true commit; }
+prepare_guarded(){ _sg_cmd "$1" A 1 update-prepare true prepare "$2"; }
+apply_guarded(){ _sg_cmd "$1" A 1 update-apply true apply "$2"; }
 release_guarded(){ local m=release; [ "${3:-wait}" = nowait ] && m=release-nowait; _sg_cmd "$1" "$2" 0 release "${4:-true}" "$m"; }

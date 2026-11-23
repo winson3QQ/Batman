@@ -15,6 +15,7 @@ scripts/depersonalise.sh	dbFile: /tmp/run/openmanetd\.db	openmanetd (root) SQLit
 # --- #254 P3 S5 §3.8.2: provd's upload tmpfs (uid 471 writes the upload; root only takes it over after checks) ---
 feed/batman-prov/src/provstore/exec.go	^const BulkDir = "/tmp/run/batman-provd-bulk"$	the one literal: a tmpfs root mounts (init) under root-only /tmp/run before the jail; the helper opens it O_NOFOLLOW, requires fstatfs tmpfs + its own mount point, then unlinks / chowns / leases the file before reading it
 feed/batman-prov/files/batman-provd*.init	^BDIR=/tmp/run/batman-provd-bulk$	the init (root) mounts the tmpfs there: never stacked, never through a symlink, mode 0700 provd; only then put rw into provd's jail (not mounted = not in the jail, the helper refuses bulk.open)
+scripts/dv/prov-update-254.sh	^BULK=/tmp/run/batman-provd-bulk/payload$	prov-update-254 (#254 v1.6 g4 PR B) plays provd: the upload is written and read ONLY as uid 471 through provclient exec; root only lists it with ls -ln (an lstat, never an open), so a FIFO or symlink planted there can never hang or redirect a root process
 # --- uci's save dir /tmp/.uci: made root 0700 by base-files /etc/init.d/boot (START=10, `mkdir -p /tmp/.uci; chmod 0700`,
 # firmware-2710 package/base-files/files/etc/init.d/boot:31-32) before any non-root daemon starts; 04 read-only probe
 # 2026-11-11: root 0700, mtime = boot time. Both readers check root 0700 + not a symlink first and count anything else

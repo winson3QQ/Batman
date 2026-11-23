@@ -124,6 +124,9 @@ scripts/dv/prov-overlay-wipe-254.sh	1	text	pr_find 900 "$b0" || { pr_abort "rebo
 scripts/dv/prov-sshkeys-cut-254.sh	1	text	[ "$(field "$w" p5new)" = 0 ] || inv "p5's authorized_keys was rewritten after the reboot, before the judgement"
 scripts/dv/prov-sshkeys-cut-254.sh	1	allowlisted:deliberate power-loss proxy from the save wrapper (row 33)	cut) logger -t batman-dv \"dv-cut $RUN: sysrq instead of --save\"; echo b > /proc/sysrq-trigger; sleep 30 ;;
 scripts/dv/prov-sshkeys-cut-254.sh	1	text	pr_pc_place || fail_out "provclient after the reboot"
+scripts/dv/prov-update-254.sh	1	text	*UNCLEAN*) echo "INVALID UD4: UNCLEAN — A's own update.apply reboot left no shutdown marker: $1" ;;
+scripts/dv/prov-update-254.sh	1	text	else no "UD10b: reboot [$o] / node not found"; fi
+scripts/dv/prov-update-254.sh	1	text	r=$(ud_poll 120 0 23); ud_phase "$r" 0 23 && ok "UD10b: after the reboot 0 + 23" || no "UD10b: after the reboot [$r]"
 scripts/dv/prov-wbox-nocommit-254.sh	1	text	[ "$o" = SENT ] || { pr_needs_person "wbox slot B committed and the rollback to A was refused — run on 04: batman-slot rollback; batman-slot reboot committed"; return 1; }
 scripts/dv/pty-commit-254.sh	1	text	settle || { LANDED=1; stop "not reachable after the OTA reboot"; }
 scripts/dv/pty-commit-254.sh	1	text	waitboot "$b0" || stop "no reboot (sysup: $(q 'tail -3 /opt/batdata/sysup-ptyc.log'))"
@@ -173,3 +176,4 @@ scripts/node/prov-rbarm-254.sh	1	text	r "FAIL-NEEDS-PERSON rc=$rc a0=$a0 a1=$a1 
 scripts/node/prov-undo-lib-254.sh	1	text	rm-shutdown-reason)\t# the trial label `batman-slot apply` leaves in the run dir (E-H13 pre-step: no reboot follows)
 scripts/node/tmp-trust-280.sh	1	text	CAND="/tmp/batman-autocommit.hold /tmp/batman-fw-override /tmp/autocommit.committed /tmp/batman-reboot.want /tmp/batman-slot.busy /tmp/autocommit.decided /tmp/autocommit.wd /tmp/sysupgrade.tt280"
 scripts/node/tmp-trust-280.sh	1	text	for p in /tmp/batman-autocommit.hold /tmp/batman-fw-override /tmp/autocommit.committed /tmp/batman-reboot.want /tmp/batman-slot.busy; do
+scripts/node/ud9-watch-254.sh	1	allowlisted:deliberate hard-reset proxy while batman-slot write streams (UD9)	echo b > "$UR/proc/sysrq-trigger"
