@@ -1,0 +1,39 @@
+[13:30:21 prov-update-254 pupdate2541123133018] LEASE pupdate2541123133018 until uptime 4961
+=== D1 the bulk tmpfs (mount, dir owner / mode, contents)
+batman-provd-bulk /tmp/run/batman-provd-bulk tmpfs rw,nosuid,nodev,noexec,relatime,size=246700k,nr_inodes=16,mode=700,uid=471,gid=471 0 0
+drwx------    2 471      471             40 Aug 17 09:50 /tmp/run/batman-provd-bulk
+=== D2 update.check of V
+RESULT update.check code=0 ok=true ram=147960218
+Sun Aug 17 10:43:13 2025 daemon.info batman-provhelper[4206]: update.check: 1.5.14-wsl.36+b885a2c.fw302c80b.bench accepted, pending until uptime 4970
+=== D3 bulk.open
+RESULT bulk.open code=3
+Sun Aug 17 10:43:14 2025 daemon.info batman-provhelper[4206]: verb bulk.open refused: code 3 (owner-op signature / nonce)
+=== D4 status with the window
+RESULT update.status code=0 phase=0 percent=0
+=== D5 write 4096 B as 471 (stdin through provclient exec)
+471
+cat-rc=0
+=== D6 right after: root ls -ln, 471 wc -c
+-rw-------    1 471      471           4096 Aug 17 10:43 /tmp/run/batman-provd-bulk/payload
+ls-rc=0
+471
+4096
+=== D7 10 s later (window still open)
+ls: /tmp/run/batman-provd-bulk/payload: No such file or directory
+ls-rc=1
+RESULT update.status code=0 phase=0 percent=0
+=== D8 bulk.close, 8 s later (the tick should have deleted it)
+RESULT bulk.close code=3
+ls: /tmp/run/batman-provd-bulk/payload: No such file or directory
+ls-rc=1
+=== D9 control: write with NO window, 8 s later
+471
+cat-rc=0
+-rw-------    1 471      471           4096 Aug 17 10:43 /tmp/run/batman-provd-bulk/payload
+ls-rc=0
+ls: /tmp/run/batman-provd-bulk/payload: No such file or directory
+ls-rc=1
+=== D10 the helper's lines since D3
+Sun Aug 17 10:43:14 2025 daemon.info batman-provhelper[4206]: verb bulk.open refused: code 3 (owner-op signature / nonce)
+Sun Aug 17 10:43:26 2025 daemon.info batman-provhelper[4206]: verb bulk.close refused: code 3 (owner-op signature / nonce)
+RELEASED
