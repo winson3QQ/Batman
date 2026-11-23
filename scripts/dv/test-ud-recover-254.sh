@@ -12,7 +12,9 @@
 # acquire, no restore / rollback / replay / host undo (the stub models lease_valid_for: a renew of the dead run's own
 # lease succeeds); 7 P9's run-id / version validation (tests/prov-p1/p9-judge.sh's UD cases); 8 no pidof, no
 # rm -rf …/bt/; 9 the watcher kill: the exact command text (kill -TERM "-$p", no "--", a group wait) and, run under
-# busybox sh against real processes, KILLED for the watcher's group and NOT-THE-WATCHER for a mismatching pid.
+# busybox sh against real processes, KILLED for the watcher's group and NOT-THE-WATCHER for a mismatching pid;
+# 10 @S0@ = claimed: the end state is checked against claimed, no extra restore (the v7 block's hard-coded member
+# restores once more and FAILs here); 11 step 3's owner scan prints the record line that equals the S0 file's form.
 # Prints "test-ud-recover: N passed, M failed" (failures name the assert). Zero cases = FAIL.
 set -u
 H=$(cd "$(dirname "$0")/../.." && pwd)
@@ -24,7 +26,8 @@ DEAD=pupdate2541123120000; V=1.5.14-wsl.36; NODEIP=10.9.9.9
 if [ -n "$SRC" ]; then grep -v '^# ud-recover-' "$SRC" > "$W/block.raw"
 else sed -n "/<<'UDREC'\$/,/^UDREC\$/p" "$H/scripts/node/prov-p9-254.sh" | sed '1d;$d' > "$W/block.raw"; fi
 [ -s "$W/block.raw" ] || { bad "no block (P9 here-doc / $SRC)"; echo "test-ud-recover: $P passed, $F failed"; exit 1; }
-sed -e "s/@DEAD@/$DEAD/g" -e "s/@V@/$V/g" -e "s/@NODE@/$NODEIP/g" -e "s/^DEAD=<run from dv-prov-dirty>; V=<BATMAN_VERSION of S0, slot A>\$/DEAD=$DEAD; V=$V/" "$W/block.raw" > "$W/block"
+S0=${UDR_S0:-member}
+sed -e "s/@DEAD@/$DEAD/g" -e "s/@V@/$V/g" -e "s/@S0@/$S0/g" -e "s/@NODE@/$NODEIP/g" -e "s/^DEAD=<run from dv-prov-dirty>; V=<BATMAN_VERSION of S0, slot A>\$/DEAD=$DEAD; V=$V/" "$W/block.raw" > "$W/block"
 # split into steps: "# --- step <id>:" (v6 on) or "# <n>." (v5); a command starts with PR_UNIT= / ssh / DEAD= and runs
 # until the next comment or command
 awk -v d="$W" '
@@ -87,6 +90,7 @@ if [[ $c =~ ^RUN_ID=([A-Za-z0-9_-]+)\ sh\ [^\ ]*/prov-lease-254\.sh\ ([a-z-]+)(\
 	esac; exit 0
 fi
 case "$c" in
+	*hexdump*prov.cbor*) printf 'META v=1 state=%s gen=4 rm=1\nSHA %s\nKEYS 0123456789abcdef,\nH0IN=yes\n' "$UDR_S0" "$(printf '%064d' 9)"; exit 0 ;;
 	*'prov-wbox-254.sh unbind-all'*) echo "UNBIND-ALL ok"; exit 0 ;;
 	*'sh -s -- '*) set -- ${c#*sh -s -- }; L "NB $1"
 		case "$1" in p5-restore) echo "P5-RESTORED $2 x" ;; overlay-restore) echo "OVERLAY-RESTORED $2" ;; manifest) echo "MANIFEST $2" ;;
@@ -107,7 +111,7 @@ case "$c" in
 	*'echo MT='*) echo "MT=100"; exit 0 ;;
 	*'date -r /boot/autoboot.txt'*) echo 100; exit 0 ;;
 	*'is healthy and HELD'*) [ "$(rd trial)" = 0 ]; exit $? ;;
-	*'prov.meta'*) echo member; exit 0 ;;
+	*'prov.meta'*) echo "$UDR_S0"; exit 0 ;;
 	*"prov deadman"*) cat "$N/dmcount" 2>/dev/null || echo 0; exit 0 ;;
 	*'echo PCOK'*) echo PCOK; exit 0 ;;
 	*'node update-status'*) L "STATUS"; echo "RESULT update.status code=0 phase=0 percent=0"; exit 0 ;;
@@ -125,7 +129,7 @@ STUB
 printf '#!/bin/sh\necho "SCP $*" >> "$UDR_N/scp.log"; exit 0\n' > "$W/bin/scp"
 printf '#!/bin/sh\nexit 0\n' > "$W/bin/sleep"
 chmod 755 "$W/bin"/*
-export UDR_N=$W/node UDR_REPO=$H UDR_MAC=88:a2:9e:b5:6c:89 UDR_V=$V UDR_PSHA=$PSHA PATH="$W/bin:$PATH" TEMP=$W/lockdir NODE=$NODEIP PEER=10.9.9.8 \
+export UDR_S0=$S0 UDR_N=$W/node UDR_REPO=$H UDR_MAC=88:a2:9e:b5:6c:89 UDR_V=$V UDR_PSHA=$PSHA PATH="$W/bin:$PATH" TEMP=$W/lockdir NODE=$NODEIP PEER=10.9.9.8 \
 	MAC=88:a2:9e:b5:6c:89 PR_OUT=$W/out PR_OUT_WSL=/x/out DV_PROV_TOOLS=$W/tools
 node(){	# <slot> <trial> [live]: a fresh scripted node; the dead run's journal: p6 slot:A ssid-restore, p6 - p5-save
 	rm -rf "$W/node"; mkdir -p "$W/node/bt"; cd "$W/node" || exit 1
@@ -188,4 +192,17 @@ if ls "$W"/step-0b2.*.ssh >/dev/null 2>&1; then
 		[ "$o" = NOT-THE-WATCHER ] && ok "assert 9c: a pid that is not the watcher's group leader -> NOT-THE-WATCHER, nothing killed" || bad "assert 9c: [$o]"
 	else bad "assert 9b/9c: no busybox"; fi
 else bad "assert 9: the block has no step 0b2 (the watcher kill is not a command)"; fi
+# ---- 10: the start state comes from P9 (@S0@): step 2 checks the end state against it, no extra restore
+node A 1; mkdir -p "$W/node/bt/$DEAD"; step 1 >/dev/null; o=$(step 2)
+if grep -q 'lease released' <<< "$o" && ! grep -qE 'one more final restore|prov state was \[|NEEDS-PERSON' <<< "$o"; then ok "assert 10: @S0@=$S0 — step 2 ends with the node in $S0, no extra restore, no person"
+else bad "assert 10 (S0=$S0): $(grep -E 'final restore|prov state|NEEDS|FAIL' <<< "$o" | head -3 | tr '\n' '|')"; fi
+# ---- 11: step 3's owner scan: one UDSCAN line in the S0 file's form (state, gen, sha, owner fingerprints, H0 in record)
+o=$(step 3); want="UDSCAN v=1 state=$S0 gen=4 rm=1 sha=$(printf '%064d' 9) keys=0123456789abcdef H0-IN-RECORD=yes"
+[ "$(grep -c '^UDSCAN ' <<< "$o")" = 1 ] && grep -qxF "$want" <<< "$o" && ok "assert 11: step 3 prints the owner scan, equal to the S0 file's line for the same record" || bad "assert 11: [$(grep -E 'UDSCAN|ud_owner_scan' <<< "$o" | head -2 | tr '\n' '|')]"
+# ---- 10 / 11 for the other start states: the whole dry run again with the block filled for claimed and legacy
+if [ -z "${UDR_S0_SUB:-}" ] && [ -z "$SRC" ]; then for s in claimed legacy; do
+	o=$(UDR_S0=$s UDR_S0_SUB=1 bash "$0" 2>&1)
+	grep -q '^test-ud-recover: [1-9][0-9]* passed, 0 failed$' <<< "$o" && grep -q "^ok   assert 10: @S0@=$s" <<< "$o" && ok "S0=$s: the whole dry run passes ($(tail -1 <<< "$o"))" || bad "S0=$s: $(grep '^FAIL' <<< "$o" | head -3 | tr '
+' '|')"
+done; fi
 echo "test-ud-recover: $P passed, $F failed"; [ $F = 0 ] && [ $P -gt 0 ]

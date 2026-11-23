@@ -74,14 +74,25 @@ d=$(cat "$ST/dv-prov-dirty" 2>/dev/null)
 # with @DEAD@ = that run and @V@ = slot A's version, both validated whole (no "/", "&" or newline can reach sed);
 # @NODE@ is filled by the host (pr_p9, dv-preflight). Any other run id gets the generic line.
 r=${d%% *}; v=$(cat "$ST/slot-A.protected" 2>/dev/null)
-udr=0
+udr=0; s0=""
 case "$r" in pupdate254[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) udr=1 ;; esac
 case "$v" in ''|*[!A-Za-z0-9.+-]*) udr=0 ;; esac
 [ "${#v}" -le 80 ] || udr=0
+# @S0@ (v9 B m3): the state= field of the dead run's SNAPSHOT prov.meta (its upper tar) — the record pr_begin judged —
+# exactly legacy / claimed / member; the snapshot's prov-state field 3, when it exists, must agree. Else the generic line.
+if [ $udr = 1 ]; then
+	SD=$P9R/opt/batdata/dv-prov/$r
+	s0=$(tar -xOf "$SD/upper.tar" ./etc/batman-prov/prov.meta 2>/dev/null | head -1 | sed -n 's/.* state=\([a-z]*\).*/\1/p; s/^state=\([a-z]*\).*/\1/p' | head -1)
+	case "$s0" in legacy|claimed|member) ;; *) udr=0 ;; esac
+	if [ -f "$SD/snap/state/prov-state" ]; then [ "$(cut -d' ' -f3 "$SD/snap/state/prov-state")" = "$s0" ] || udr=0; fi
+fi
 if [ -n "$d" ] && [ $udr = 1 ]; then
 	no "dv-prov-dirty [$d]: run $r of prov-update-254 stopped mid-arm — NEEDS-PERSON: the manual recovery between UD-RECOVER-BEGIN and UD-RECOVER-END below (docs/design/254-v16-ud.md §7.1), step by step"
+	nm=$(head -1 $P9R/etc/batman-prov/prov.meta 2>/dev/null)
+	nk=$(hexdump -v -e '1/1 "%02x"' $P9R/etc/batman-prov/prov.cbor 2>/dev/null | grep -o '584104[0-9a-f]\{128\}' | grep -c .)
+	echo "UD-OWNERS now: state=$(echo " $nm" | sed -n 's/.* state=\([a-z]*\).*/\1/p') gen=$(echo " $nm" | sed -n 's/.* gen=\([0-9]*\).*/\1/p') owner_keys=$nk; snapshot: state=$s0"
 	echo "UD-RECOVER-BEGIN $r"
-	sed -e "s/@DEAD@/$r/g" -e "s/@V@/$v/g" <<'UDREC'
+	sed -e "s/@DEAD@/$r/g" -e "s/@V@/$v/g" -e "s/@S0@/$s0/g" <<'UDREC'
 # --- step 0a: host lock. If a step prints "a stale lock (host crash / TaskStop)", check that no harness runs, then run the
 #     rm -rf that message names (prov-254.sh:181-188).
 # --- step 0b: read-only state (no lease needed)
@@ -115,7 +126,7 @@ PR_UNIT=prov-update-254 bash -c '. scripts/dv/prov-254.sh; pr_lock; PR_DEADLINE=
 # --- step 2: restore @DEAD@'s snapshot, rewrite B, finish. PR_WROTE_B is set after sourcing (prov-254.sh:47 resets
 #     it); PR_DM_BASE = the dead run's deadman lines already logged (prov-254.sh:569-571). A refused acquire ends the
 #     step at once: pr_release would act on @DEAD@'s lease if it were still live (review v7 A m1)
-PR_UNIT=prov-update-254 RUN=@DEAD@ PR_V=@V@ PR_BASE=member PR_S0_STATE=member bash -c '. scripts/dv/prov-254.sh
+PR_UNIT=prov-update-254 RUN=@DEAD@ PR_V=@V@ PR_BASE=member PR_S0_STATE=@S0@ bash -c '. scripts/dv/prov-254.sh
   PR_WROTE_B=1; pr_lock; PR_DEADLINE=$(( $(mono) + 7200 ))
   PR_DM_BASE=$(qr "grep -c \"run=@DEAD@ prov deadman\" /opt/batdata/log/ble-dm-254.log 2>/dev/null"); PR_DM_BASE=${PR_DM_BASE:-0}
   pr_acquire 7200 || { pr_unlock; exit 1; }
@@ -123,7 +134,9 @@ PR_UNIT=prov-update-254 RUN=@DEAD@ PR_V=@V@ PR_BASE=member PR_S0_STATE=member ba
 # --- step 3: read-only end evidence, as pr_end gives it: status phase 0, no reason, no sha (section 4.1); no watcher
 PR_UNIT=prov-update-254 bash -c '. scripts/dv/prov-254.sh; pr_lock; PR_DEADLINE=$(( $(mono) + 600 )); pr_acquire 600 &&
   pr_h0 && pr_pc_place && pr_pc h0.pem -- update-status "$H0" | grep "^RESULT update.status"
-  q "ps w | grep \"[u]d9-watch\" || echo NO-WATCHER"; pl release; pr_keys_drop; pr_unlock'
+  q "ps w | grep \"[u]d9-watch\" || echo NO-WATCHER"; ud_owner_scan; pl release; pr_keys_drop; pr_unlock'
+#     ud_owner_scan prints prov.meta's v / state / gen / rm, the record sha and the owner fingerprints; compare them
+#     with ~/.batman-dv/ud-s0/@DEAD@.txt (state=@S0@ and the same owners expected)
 UDREC
 	echo "UD-RECOVER-END $r"
 elif [ -n "$d" ]; then no "dv-prov-dirty [$d]: run scripts/dv/prov-254.sh restore for that run (snapshot /opt/batdata/dv-prov/<run>)"; fi

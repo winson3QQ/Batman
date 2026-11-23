@@ -99,8 +99,15 @@ base; G_ACT=""; run; want "batman-slot active unreadable" "fail:fw-part / active
 base; mkdir -p "$R/tmp/run/batman-dv/r1"; sleep 300 & sp=$!; echo $sp > "$R/tmp/run/batman-dv/r1/rbfix.pid"; run; kill $sp; want "a recovery (rbfix.pid) still running" "fail:rollback arm is still running"
 # ---- #254 v1.6 g4 PR B (254-v16-ud §4.3 "P9 scope", §7, §7.1): the UD-RECOVER block and the gated / ungated lines
 UD=pupdate2541123120000
-blockok(){ grep -qx "UD-RECOVER-BEGIN $UD" <<< "$OUT" && grep -qx "UD-RECOVER-END $UD" <<< "$OUT" 	&& ! sed -n '/^UD-RECOVER-BEGIN/,/^UD-RECOVER-END/p' <<< "$OUT" | grep -qE '@(DEAD|V)@' 	&& sed -n '/^UD-RECOVER-BEGIN/,/^UD-RECOVER-END/p' <<< "$OUT" | grep -q "RUN=$UD PR_V=$V PR_BASE=member" 	&& [ "$(sed -n '/^UD-RECOVER-BEGIN/,/^UD-RECOVER-END/p' <<< "$OUT" | grep -c '@NODE@')" = 2 ]; }
-base; echo "$UD 1a2b3c4d snap" > "$R/opt/batdata/state/dv-prov-dirty"; run; want "dirty flag of a prov-update-254 run: NEEDS-PERSON line" "fail:run $UD of prov-update-254 stopped mid-arm"
+# udsnap <state> [<snapshot prov-state field 3>]: the dead run's snapshot (its upper tar holds etc/batman-prov/prov.meta)
+# and the node's live record (prov.meta + a prov.cbor with one 65-byte point) for the state line (v11 B m3 / §7.1)
+udsnap(){ local u=$T/upper; rm -rf "$u"; mkdir -p "$u/etc/batman-prov" "$R/opt/batdata/dv-prov/$UD" "$R/etc/batman-prov"
+	echo "v=1 state=$1 gen=4 rm=1" > "$u/etc/batman-prov/prov.meta"; tar -cf "$R/opt/batdata/dv-prov/$UD/upper.tar" -C "$u" ./etc/batman-prov/prov.meta
+	[ -n "${2:-}" ] && { mkdir -p "$R/opt/batdata/dv-prov/$UD/snap/state"; echo "helper x $2 - radio" > "$R/opt/batdata/dv-prov/$UD/snap/state/prov-state"; }
+	echo "v=1 state=legacy gen=5 rm=1" > "$R/etc/batman-prov/prov.meta"; printf '\x58\x41\x04%064d' 0 > "$R/etc/batman-prov/prov.cbor"; return 0; }
+S0=member
+blockok(){ grep -qx "UD-RECOVER-BEGIN $UD" <<< "$OUT" && grep -qx "UD-RECOVER-END $UD" <<< "$OUT" 	&& ! sed -n '/^UD-RECOVER-BEGIN/,/^UD-RECOVER-END/p' <<< "$OUT" | grep -qE '@(DEAD|V|S0)@' 	&& sed -n '/^UD-RECOVER-BEGIN/,/^UD-RECOVER-END/p' <<< "$OUT" | grep -q "RUN=$UD PR_V=$V PR_BASE=member PR_S0_STATE=$S0 " 	&& [ "$(sed -n '/^UD-RECOVER-BEGIN/,/^UD-RECOVER-END/p' <<< "$OUT" | grep -c '@NODE@')" = 2 ]; }
+base; udsnap member member; echo "$UD 1a2b3c4d snap" > "$R/opt/batdata/state/dv-prov-dirty"; run; want "dirty flag of a prov-update-254 run: NEEDS-PERSON line" "fail:run $UD of prov-update-254 stopped mid-arm"
 cases=$((cases + 1)); blockok && ok "  ... and the UD-RECOVER block with @DEAD@ / @V@ replaced, @NODE@ left for the host" || no "UD-RECOVER block: $(sed -n '/^UD-RECOVER-BEGIN/,/^UD-RECOVER-END/p' <<< "$OUT" | head -3 | tr '
 ' '|')"
 for bad in pfoo2541123120000 " 1a2b snap" "pupdate254x/../.. 1a2b snap" pupdate2541123 pupdate25411231200000; do
@@ -108,22 +115,33 @@ for bad in pfoo2541123120000 " 1a2b snap" "pupdate254x/../.. 1a2b snap" pupdate2
 	cases=$((cases + 1)); if grep -q '^FAIL dv-prov-dirty .*run scripts/dv/prov-254.sh restore' <<< "$OUT" && ! grep -q 'UD-RECOVER' <<< "$OUT"; then ok "dirty flag [$bad]: the generic line, no block"; else no "dirty flag [$bad]: $(tr '
 ' '|' <<< "$OUT" | cut -c1-200)"; fi
 done
-base; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; echo 'x/y&z' > "$R/opt/batdata/state/slot-A.protected"; run
+base; udsnap member member; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; echo 'x/y&z' > "$R/opt/batdata/state/slot-A.protected"; run
 cases=$((cases + 1)); grep -q '^FAIL dv-prov-dirty .*run scripts/dv/prov-254.sh restore' <<< "$OUT" && ! grep -q 'UD-RECOVER' <<< "$OUT" && ok "a slot-A version with / or & never reaches sed: the generic line" || no "bad V: $(tr '
 ' '|' <<< "$OUT" | cut -c1-200)"
 base; mkdir -p "$R/opt/batdata/state/dv-undo/$UD"; echo "3 todo slot:A ssid-restore 6162" > "$R/opt/batdata/state/dv-undo/$UD/journal"; run; want "a pending undo journal: WARN" "warn:undo journal pending: $UD"
 base; mkdir -p "$R/proc/4321"; printf 'sh\0/tmp/run/batman-dv/bt/x/ud9-watch-254.sh\0kill\0' > "$R/proc/4321/cmdline"; run; want "a live ud9-watch: FAIL" "fail:a ud9-watch is alive .pid 4321."
 base; G_BI="bad=1 verified="; run; want "slot B bad=1, no UD dirty flag: WARN" "warn:slot B is BAD"
-base; G_BI="bad=1 verified="; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; run; want "slot B bad=1 with a UD dirty flag: FAIL" "fail:slot B is BAD .* — run $UD"
-base; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; mkdir -p "$R/opt/batdata/dv-prov/$UD/snap/state"; echo old > "$R/opt/batdata/dv-prov/$UD/snap/state/update-last"; echo new > "$R/opt/batdata/state/update-last"; run
+base; G_BI="bad=1 verified="; udsnap member member; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; run; want "slot B bad=1 with a UD dirty flag: FAIL" "fail:slot B is BAD .* — run $UD"
+base; udsnap member member; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; mkdir -p "$R/opt/batdata/dv-prov/$UD/snap/state"; echo old > "$R/opt/batdata/dv-prov/$UD/snap/state/update-last"; echo new > "$R/opt/batdata/state/update-last"; run
 want "update-last != the run's snapshot copy: FAIL" "fail:update-last differs from run $UD"
-base; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; mkdir -p "$R/opt/batdata/dv-prov/$UD/snap/state"; echo same > "$R/opt/batdata/dv-prov/$UD/snap/state/update-last"; echo same > "$R/opt/batdata/state/update-last"; run
+base; udsnap member member; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; mkdir -p "$R/opt/batdata/dv-prov/$UD/snap/state"; echo same > "$R/opt/batdata/dv-prov/$UD/snap/state/update-last"; echo same > "$R/opt/batdata/state/update-last"; run
 cases=$((cases + 1)); grep -q 'update-last' <<< "$OUT" && no "an update-last equal to the snapshot copy was reported" || ok "update-last equal to the snapshot copy: nothing"
 base; echo 1.5.14-wsl.36 > "$R/opt/batdata/state/autocommit-hold-commit"; run; want "hold flag on a committed boot, ungated: WARN" "warn:the hold flag"
 base; G_UCI="wireless.default_radio0.ssid='x'"; run; want "uci changes staged: WARN" "warn:uci has 1 staged change"
-base; G_CS=5; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; run; want "--check rc 5 with a UD dirty flag: FAIL" "fail:batman-config-save --check rc 5"
+base; G_CS=5; udsnap member member; echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; run; want "--check rc 5 with a UD dirty flag: FAIL" "fail:batman-config-save --check rc 5"
 base; G_CS="8 8 0"; run; want "--check rc 8 twice, then 0: clean (retried)" clean-nowarn
 base; G_CS="8 8 8 8"; run; want "--check rc 8 four times: INFO, not judged" "info:rc 8 .busy. after 3 retries"
 base; G_CS=3; run; want "--check rc 3: INFO" "info:batman-config-save --check rc 3"
 [ "$cases" -gt 0 ] || { echo "FAIL no case ran"; exit 1; }
+# @S0@ from the snapshot's prov.meta (v9 B m3): claimed / legacy pass through; a mismatch with the snapshot's prov-state,
+# a state outside legacy / claimed / member, or no snapshot tar -> the generic line, no block
+for c in 'claimed|claimed|block' 'legacy||block' 'member|claimed|generic' 'unclaimed||generic' 'notar||generic'; do
+	IFS='|' read -r st ps w <<< "$c"; base; if [ "$st" = notar ]; then mkdir -p "$R/opt/batdata/dv-prov/$UD"; else udsnap "$st" "$ps"; fi
+	echo "$UD 1a2b snap" > "$R/opt/batdata/state/dv-prov-dirty"; run; cases=$((cases + 1)); S0=$st
+	if [ $w = block ]; then
+		blockok && grep -qx "UD-OWNERS now: state=legacy gen=5 owner_keys=1; snapshot: state=$st" <<< "$OUT" && ok "snapshot state=$st (prov-state [$ps]): PR_S0_STATE=$st + the state line" || no "S0 [$c]: $(grep -E 'UD-OWNERS|PR_S0' <<< "$OUT" | tr '\n' '|')"
+	else
+		grep -q '^FAIL dv-prov-dirty .*run scripts/dv/prov-254.sh restore' <<< "$OUT" && ! grep -q 'UD-RECOVER' <<< "$OUT" && ok "snapshot [$c]: the generic line, no block" || no "S0 [$c]: $(tr '\n' '|' <<< "$OUT" | cut -c1-300)"
+	fi
+done
 echo "P9-JUDGE cases=$cases fails=$fails"; [ "$fails" = 0 ]
