@@ -28,8 +28,10 @@ func (s *stubIdentity) ECDHPub() []byte {
 }
 func (s *stubIdentity) Backend() string { return "stub" }
 
-// The read-only identity verbs answer from whatever Identity the node was given, not from the file backend.
-// Negative control: with Node.KS typed *keystore.Keystore (main 4eba26d) this file does not compile.
+// The read-only identity verbs answer from whatever Identity the node was given, on each request: the node neither
+// reads the file backend directly nor caches identity values. Negative controls: with Node.KS / New typed
+// *keystore.Keystore this file does not compile; with info.cert answered from keystore.Load(n.P.Identity())
+// instead of n.KS, this test fails while the existing TestReadOnly* tests still pass.
 func TestNodeUsesIdentityInterface(t *testing.T) {
 	r := newRig(t, provstore.Unclaimed)
 	stub := &stubIdentity{
