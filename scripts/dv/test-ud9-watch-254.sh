@@ -114,9 +114,9 @@ for sg in TERM HUP USR1; do
 	LOGL=$(tr -s ' ' < "$TR/opt/batdata/log/dv-ud9-$RUNID.log" 2>/dev/null | sed 's/ *$//' | grep .)
 	grep -qx "UD9-MISS signal $sg" <<< "$LOGL" && grep -q "^LOG UD9-MISS signal $sg" "$TR/trace" && ok "SIG$sg: 'UD9-MISS signal $sg' in the log and syslog" || no "signal $sg: [$LOGL]"
 done
-# the shape of the device probe (2026-11-23): parent "sh /tmp/batman-slot write", a "cat /dev/zero | dd of=/dev/null" stream
-mkproc 2000 dd of=/dev/null; printf '%s\0' sh /tmp/batman-slot write > "$TR/proc/5000/cmdline"; rm "$TR/proc/5001/fd/1"; ln -s /dev/null "$TR/proc/5001/fd/1"; go
+# the shape of the device probe (2026-11-23): parent "sh <scratch>/batman-slot write", a "cat /dev/zero | dd of=/dev/null" stream
+mkproc 2000 dd of=/dev/null; printf '%s\0' sh "$T/scratch/batman-slot" write > "$TR/proc/5000/cmdline"; rm "$TR/proc/5001/fd/1"; ln -s /dev/null "$TR/proc/5001/fd/1"; go
 ( i=0; while [ $i -lt 400 ]; do i=$((i + 1)); printf 'pos:\t%s\n' $((i * 1048576)) > "$TR/proc/5001/fdinfo/1.t" && mv "$TR/proc/5001/fdinfo/1.t" "$TR/proc/5001/fdinfo/1"; sleep 0.02; done ) & wp=$!
 runw observe; kill $wp 2>/dev/null; wait $wp 2>/dev/null
-grep -qE "^UD9-OBS fd1=/dev/null pos=[0-9]+,[0-9]+,[0-9]+ sq=$SQ result=bad$" <<< "$LOGL" && ok "isdd matches the device probe's shape (sh /tmp/batman-slot write | dd of=/dev/null): detected, result=bad" || no "probe shape: [$LOGL]"
+grep -qE "^UD9-OBS fd1=/dev/null pos=[0-9]+,[0-9]+,[0-9]+ sq=$SQ result=bad$" <<< "$LOGL" && ok "isdd matches the device probe's shape (sh <scratch>/batman-slot write | dd of=/dev/null): detected, result=bad" || no "probe shape: [$LOGL]"
 echo "test-ud9-watch: $P passed, $F failed"; [ $F = 0 ] && [ $P -gt 0 ]
