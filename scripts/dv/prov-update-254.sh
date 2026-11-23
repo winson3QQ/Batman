@@ -160,7 +160,7 @@ ud_bootinfo(){ local o i; for i in 1 2 3; do o=$(qr "batman-slot bootinfo B 2>&1
 ud_pc(){	# pr_pc + the caps rule; PCBIN=old exempt. INVALID (rc 2) on a missing caps line, with the tool's sha
 	local o pb=new a; for a in "$@"; do [ "$a" = PCBIN=old ] && pb=old; [ "$a" = -- ] && break; done
 	o=$(pr_pc "$@"); printf '%s\n' "$o"
-	[ -n "$o" ] || { inv "provclient printed no output at all (not placed on the node after a reboot, or no ssh answer)"; return 2; }
+	[ -n "$o" ] || { inv "provclient printed no output at all (not placed on the node since its last boot, or no ssh answer)"; return 2; }
 	ud_caps "$o" "$pb" || { inv "provclient printed no caps line (sha $(sha256sum < "$TOOLS/provclient-arm64" | cut -c1-16)): a stale tool — rebuild (scripts/dv-provclient-tools.sh)"; return 2; }
 	return 0; }
 ud_status(){ ud_pc h0.pem -- update-status "$H0" | grep '^RESULT update.status'; }
