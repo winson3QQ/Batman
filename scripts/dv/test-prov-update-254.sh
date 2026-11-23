@@ -197,7 +197,7 @@ qr(){ case "$*" in
 	*"--check 2>&1"*) printf "p5 stale: wireless.default_radio0.ssid\nrc=5\n" ;;
 	*"--check >/dev/null"*) echo 0 ;;
 	*"bootinfo B"*) echo "bad=0 verified=x y"; echo rc=0 ;;
-	*"ls -ln /tmp/run/batman-provd-bulk/payload"*) [ "${SMOKE_UPLOAD:-present}" = present ] && echo "-rw------- 1 471 471 4096 Nov 23 12:00 /tmp/run/batman-provd-bulk/payload" ;;
+	*"ls -ln "*"provd-bulk/payload"*) [ "${SMOKE_UPLOAD:-present}" = present ] && echo "-rw------- 1 471 471 4096 Nov 23 12:00 payload" ;;
 	esac; return 0; }
 pl(){ case "$1" in undo-add) echo "UNDO-ADDED 1 p6 - $2" ;; ssid-hex) echo "HEX=6162 RT=ok" ;; ssid-set) echo "SSID-SET ok" ;; undo-done) echo "UNDO-DONE $2" ;; esac; }
 :'
@@ -205,7 +205,7 @@ cat > "$T/bin/ssh" <<'X'
 #!/bin/bash
 c=""; while [ $# -gt 0 ]; do case "$1" in -o|-p|-i) shift 2 ;; root@*) shift; c="$*"; break ;; *) shift ;; esac; done
 case "$c" in
-	*"cat > /tmp/run/batman-provd-bulk/payload"*) cat >/dev/null; echo 471; case "$c" in *cat-rc*) echo cat-rc=0 ;; esac ;;
+	*"cat > "*"provd-bulk/payload"*) cat >/dev/null; echo 471; case "$c" in *cat-rc*) echo cat-rc=0 ;; esac ;;
 	*"wc -c <"*) echo 99; wc -c < "$UDT/smoke/gen.tgz"; sha256sum < "$UDT/smoke/gen.tgz" ;;
 esac
 exit 0
@@ -218,7 +218,7 @@ else bad "arm_refuse smoke: rc=$rc $(grep -E 'unbound|step 0|STUB pr_end' <<< "$
 grep -q '^PASS prov-update-254: UD13: update.check ok=true' <<< "$o" && ok "arm_refuse smoke: UD13 judged from UDLOG after a direct ud_ul" || bad "arm_refuse smoke: UD13 [$(grep 'UD13' <<< "$o" | head -2 | tr '\n' '|')]"
 o=$(SMOKE_UPLOAD=absent bash -c "$src; $smoke_stubs; arm_write" 2>&1); rc=$?
 if ! grep -q 'unbound variable' <<< "$o" && grep -q '^STUB pr_end wrote-b' <<< "$o" \
-	&& [ "$(grep -c '^INVALID prov-update-254: upload: /tmp/run/batman-provd-bulk/payload is absent right after a 471 write' <<< "$o")" -ge 4 ]; then
+	&& [ "$(grep -c '^INVALID prov-update-254: upload: [^ ]*provd-bulk/payload is absent right after a 471 write' <<< "$o")" -ge 4 ]; then
 	ok "arm_write with the upload absent after the write: INVALID per upload (with ls / status evidence), the arm goes on to pr_end"
 else bad "arm_write smoke (upload absent): rc=$rc $(grep -E 'unbound|absent|STUB pr_end' <<< "$o" | tail -4 | tr '\n' '|')"; fi
 o=$(bash -c "$src; $smoke_stubs; pr_pc(){ while [ \"\$1\" != -- ]; do shift; done; echo \"RESULT \$2 code=0\"; }; ud_status >/dev/null; ud_sync; echo \"INV=\$invalid\"" 2>&1)
