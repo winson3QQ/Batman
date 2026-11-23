@@ -16,6 +16,7 @@ file is committed; tests/keys/*.pub hold only the 65 B public points.
 
   signrel.py <payload.tar.gz> --board B [--serial N] [--downgrade-from v ...] [--min-from v] [--bootcfg-sha h ...]
              [--key other] [--bad-sig] [--mismatch-size N] [--wrong-board] [--unparsable-version]
+             [--unsafe-serial N] [--size-of FILE]
              [--out DIR] [--print-hex]
   signrel.py --verify manifest.cbor [--root T.pub] [--board B]      the harness's own judge (independent parse)
   signrel.py --write-pubs DIR                                        write T.pub / K_test.pub
@@ -166,10 +167,13 @@ def build(args):
     if args.wrong_board:
         board = board + "-wrong"
     # ⚠️ design: key 3 = byte size of the .tar.gz file as given (P3 §3.7.1 "壓縮後的 .tar.gz").
-    size = os.path.getsize(args.payload)
+    # --size-of FILE (254-v16-ud §3.2, UD8 (3)): key 3 is FILE's size while SUMS / metadata / boot total come from the
+    # given payload — the clean twin is parsed, so tarfile never reads the trailing bytes of FILE
+    size = os.path.getsize(args.size_of) if args.size_of else os.path.getsize(args.payload)
     fields = release_fields(version, board, size, netobj.H(sums), boot_total,
                             args.downgrade_from, args.min_from, [bytes.fromhex(h) for h in args.bootcfg_sha])
-    e = endorse(args.serial)
+    # --unsafe-serial N (254-v16-ud §3.2, UD7): E's serial without the ">= 1" guard of --serial (a negative object)
+    e = endorse(args.unsafe_serial if args.unsafe_serial is not None else args.serial)
     s = release(args.key, fields)
     if args.bad_sig:
         s = flip_sig(s)
@@ -304,6 +308,28 @@ def selftest():
         e1 = build(_args(p, serial=1))[0]
         check("--serial 1 -> E serial 1 (still verifies: min-serial is the node's rule)",
               cbor2.loads(cbor2.loads(e1).value[2])[2] == 1 and verify(build(_args(p, serial=1))[2], pub("T")) is not None)
+        # --unsafe-serial (254-v16-ud §3.2): serial 0 goes into E, the judge refuses it with the node's rule text;
+        # --serial 0 is still refused by the parser
+        e0, _, m0, _ = build(_args(p, unsafe_serial=0))
+        check("--unsafe-serial 0 -> E serial 0", cbor2.loads(cbor2.loads(e0).value[2])[2] == 0)
+        expect_fail("--unsafe-serial 0", m0, "E: serial is not a uint >= 1")
+        try:
+            parse([str(p), "--serial", "0"])
+            check("--serial 0 still refused", False)
+        except SystemExit:
+            check("--serial 0 still refused", True)
+        try:
+            parse([str(p), "--unsafe-serial", "-1"])
+            check("--unsafe-serial -1 refused", False)
+        except SystemExit:
+            check("--unsafe-serial -1 refused", True)
+        # --size-of: key 3 = the other file's size, key 4 / 9 from the payload
+        tw = pathlib.Path(d) / "twin-plus-4k.tar.gz"
+        tw.write_bytes(pathlib.Path(p).read_bytes() + bytes(4096))
+        _, _, ms, fs = build(_args(p, size_of=str(tw)))
+        check("--size-of: key 3 = that file's size, SUMS from the payload",
+              fs[3] == os.path.getsize(tw) and fs[4] == netobj.H(sums) and cbor2.loads(ms)[3] == os.path.getsize(tw))
+        check("--size-of: verifies (S key 3 = manifest key 3)", verify(ms, pub("T")) is not None)
         expect_fail("--key other", build(_args(p, key="other"))[2], "batman/release: signature does not verify")
         expect_fail("--bad-sig", build(_args(p, bad_sig=True))[2], "batman/release: signature does not verify")
         expect_fail("--mismatch-size", build(_args(p, mismatch_size=7))[2], "manifest key 3 != S")
@@ -371,9 +397,16 @@ def parse(argv):
     ap.add_argument("--root", default=str(KEYS_DIR / "T.pub"))
     ap.add_argument("--write-pubs", metavar="DIR")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--unsafe-serial", type=int, metavar="N",
+                    help="E's serial with no >= 1 guard (a negative object; --serial keeps its guard)")
+    ap.add_argument("--size-of", metavar="FILE", help="key 3 = FILE's size; everything else from the payload")
     a = ap.parse_args(argv)
     if a.serial < 1:
         ap.error("--serial must be >= 1")
+    if a.unsafe_serial is not None and a.unsafe_serial < 0:
+        ap.error("--unsafe-serial must be >= 0")
+    if a.size_of and not os.path.isfile(a.size_of):
+        ap.error("--size-of: no file %s" % a.size_of)
     return a
 
 
@@ -405,7 +438,8 @@ def main(argv):
     if a.print_hex:
         print(m.hex())
     else:
-        print("MANIFEST sha=%s version=%s board=%s size=%d serial=%d" % (netobj.H(m).hex()[:16], f[1], f[2], f[3], a.serial))
+        serial = a.unsafe_serial if a.unsafe_serial is not None else a.serial
+        print("MANIFEST sha=%s version=%s board=%s size=%d serial=%d sums=%s" % (netobj.H(m).hex()[:16], f[1], f[2], f[3], serial, f[4].hex()))
     return 0
 
 
