@@ -1053,16 +1053,16 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | UD3 | arm 前斷電 → 0 | kp-before | RB(`upd-before-arm`) | 0;沒有旗標 | S(`upd-after-arm` → 進試用;副作用見 §13) |
 | UD3b | arm 後 helper crash → disarm、3 | arm-crash | RB(`helper-arm-crash`) | 重啟後旗標被清、3 | S(`no-boot-disarm` → 旗標留著)+ P |
 | UD4 | 新版沒開機成功 → 6 + 18(P3 寫 kernel 壞掉,H4 改成 rootfs superblock 壞掉,§1.4-7) | badroot | RB → T | panic → 回原槽;6 + 18 | W(E_U `update/check`)+ P(panic 行) |
-| UD5 | 舊的 bad-slot 不造成假 6 | oldbad | RB | 5 | W + P |
+| UD5 | 舊的 bad-slot 不造成假 6 | oldbad | RB | (i) UD4 排在 UD2 之後:6 + 18,不是 6(UD2 的 revert 行在 UD4 的 `aclog_off` 之前,`updwork.go:898-903`);(ii) UD1 排在 UD2 之後:到 5,commit 刪掉 `bad-slot`(254-v16-ud §1.4) | W + P(`grep -b` 的位移小於 `aclog_off`;UD1 apply 前 `bad-slot` = `slot=B version=V`) |
 | UD6 | worker 失敗的 reason | worker | RB | 1 / 11 / 12 / 17 | W + P |
-| UD7 | 七種拒絕(簽章、serial、板子、降級、min_from、開機設定、版本解析) | reject | RB | reason 逐一相等(min-serial 編在 helper 裡) | W |
-| UD8 | 四包惡意 tar | malicious | RB | 11;槽 BAD、不 arm | W |
-| UD8b | §8「上傳檔換成 FIFO」(prepare 之前換) | fifo-pre | RB | 以 uid 471 把上傳檔換成 FIFO → `update.prepare` 的大小檢查回 `E_REJECTED{15}`、FIFO 被刪(P3 `:327`、`:456`) | W(E_U)+ P(檔案確實是 FIFO、擁有者是 471) |
+| UD7 | 八個拒絕(簽章 ×2、serial 0、板子、降級、min_from、開機設定、版本解析) | reject | RB | 每一個 `ok=false` 加 helper 的 why 行:bad-sig / key other → 11、`--unsafe-serial 0` → 11(E 的 serial >= 1 規則;min-serial 比較在 wsl.36 上不可測,§11)、wrong board → 3、wsl.35 → 6、`--min-from` → 4、`--bootcfg-sha` → 5、unparsable → 11;之後 `bulk-open X` 仍成功(拒絕沒有換掉 pending)(254-v16-ud §1.2) | W |
+| UD8 | 四包惡意 tar | malicious | RB | 各自 `phase=0 fail_reason=11` 加 worker why(not a regular file / members after root.squashfs / data after the gzip stream / too many members);worker 第一輪就拒絕,沒有碰槽:`bootinfo B` 不變、旗標 0(`updwork.go:349-359`;254-v16-ud §0.1-5、§3.3 每個產生器各自的驗收) | W |
+| UD8b | §8「上傳檔換成 FIFO」(prepare 之前換) | fifo-pre | RB | 以 uid 471 把上傳檔換成 FIFO → `update.prepare` 回 `E_REJECTED{15}`「the upload is missing or incomplete」;prepare 失敗不刪上傳檔,`bulk-close` 之後 tick 刪掉 FIFO(`updwork.go:954-962`;254-v16-ud §0.1) | W(E_U)+ P(root 以 `ls -ln` 看到型別 p、擁有者 471) |
 | UD8b-race | §8 同上(prepare 之後、worker 開檔之前換;被入侵的 provd 能贏這個競態) | fifo-race | RB(`upd-open-pause`) | prepare 回 phase 2 之後,在 30 s 暫停窗內以 uid 471 換成 FIFO → 暫停結束後 ≤ 10 s 內 `update.status` = phase 0 + 11、FIFO 已刪、B 不是 BAD、同值的 `settings.set` 不是 `E_BUSY` | S(`upd-open-pause` + `upd-open-block` → 同一時限過後仍是 phase 2;`update.status` 只讀快取(P3 `:347`),所以不會逾時,判定看 phase) |
-| UD8c | §8「上傳後改 payload」 | mutate | RB | 上傳完成、prepare 之前,以 uid 471 **先刪掉原檔、再寫入**(tmpfs 只有 2 × payload,兩份同時在會 ENOSPC)**另一個合法、而且長度相同的 tar.gz**(worker 會先比 fstat 的大小 = key 3,P3 §3.7.5-1)。第一個成員仍是簽過的 `SHA256SUMS`,`metadata`、`boot/` 都不變;`root.squashfs` 保留 `hsqs` magic、長度不變、內容不同(mutant 先做得比原檔短,壓縮後的總長再用 gzip header 的 `FEXTRA` / `FCOMMENT` 欄位補到與原檔相同;比原檔長就補不回來,要重做)。gzip 與 tar 解析都會過,讀回時與 `SHA256SUMS` 不符 → B 被 invalidate、不 arm、11 | W + P(換過的檔是合法 tar、總長相同、`root.squashfs` 的 sha 不同) |
-| UD9 | prepare 中 kill / 斷電 | kill | RB(`upd-write-mid`) | 槽 BAD、仍在舊槽 | P |
-| UD10 | helper 重啟 → phase 3 | rebuild | RB | 3 | W + P |
-| UD10b | 重開 → pending 不在 | reboot | RB | 不在 | P |
+| UD8c | §8「上傳後改 payload」 | mutate | RB | 上傳完成、prepare 之前,以 uid 471 **先刪掉原檔、再寫入**(tmpfs 只放得下一份)**另一個合法、長度相同的 tar.gz**:tar 串流與 V 相同,只有 `root.squashfs` 一段被清零(`hsqs` 保留、長度不變),壓縮後的空隙用 gzip header 的 `FEXTRA` 補(2 B XLEN + 資料:空隙 0 或 2–65 537 B)。worker 第一輪 → `phase=0 fail_reason=11`「root.squashfs does not match SHA256SUMS」,B 不變(254-v16-ud §1.3、§3.3) | W + P(換過的檔是合法 tar、總長相同、`root.squashfs` 的 sha 不同) |
+| UD9 | prepare 中 kill / 斷電 | kill | RB(節點上的 `dd` 位置觸發:`ud9-watch-254.sh`,沒有 `upd-write-mid`) | 串流 `dd` 寫到一半:kill 子臂 SIGKILL helper → 孤兒 `dd` 短寫、退出,`pos_final` < SQ − 8 MiB,放鎖、`phase=0 fail_reason=22`、B `bad=1`、仍在 A;cut 子臂 sysrq `b`(硬重設,不是斷電)→ B `bad=1`、A、0 + 22、boot-reasons `hints: sysrq`。錯過時機 = INVALID(254-v16-ud §1.5) | P(write 臂的 observe:fd 1 是 B 的 root、pos 遞增) |
+| UD10 | helper 重啟 → pending 重建 | rebuild | RB | 重啟後 0 + 23(pending 只在記憶體,`update.go:366`);不重新上傳再 `update.check` → 3(沒有 worker、B 不變),之後 apply 可用(`updwork.go:878-882, 912-914`;254-v16-ud §0.1-6) | W + P |
+| UD10b | 重開 → pending 不在 | reboot | RB | 重開後 0 + 23,再 `update.check` 之後仍是 0 + 23(`verified` 帶的是舊的 boot);apply → `E_REJECTED{15}`「the target slot is not verified for this sha in this boot」(254-v16-ud §1.3) | P |
 | UD11 | 回滾臂 / 降級到 wsl.22 | downgrade | R → ssh sysupgrade | 舊槽沒有 P3 動詞;`.txn` 相容;舊版判 stale 直到它自己 `--save`;舊版 96 照樣套用 ssid 行;update-last 留著沒人讀;S0-pre 版的 `s0_assert`。之後 sysupgrade 回 V + `upgrade`(§13) | P |
 | UD12 | 未入網升級 → fresh | upgrade-unjoined | F(wsl.22)→ sysupgrade | fresh | G(H4-U8) |
 | UD12b | 已入網升級 → tick 存檔 | upgrade-joined | R(wsl.22)→ sysupgrade | fresh | P |
@@ -1076,7 +1076,7 @@ C0、C0'、ALT 都是 ≥ 20 字元的高熵隨機值。
 | UD19 | D-12 | d12 | RB(`setkey-pause`;provclient 直接打 helper) | ≤ 5 s 回應 | S(`d12-take-mu`) |
 | UD20 | §7「被入侵的 provd 偷換 pending 版本」:owner-op 簽的不是 pending | swap | RB(provclient 直接打 helper,uid 471) | 資料路徑:provclient `nonce` 取 helper nonce → WSL 的 peer 用 H0 簽 owner-op → provclient 送 `update.prepare`。pending = X、body 的 sha = X;**負向**:owner-op 是對 Y 簽的 → `args_hash` 不符 → `E_FORBIDDEN`、沒有啟動 worker。**正向**(同一份 pending 與 body,只差被簽的 sha):用新的 nonce 對 X 簽 → 成功。兩者只差一個變數,而且拒絕條件只剩 `args_hash` 一個(v8-A m9) | W(E_U)+ 正向是 flip。helper 每次驗 owner-op 都會消耗 nonce,失敗也一樣(`node.go:672-690`、`:310-319`),所以兩臂各用新的 nonce。正向會真的啟動 worker、覆寫 B:**順序固定為 UD20c → UD20b → UD20 負向 → UD20 正向(最後)**,之後 brewrite B(§13);prepare 失敗會刪上傳檔(`:456`),所以每一臂前都重新上傳 |
 | UD20b | 同上:owner-op 有效、但 sha ≠ pending | swap-sha | RB | 擁有者以新的 nonce 對 Y 簽一個有效的 owner-op,而 pending 是 X → `E_REJECTED{15}`(P3 `:327`) | W(E_U)+ P |
-| UD20c | §7 同上:被入侵的 provd 用**不需要 owner-op** 的 `update.check` 把 pending 換成 Y(v8-B m1) | swap-check | RB(provclient,uid 471) | 擁有者已對 X 做過 `update.check`(pending = X);provclient 以 T 簽的 Y manifest 送 `update.check` → pending 變成 Y;擁有者接著以對 X 簽的 owner-op 送 `update.prepare {sha: X}` → `E_REJECTED{15}`(sha ≠ pending),沒有啟動 worker → 證明換掉 pending 也沒辦法讓 Y 不經擁有者簽章就被寫入 | W(E_U)+ P(pending 確實變成 Y:`update.status`);P3 `:568` 把這條指定給 Go 單元測試,H4 另加這一個黑箱臂 |
+| UD20c | §7 同上:被入侵的 provd 用**不需要 owner-op** 的 `update.check` 把 pending 換成 Y(v8-B m1) | swap-check | RB(provclient,uid 471) | 擁有者已對 X 做過 `update.check`(pending = X);在擁有者 `bulk.open` 之前(開著的窗會讓 `update.check` 回 `E_BUSY`,`update.go:280-282`),provclient 以 T 簽的 Y manifest(`badpayload`,`SHA256SUMS` 與 X 不同)送 `update.check` → pending 變成 Y;擁有者接著以對 X 簽的 owner-op 送 `update.prepare {sha: X}` → `E_REJECTED{15}`(sha ≠ pending),沒有啟動 worker → 證明換掉 pending 也沒辦法讓 Y 不經擁有者簽章就被寫入 | W(E_U)+ P(pending 確實變成 Y:`update.status`);P3 `:568` 把這條指定給 Go 單元測試,H4 另加這一個黑箱臂 |
 
 ### A.10 `prov-autocommit-p3-254`(§5.6)
 
