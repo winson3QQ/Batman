@@ -250,7 +250,7 @@ case_run(){
 	mnt -o ro || { bad "$label: mount after the run failed"; return; }
 	h1=$(hashes); rd=$(reader)
 	zero=$(cd $W/m && find . \( -path ./lost+found -o -path './.stage.*' \) -prune -o -type f -size 0 ! -name .seeded -print | tr '\n' ' ')
-	stage=$(cd $W/m && ls -d .stage.* .wprobe.* 2>/dev/null | tr '\n' ' ')
+	stage=$(cd $W/m && ls -d .stage.* .wprobe* 2>/dev/null | tr '\n' ' ')
 	why=""
 	[ -z "$zero" ] || why="$why 0-byte:[$zero]"
 	if grep -q "saved ($1)" $W/out; then
@@ -275,7 +275,12 @@ $(cat $W/expect.NEW)" ] || why="$why reader!=NEW[$(echo "$rd" | head -2 | tr '\n
 		# after a journal abort a rename that returned 0 may not be on the card: eio* / datafail may say "may be PARTLY"
 		# with p5 unchanged (review A-r2 F1); a read-only remount keeps every completed rename, so ro may not
 		if [ "$h1" = "$h0" ]; then case "$kind:$(tail -1 $W/err)" in eio*:*"may be PARTLY"*|datafail:*"may be PARTLY"*) ;; *PARTLY*) why="$why says-PARTLY-but-p5-unchanged" ;; esac
-		else why="$why p5-changed:[$(diff <(echo "$h0") <(echo "$h1") | grep '^[<>]' | head -4 | tr '\n' '|')]"; fi
+		else	# the one accepted change: empty directories this run made and could not remove (an I/O error), when the text
+			# names them (CI run of PR #381: a first --seed whose rename failed on a journal abort); anything else FAILs
+			dd=$(diff <(echo "$h0") <(echo "$h1") | grep '^[<>]')
+			if echo "$dd" | grep -qv '^> \./' || ! tail -1 $W/err | grep -q 'except empty directories it could not remove'; then
+				why="$why p5-changed:[$(echo "$dd" | head -4 | tr '\n' '|')]"; fi
+		fi
 		if [ "$seeded" = 1 ]; then [ "$rd" = "overrides.uci@1
 $(cat $W/expect.OLD)" ] || why="$why reader!=OLD[$(echo "$rd" | head -2 | tr '\n' '|')]"
 		else [ "$rd" = unseeded ] || why="$why reader!=unseeded[$rd]"; fi
@@ -350,7 +355,7 @@ if fresh && mnt; then
 	mkdir -p $W/m/.stage.99999/identity && dd if=/dev/zero of=$W/m/.stage.99999/identity/junk bs=4k count=40 2>/dev/null && : > $W/m/.wprobe.99999; umount $W/m
 	if fill 0; then
 		o=$(cs --save 2>&1); r=$?
-		mnt -o ro; left=$(cd $W/m && ls -d .stage.* .wprobe.* 2>/dev/null | tr '\n' ' '); ov=$(cmp -s $W/m/overrides.uci $W/expect.NEW && echo NEW || echo not-NEW); umount $W/m
+		mnt -o ro; left=$(cd $W/m && ls -d .stage.* .wprobe* 2>/dev/null | tr '\n' ' '); ov=$(cmp -s $W/m/overrides.uci $W/expect.NEW && echo NEW || echo not-NEW); umount $W/m
 		[ "$r" = 0 ] && [ -z "$left" ] && [ "$ov" = NEW ] && okk "stale .stage.99999 (40 blocks) + .wprobe.99999 on a full p5: removed, the save fits (rc 0, p5 NEW)" \
 			|| bad "stale stage: rc $r left=[$left] overrides $ov [$(echo "$o" | tail -1)]"
 	else bad "stale stage: fill"; fi
@@ -591,6 +596,23 @@ if fresh && cs --save >/dev/null 2>&1; then
 		&& okk "busy p5, the bind cannot be made read-only: rc 5 busy, no verdict through an rw bind" \
 		|| bad "remount shim: --check rc $r [$(echo "$o" | tr '\n' ' ' | cut -c1-200)] (want rc 5 busy)"
 else bad "remount shim: setup"; fi
+# ---- a first --seed whose renames fail and whose new directories cannot be removed: the text must not say "unchanged"
+# (CI run of PR #381). Deterministic: every staged identity file immutable (its rename fails, EPERM) and the new
+# identity/ append-only (its subdirectories cannot be removed again).
+NCASE=$((NCASE + 1))
+if ! command -v chattr >/dev/null 2>&1; then bad "seed dirs left: no chattr"
+elif devfree && mkfs_p5; then
+	rm -rf $W/run/batman $W/uci.over/*; live NEW 9
+	mnt -o ro; h0=$(hashes); umount $W/m
+	CS_TEST_HOOK2='chattr +i "$STAGE"/identity/dropbear/* "$STAGE"/identity/openmanet/* "$STAGE"/identity/shadow-root; chattr +a "$MNT/identity"' \
+		cs --seed > $W/out 2> $W/err; r=$?
+	mnt && { chattr -a $W/m/identity 2>/dev/null; find $W/m/.stage.* -type f -exec chattr -i {} + 2>/dev/null; rm -rf $W/m/.stage.*; umount $W/m; }
+	mnt -o ro; h1=$(hashes); rd=$(reader); umount $W/m
+	dd=$(diff <(echo "$h0") <(echo "$h1") | grep '^[<>]')
+	[ "$r" = 15 ] && tail -1 $W/err | grep -q 'p5 is unchanged except empty directories it could not remove:.*identity' && ! echo "$dd" | grep -qv '^> \./' && [ "$rd" = unseeded ] \
+		&& okk "first --seed, renames fail, new dirs stay: rc 15, the text names them [$(tail -1 $W/err | cut -c21-150)]" \
+		|| bad "seed dirs left: rc $r [$(tail -1 $W/err | cut -c1-160)] diff=[$(echo "$dd" | tr '\n' '|' | cut -c1-120)] reader=$rd"
+else bad "seed dirs left: setup"; fi
 # ---- the busy lookup must not read a filesystem that is not p5 (review B-r5 MINOR-1) ---------------------------------
 # A: a tmpfs stacked on the mountpoint where p5 is mounted rw: reading through that path would read the tmpfs
 NCASE=$((NCASE + 1))

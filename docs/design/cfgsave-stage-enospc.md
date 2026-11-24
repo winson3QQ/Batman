@@ -36,12 +36,12 @@ WSL Ubuntu-24.04 root,loop ext4(`mkfs.ext4 -b 4096 -L batconfig`,同 `scripts/bu
 
 | 資源 | 唯一寫者 | 讀者(唯讀) |
 |---|---|---|
-| p5 的 `overrides.uci`、`lkg/overrides.uci`、`schema_version`、`identity/{dropbear,openmanet,shadow-root}`、`.seeded`、`.stage.<pid>/`、`.wprobe.<pid>` | `batman-config-save` 寫入模式,持 `cfgsave.lock`(`batman-config-save:239-275`) | `96-batman-config-migrate`(開機)、`--check`、`99-batman-chanfix`、`batman-prov-lock`、`batman-autocommit`、`batman-slot` precheck |
+| p5 的 `overrides.uci`、`lkg/overrides.uci`、`schema_version`、`identity/{dropbear,openmanet,shadow-root}`、`.seeded`、`.stage.<pid>/`、`.wprobe` | `batman-config-save` 寫入模式,持 `cfgsave.lock`(`batman-config-save:239-275`) | `96-batman-config-migrate`(開機)、`--check`、`99-batman-chanfix`、`batman-prov-lock`、`batman-autocommit`、`batman-slot` precheck |
 | p5 的 `prov.cbor` / `prov.meta` / `identity/prov/` | `--prov-only`(本次不改) | 同上 + `--prov-get` |
 | `$RUNDIR/cfgsave-onjoin.state`(on-join 快取) | `batman-config-save` | `batman-config-save` |
 | **新** `$RUNDIR/cfgsave-save.failed`(`<uptime> <step>`) | `batman-config-save`:`not_saved` 寫、任何成功刪 | `batman-config-save --on-join`(退避) |
 
-新暫存名(`$STAGE/lkg.uci`、`$STAGE/.seeded`、`$MNT/.wprobe.<pid>`)都在本程序持鎖期間、私有掛載點(`$RUNDIR` 0700 下的 `tmpd`)內建立。
+新暫存名(`$STAGE/lkg.uci`、`$STAGE/.seeded`、`$MNT/.wprobe`)都在本程序持鎖期間、私有掛載點(`$RUNDIR` 0700 下的 `tmpd`)內建立。
 
 **清除殘留**:rw 掛載驗證成功後,若持鎖(`LOCK_MINE=1`),刪除 `$MNT/.stage.*` 與 `$MNT/.wprobe.*`(`:396-398`)。持鎖證明它們的寫者已不在(一次只有一個寫者);沒鎖(`RDOK=0`)時不刪,因為可能有別的寫者正擁有它。`rm -rf` 不跟隨 symlink;p5 只有 root 能 rw 掛載。
 
@@ -154,7 +154,7 @@ WSL Ubuntu-24.04 root,loop ext4(`mkfs.ext4 -b 4096 -L batconfig`,同 `scripts/bu
 - **資產**:p5 上的 mesh key、AP key、root 密碼雜湊、SSH host key、`authorized_keys`。舊行為下,一個能把 p5 填滿的人(本機 root 才能 rw 掛載 p5)或一張局部壞的卡,可以讓下一次 OTA / 重燒後節點變成 UNPROVISIONED(開放)或失去 operator key;新行為下 p5 保持舊值。
 - **新輸入面**:
   - `$RUNDIR/cfgsave-save.failed`:root 0700 run dir 內,`-O` 檢查擁有者;內容只解析數字 uptime,其餘只印出。
-  - 刪除 `$MNT/.stage.*` / `.wprobe.*`:在私有掛載點內、持鎖、`rm -rf` 不跟隨 symlink。
+  - 刪除 `$MNT/.stage.*` / `.wprobe*`:在私有掛載點內、持鎖、`rm -rf` 不跟隨 symlink。
   - 沒有新的環境變數或參數。
 - **權限**:不變(root)。
 - **秘密**:錯誤訊息只含步驟名、檔名(stage 內的相對路徑)與 KiB 數,不含值;`batch_ok` 不輸出內容。殘留的 `.stage.*`(含 host key 與 shadow 雜湊副本)現在會被清除,不再比金鑰輪替活得久(審查 B「our own mistakes」)。

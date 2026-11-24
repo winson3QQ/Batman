@@ -278,7 +278,7 @@ Basenames stay **unchanged**, so the harness can resolve the directory (D4).
 | storage | `batman-storage.crit` `batdata-mount.booted` `p5-restored` `bm-p7/`; temp `95-mbr.XXXXXX` `95-mbr.bak` `95-mbr.now` `95-p5.XXXXXX/` `overrides.XXXXXX` `p5-chanfix.XXXXXX` |
 | power | `batpower.state` `batpower.mock` `shutdown.reason` |
 | payload (`PAYLOAD_RUNDIR` default = `$RUNDIR`) | `batman-firstload-<t>.latch` `batman-payload-<t>-drift.json` `batman-payload-<t>-restarts.state` `batman-payload-<t>-verify.log` `batman-payload-<t>-resources.log` `batman-payload-<t>.converging` `batman-payload-<t>.lock` `batman-payload-<t>.pid` `batman-payload-<t>.stopping` `batman-payload-<t>.stop0` `batman-ots-pause` |
-| joinwatch / cfgsave | `config-saved` `joinwatch.state` `cfgsave-onjoin.state` `cfgsave-pi3gate.failed` `cfgsave-mount.failed`; temp `cfgsave-mbr.XXXXXX` `cfgsave-p7.XXXXXX/` |
+| joinwatch / cfgsave | `config-saved` `joinwatch.state` `cfgsave-onjoin.state` `cfgsave-pi3gate.failed` `cfgsave-mount.failed` `cfgsave-save.failed` (writer: batman-config-save `not_saved`; readers: its `--on-join` backoff and `--check`; cleared by a successful save); temp `cfgsave-mbr.XXXXXX` `cfgsave-p7.XXXXXX/` |
 | cgi bundle | report dir from `batman_tmp -d` (`<host>-report.XXXXXX/`) |
 
 - `check-tmp-trust.sh` cross-checks this table against the harness. Every `/tmp/<name>` or `$R/<name>` read in `scripts/**` must name a basename from this table, or from the allowlist.
