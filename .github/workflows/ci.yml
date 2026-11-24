@@ -139,6 +139,16 @@ jobs:
           sudo bash tests/prov-p1/prov-base-statecmp.sh scripts/node/prov-base-254.sh
           sudo bash tests/prov-p1/prov-base-stateset.sh scripts/node/prov-base-254.sh
           bash tests/prov-p1/prov-base-names.sh scripts/node/prov-base-254.sh
+      # docs/design/cfgsave-stage-enospc.md: a failed write, fsync or an aborted journal is never "saved". Its own step
+      # (!cancelled()) so a runner without dm-flakey fails HERE without skipping the loop-device tests above (review B-r2
+      # MINOR-1). CFGSAVE_REQUIRE_DM=1: no dm / dm-flakey = FAIL, not a skip.
+      - name: "cfgsave stage ENOSPC / EROFS / EIO (root, loop + device-mapper incl. dm-flakey)"
+        if: ${{ !cancelled() }}
+        run: |
+          F=feed/batman-provision/files
+          sudo modprobe dm_flakey || { sudo apt-get update -qq && sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" && sudo modprobe dm_flakey; } || echo "::warning::dm_flakey not loadable on $(uname -r): the test FAILs below (CFGSAVE_REQUIRE_DM=1)"
+          sudo dmsetup targets
+          sudo CFGSAVE_REQUIRE_DM=1 PROV_SRC=$PWD/$F bash tests/prov-p1/cfgsave-stage-enospc.sh $F/usr/bin/batman-config-save
       - name: "#254 P1 Go unit tests (batman-prov helper)"
         uses: actions/setup-go@v5
         with:

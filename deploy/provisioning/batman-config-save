@@ -31,6 +31,13 @@
 #   --prov-get (#254, 254-stage1-impl §4.2): 0 complete prov + identity   7 ext4, unseeded, no prov
 #     9 seeded, no prov   10 prov incomplete / sha mismatch / meta missing   13 prov but identity/prov incomplete
 #     1 mount failed   3 bypass   11 no p5   12 not ext4   14 prov.meta v too new
+#   15 write modes (docs/design/cfgsave-stage-enospc.md): p5 NOT saved — a write, fsync or check failed. The LAST stderr
+#      line says which step and whether p5 is unchanged (any failure before the first rename) or may be partly updated
+#      (each file whole: renamed, never written in place). No "saved" line. --on-join then backs off 300 s
+#      (cfgsave-save.failed). No `fsync` tool on this system is such a failure too (nothing could prove the data is on p5).
+#   --check: "p5 stale: unverifiable (…)" rc 5 when it cannot build its comparison, when the superblock cannot be read,
+#      or when an ext4 p5 does not mount read-only (the OTA gate blocks on 5). rc 3 "SKIP not-ext4" only for a magic
+#      that was read and is not ext4. --prov-get: an unreadable superblock is its "p5 unreadable" rc 1, not 12.
 #
 # Writes p5 rw briefly and atomically (stage + rename + sync), keeps two copies (primary + lkg).
 # One writer at a time (cfgsave.lock, #202 T6); the rw mount is VERIFIED rw — a concurrent ro reader
@@ -51,7 +58,11 @@ network.ahwlan.proto
 openmanetd.config.dhcpconfigured
 openmanetd.config.roipconfigured
 "
-UNSAFE='*[`$();|&<>'"'"']*'   # same character set 96-batman-config-migrate's valid_batch rejects
+# the character set 96-batman-config-migrate's valid_batch rejects, plus newline: a value with one would split its `set`
+# line and the whole batch would be rejected at boot (cfgsave-stage-enospc review A-F5 / B MINOR-1). A CR does not split
+# the line: uci stores and restores it, and valid_batch accepts it (review A-r2 F2), so it is kept.
+UNSAFE='*[`$();|&<>'"'"'
+]*'
 # #254 P3 (254-p3-impl §3.3, B5-m5): the phone AP's ssid is kept, but an ssid with an UNSAFE character (an operator's
 # "Tom's AP") is NOT persisted and NOT stale — the same rule as an empty value (the image default wins) — or such a node
 # would stay stale, and blocked from OTA, forever
@@ -119,7 +130,8 @@ LOCK=$RUNDIR/cfgsave.lock                 # one writer at a time (dir: pid, upti
 BUSY=$RUNDIR/cfgsave-lock.busy            # --on-join was lock-blocked >= 8 calls in a row (cleared when anyone gets the lock)
 BUSYCNT=$RUNDIR/cfgsave-lock.count
 WRITES=$RUNDIR/cfgsave-writes             # "<n> <uptime>": actual p5 writes this boot (write-amplification guard)
-[ "$RDOK" = 1 ] || { ST=/nonexistent/cfgsave; GATEFAIL=$ST; MNTFAIL=$ST; FROZEN=$ST; BUSY=$ST; BUSYCNT=$ST; WRITES=$ST; }
+SAVEFAIL=$RUNDIR/cfgsave-save.failed      # "<uptime> <step>": the LAST write-mode save failed (rc 15); cleared on success
+[ "$RDOK" = 1 ] || { ST=/nonexistent/cfgsave; GATEFAIL=$ST; MNTFAIL=$ST; FROZEN=$ST; BUSY=$ST; BUSYCNT=$ST; WRITES=$ST; SAVEFAIL=$ST; }
 
 tmpd() { batman_tmp -d "$1" 2>/dev/null || mktemp -d "/tmp/$1.XXXXXX"; }
 tmpf() { batman_tmp "$1" 2>/dev/null || mktemp "/tmp/$1.XXXXXX"; }
@@ -127,8 +139,8 @@ tmpf() { batman_tmp "$1" 2>/dev/null || mktemp "/tmp/$1.XXXXXX"; }
 # ---- cleanup on every exit path ---------------------------------------------------------------
 LOCK_MINE=0; MNT=""; STAGE=""; UCIDIR=""
 cleanup() {
-	[ -n "$STAGE" ] && rm -rf "$STAGE"
-	if [ -n "$MNT" ]; then grep -q " $MNT " /proc/mounts 2>/dev/null && { sync; umount "$MNT" 2>/dev/null; }; rmdir "$MNT" 2>/dev/null; fi
+	[ -n "$STAGE" ] && rm -rf "$STAGE" 2>/dev/null   # silent: on a failing p5 the not_saved line must stay the last one
+	if [ -n "$MNT" ]; then grep -q " $MNT " /proc/mounts 2>/dev/null && { sync; umount "$MNT" 2>/dev/null || logger -t batman-config-save -p daemon.warn "umount of p5 at $MNT failed — it stays mounted until reboot (a busy p5 for the next --check)" 2>/dev/null; }; rmdir "$MNT" 2>/dev/null; fi
 	[ -n "$UCIDIR" ] && rm -rf "$UCIDIR"
 	[ "$LOCK_MINE" = 1 ] && rm -rf "$LOCK"
 }
@@ -165,7 +177,11 @@ fi
 # non-ext4 partition (that would silently reformat a LUKS p5 -> data loss + security downgrade,
 # review finding #1), so only --seed may format, and only a genuinely raw/plain p5 (or, with
 # --reformat, an ext4 p5 that provably no longer mounts — guards below).
-magic=$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$DEV" 2>/dev/null)
+magic=$(hexdump -s 1080 -n 2 -e '2/1 "%02x"' "$DEV" 2>/dev/null); mrc=$?
+# a superblock that cannot be READ is not "not ext4": a failing card returns EIO here, before any mount (review B-r3
+# MINOR-1). busybox hexdump exits 0 on a read error and prints nothing: the EMPTY output is what marks it (keep the -z
+# test); rc != 0 covers a missing / too short device. A readable device always gives 4 hex digits (a zeroed one "0000").
+MAGIC_UNREADABLE=0; { [ "$mrc" != 0 ] || [ -z "$magic" ]; } && MAGIC_UNREADABLE=1
 sbstamp() { hexdump -s 1072 -n 6 -e '1/4 "%u" " " 1/2 "%u"' "$DEV" 2>/dev/null; }
 
 # ---- #254 provisioning record: formats (254-stage1-impl §4.3) ----------------------------------
@@ -283,10 +299,18 @@ do_mkfs() {
 }
 if [ "$magic" != "53ef" ]; then
 	if [ "$mode" = --seed ]; then
+		# an unreadable superblock is not "raw": formatting a card that is failing would destroy p5 (lkg, identity, the
+		# provisioning record) for nothing (cfgsave-stage-enospc round 5). Only a READABLE non-ext4 p5 is formatted.
+		[ "$MAGIC_UNREADABLE" = 1 ] && { err "refusing --seed: p5's superblock cannot be read (I/O error?) — not formatting it; check the card"; exit 1; }
 		seed_key_ok || { err "refusing --seed without a usable public key in /etc/dropbear/authorized_keys — a locked node with no key is unreachable. Install the operator public key first (#137)."; exit 1; }
 		do_mkfs
 	elif [ "$WRITE" = 1 ]; then
 		err "p5 is not plain ext4 (magic=$magic) — run --seed first (or, on a Secure-tier LUKS p5, open it via #111)"; exit 1
+	elif [ "$MAGIC_UNREADABLE" = 1 ] && [ "$mode" = --check ]; then
+		# not proven fresh and the fresh slot's 96 could not read p5 either: block the OTA (rc 5), no marker needed
+		say "p5 stale: unverifiable (p5 unreadable: the superblock read failed)"; exit 5
+	elif [ "$MAGIC_UNREADABLE" = 1 ]; then
+		say "p5 error unreadable (the superblock read failed)"; exit 1   # --prov-get: its "p5 unreadable" class
 	elif [ "$mode" = --prov-get ]; then
 		say "p5 SKIP not-ext4"; exit 12
 	else
@@ -337,6 +361,12 @@ if [ "$mode" = --on-join ]; then
 		{ read -r t reason < "$MNTFAIL"; } 2>/dev/null || t=""; now=$(up)
 		case "$t" in ''|*[!0-9]*) ;; *) [ $((now - t)) -lt 300 ] && { err "p5 rw mount failed $((now - t))s ago (${reason:-?}) — backing off"; exit 1; } ;; esac
 	fi
+	# the last save failed (rc 15: p5 full, read-only or failing): back off 5 minutes too — not a rw mount, a stage write
+	# and an error line every 15 s on a card that is failing (cfgsave-stage-enospc review B MAJOR-1)
+	if [ -f "$SAVEFAIL" ] && [ -O "$SAVEFAIL" ]; then
+		{ read -r t reason < "$SAVEFAIL"; } 2>/dev/null || t=""; now=$(up)
+		case "$t" in ''|*[!0-9]*) ;; *) [ $((now - t)) -lt 300 ] && { err "p5 save failed $((now - t))s ago (${reason:-?}) — backing off"; exit 1; } ;; esac
+	fi
 	FP=$(onjoin_fp); [ "${#FP}" = 64 ] && case "$FP" in *[!0-9a-f]*) FP="" ;; esac || FP=""   # fail-safe: no valid fp -> no cache
 	# cached verdicts 0/4/6 are all "p5 already holds what it can hold": 6 (an unpersistable value)
 	# does not change by retrying, so it is cached too, else every tick would mount p5 again (#263 M0)
@@ -355,6 +385,15 @@ if [ "$mode" = "--if-healthy" ]; then
 fi
 
 # ---- mount -----------------------------------------------------------------------------------
+# p5_mm: p5's major:minor ("179:5"); empty if it cannot be read. major:minor is authoritative: an alias such as /dev/root
+# has the same one, and a source NAME proves nothing (any fs can be mounted with that string, review B-r5 MINOR-1).
+p5_mm() { ls -lnL "$DEV" 2>/dev/null | awk '{ sub(/,$/, "", $5); m = $5 ":" $6; if (m ~ /^[0-9]+:[0-9]+$/) print m; exit }'; }
+# p5_mountinfo <field 4 test: root|any> -> the mountpoint of a mount of p5 (by major:minor) other than ours: "root" = a
+# whole-filesystem mount (root "/"), "any" = any part of it (a subdirectory bind). Empty: none.
+p5_mountinfo() {
+	awk -v d="$(p5_mm)" -v me="$MNT" -v want="$1" 'd != "" && $3 == d && $5 != me && (want == "any" || $4 == "/") { print $5; exit }' /proc/self/mountinfo 2>/dev/null
+}
+P5R=""
 MNT=$(tmpd cfgsave-mnt) || { err "no private mount point"; exit 1; }
 if [ "$WRITE" = 1 ]; then
 	# rw, VERIFIED rw: with a ro reader holding the same ext4, `mount` returns 0 but the new mount shares
@@ -378,6 +417,9 @@ if [ "$WRITE" = 1 ]; then
 		err "mount rw failed after $i tries: ${e:-?}"; exit 1
 	fi
 	rm -f "$MNTFAIL"
+	# a .stage.<pid> / .wprobe.<pid> left by a run that died (power loss, SIGKILL) or whose p5 went read-only: holding the
+	# lock proves its writer is gone. Only with the lock (no lock = another writer may own one). rm -rf does not follow links.
+	[ "$LOCK_MINE" = 1 ] && rm -rf "$MNT"/.stage.* "$MNT"/.wprobe.* 2>/dev/null
 elif [ "$mode" = --prov-get ]; then
 	i=0; STALE=""
 	until mount -t ext4 -o ro "$DEV" "$MNT" 2>/dev/null; do
@@ -390,12 +432,49 @@ elif [ "$mode" = --prov-get ]; then
 	done
 	[ -n "$STALE" ] && say "p5 prov maybe-stale (journal not replayed: ro,noload)"
 else
-	i=0
-	until mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>/dev/null; do
-		i=$((i + 1)); [ "$i" -ge 3 ] && { say "p5 error mount (ro,noload failed 3x)"; exit 1; }
+	i=0; e=""
+	until e=$(mount -t ext4 -o ro,noload "$DEV" "$MNT" 2>&1); do
+		if [ "$i" -ge 2 ]; then
+			# A ro,noload mount fails with EBUSY when p5 is already mounted READ-WRITE elsewhere (a writer killed before its
+			# EXIT trap, an operator's mount, a lockless writer) — a healthy p5 (review B-r4 MAJOR-1; a second ro mount next
+			# to a ro one is fine). So first look for p5 in mountinfo by its major:minor (and its name): if it is mounted,
+			# compare through that mount, read-only (nothing is written or remounted); if it cannot be read there, say so.
+			busy=$(p5_mountinfo root)
+			if [ -n "$busy" ]; then
+				# do not read through that path (a mount stacked on it, or a path race, would be read instead): bind what is
+				# mounted there onto OUR private mount point, make the bind read-only, and require that our own mountinfo
+				# line shows p5's major:minor with root "/" before comparing (review B-r5 MINOR-1). The "fresh" verdict then
+				# reflects that mount's current (cached) content, not necessarily what has reached the card yet.
+				if mount --bind "$busy" "$MNT" 2>/dev/null; then
+					# the bind must really be read-only (review A-r6 F1 / B-r6 MINOR-1): a failed remount leaves it rw
+					if mount -o remount,bind,ro "$MNT" 2>/dev/null; then
+						mine=$(awk -v me="$MNT" '$5 == me { print $3 " " $4 " " (($6 ~ /(^|,)ro(,|$)/) ? "ro" : "rw") }' /proc/self/mountinfo 2>/dev/null | tail -n 1)
+						if [ "$mine" = "$(p5_mm) / ro" ]; then
+							say "p5 is mounted at $busy by another process — compared through a read-only bind of that mount"; break
+						fi
+					fi
+					umount "$MNT" 2>/dev/null
+				fi
+				say "p5 stale: unverifiable (p5 busy (mounted at $busy) and could not be compared)"; exit 5
+			fi
+			part=$(p5_mountinfo any)
+			if [ -n "$part" ]; then
+				# only a part of p5 is mounted (a subdirectory bind of an rw mount that was itself unmounted): the superblock is
+				# held rw, so ro,noload gets EBUSY; nothing whole to compare through (review B-r5 MINOR-2)
+				say "p5 stale: unverifiable (p5 busy (held by a bind mount of a part of it at $part) and could not be compared)"; exit 5
+			fi
+			# not mounted anywhere and does not mount read-only 3x: the fresh slot's 96 could not read it either -> rc 5
+			# (review B-r2 MINOR-2 / B-r3 MINOR-4). The mount's own error is kept (one line: EBUSY vs corrupt, A-r4 F1);
+			# a failed save this boot is named when there is one.
+			e=$(printf '%s\n' "$e" | grep . | tail -n 1 | tr -d '\r' | cut -c1-160)
+			reason=""; if [ -f "$SAVEFAIL" ] && [ -O "$SAVEFAIL" ]; then { read -r t reason < "$SAVEFAIL"; } 2>/dev/null; fi
+			say "p5 stale: unverifiable (p5 does not mount read-only: ${e:-?}${reason:+; a save failed earlier this boot: $reason})"; exit 5
+		fi
+		i=$((i + 1))
 		sleep 1
 	done
 fi
+[ -n "$P5R" ] || P5R=$MNT   # where p5's files are read: our own mount, or (--check, B-r4 MAJOR-1) another process's
 
 # ---- Pi 3 factory gate (#209 v4.3 D2) --------------------------------------------------------
 pi3_factory_check() {
@@ -440,56 +519,88 @@ fi
 
 # ---- stage what a save writes (shared by every mode, --check included) -----------------------
 HAS_SHADOW=0; ROOT_LOCKED=0; REJECTED=""
-stage_overrides() {   # $1 = staging dir
+# stage_overrides <dir>: rc 1 = a staging write failed or the staged copy differs from its source; rc 2 = the staged
+# overrides would be rejected by the boot reader (batch_ok). cfgsave-stage-enospc: on p5 the stage is where every data
+# block of a save is allocated, so a full / read-only p5 fails here, before any rename (a failed cp / redirect used to
+# leave a 0-byte stage file that the publish renamed over the good one). The cmp checks compare against the page cache:
+# they prove the write() calls succeeded, not what is on the card — the fsync before the first rename covers that.
+# No `: >` in here: a failed redirect of that special builtin exits the whole shell.
+stage_overrides() {
 	s=$1
-	mkdir -p "$s/identity/dropbear"
+	mkdir -p "$s/identity/dropbear" || return 1
 	for f in dropbear_ed25519_host_key dropbear_rsa_host_key authorized_keys; do
-		[ -s "/etc/dropbear/$f" ] && cp -a "/etc/dropbear/$f" "$s/identity/dropbear/$f"
+		if [ -s "/etc/dropbear/$f" ]; then cp -a "/etc/dropbear/$f" "$s/identity/dropbear/$f" && cmp -s "/etc/dropbear/$f" "$s/identity/dropbear/$f" || return 1; fi
 	done
 	if [ -s /etc/openmanet/config.yml ]; then
-		mkdir -p "$s/identity/openmanet"; cp -a /etc/openmanet/config.yml "$s/identity/openmanet/config.yml"
+		mkdir -p "$s/identity/openmanet" && cp -a /etc/openmanet/config.yml "$s/identity/openmanet/config.yml" \
+			&& cmp -s /etc/openmanet/config.yml "$s/identity/openmanet/config.yml" || return 1
 	fi
 	# per-node root password (#137): only a real crypt hash. 96 restores it before dropbear.
 	rootline=$(grep '^root:' /etc/shadow 2>/dev/null)
 	case "$rootline" in
-		root:\$*) printf '%s\n' "$rootline" > "$s/identity/shadow-root"; chmod 600 "$s/identity/shadow-root"; HAS_SHADOW=1 ;;
+		root:\$*) printf '%s\n' "$rootline" > "$s/identity/shadow-root" && chmod 600 "$s/identity/shadow-root" \
+			&& printf '%s\n' "$rootline" | cmp -s - "$s/identity/shadow-root" || return 1; HAS_SHADOW=1 ;;
 		root:!*) ROOT_LOCKED=1 ;;   # #254: a provisioned node locks root without a hash — that is not "open"
 	esac
 	# per-node delta -> uci batch (scalars only). Single-quote values so spaces survive (N-R6); a value
 	# with shell metacharacters or a quote CANNOT be persisted (96's valid_batch rejects the whole batch
-	# otherwise) — it is reported, never silently dropped (#202 T4).
-	: > "$s/overrides.uci"
+	# otherwise) — it is reported, never silently dropped (#202 T4). Built in memory, written once, compared.
+	ov=""
 	for t in $PRESERVE; do
 		val=$(uget "$t") || continue
 		[ -n "$val" ] || continue        # empty preserved key -> image default wins (documented)
 		# shellcheck disable=SC2254  # $UNSAFE is a glob pattern on purpose
 		case "$val" in $UNSAFE) case " $SKIP_UNSAFE " in *" $t "*) continue ;; esac; REJECTED="$REJECTED $t"; continue ;; esac
-		printf "set %s='%s'\n" "$t" "$val" >> "$s/overrides.uci"
+		ov="$ov$(printf "set %s='%s'" "$t" "$val")
+"
 	done
-	echo "$SCHEMA" > "$s/schema_version"
+	printf '%s' "$ov" > "$s/overrides.uci" && printf '%s' "$ov" | cmp -s - "$s/overrides.uci" || return 1
+	batch_ok "$s/overrides.uci" || return 2
+	printf '%s\n' "$SCHEMA" > "$s/schema_version" && [ "$(cat "$s/schema_version")" = "$SCHEMA" ] || return 1
+}
+# batch_ok <file>: the reader's own check — the awk program of 96-batman-config-migrate's valid_batch(), verbatim (the
+# lint in tests/prov-p1/cfgsave-stage-enospc.sh keeps the two identical). A stage the reader would reject is not published.
+batch_ok() {
+	awk -v allowed="system wireless network openmanetd mesh11sd" '
+		BEGIN { n = split(allowed, a, " "); for (i = 1; i <= n; i++) ok[a[i]] = 1 }
+		NF == 0 || /^#/ { next }
+		$1 !~ /^(set|add_list|del_list|delete|reorder)$/ { bad = 1; next }
+		/[`$();|&<>]/ { bad = 1; next }
+		{
+			t = $2; sub(/=.*/, "", t)
+			nseg = split(t, seg, "."); pkg = seg[1]
+			if (!(pkg in ok)) bad = 1
+			if ($1 == "delete" && nseg < 3) bad = 1
+		}
+		END { exit bad ? 1 : 0 }
+	' "$1"
 }
 same_identity() {   # every identity file this save would write is already on p5, byte for byte. Files only
 	# on p5 (removed locally since) do not count: the write never deletes them either (cp -a), so
 	# counting them would rewrite p5 every tick forever (review M0-R2).
 	( cd "$STAGE/identity" && find . -type f ) | while IFS= read -r f; do
-		cmp -s "$STAGE/identity/$f" "$MNT/identity/$f" || { echo differs; break; }
+		cmp -s "$STAGE/identity/$f" "$P5R/identity/$f" || { echo differs; break; }
 	done | grep -q differs && return 1
 	return 0
 }
-p5_matches() { [ -f "$MNT/.seeded" ] && cmp -s "$STAGE/overrides.uci" "$MNT/overrides.uci" && cmp -s "$STAGE/schema_version" "$MNT/schema_version" && same_identity; }
+p5_matches() { [ -f "$P5R/.seeded" ] && cmp -s "$STAGE/overrides.uci" "$P5R/overrides.uci" && cmp -s "$STAGE/schema_version" "$P5R/schema_version" && same_identity; }
 diff_keys() {   # key names whose `set` line differs between stage and p5 (never the values)
 	for t in $PRESERVE; do
-		a=$(grep -F "set $t=" "$STAGE/overrides.uci" 2>/dev/null); b=$(grep -F "set $t=" "$MNT/overrides.uci" 2>/dev/null)
+		a=$(grep -F "set $t=" "$STAGE/overrides.uci" 2>/dev/null); b=$(grep -F "set $t=" "$P5R/overrides.uci" 2>/dev/null)
 		[ "$a" = "$b" ] || printf '%s,' "$t"
 	done
 }
 
 # ---- --check: read-only verdict (#202 C3) ----------------------------------------------------
 if [ "$mode" = --check ]; then
-	prov_compare "$MNT"
-	[ -f "$MNT/.seeded" ] || { say "p5 unseeded"; exit 7; }
-	STAGE=$(tmpd cfgsave-check) || { say "p5 error staging"; exit 1; }
-	stage_overrides "$STAGE"
+	prov_compare "$P5R"
+	[ -f "$P5R/.seeded" ] || { say "p5 unseeded"; exit 7; }
+	# cannot build the comparison (the run dir full, a batch the reader would reject): p5 is not PROVEN fresh -> rc 5, which
+	# batman-slot blocks on (its rc-1 branch would let an OTA through: cfgsave-stage-enospc review A-F2)
+	STAGE=$(tmpd cfgsave-check) || { say "p5 stale: unverifiable (no stage dir in the run dir)"; exit 5; }
+	stage_overrides "$STAGE"; src=$?
+	[ "$src" = 2 ] && { say "p5 stale: unverifiable (the live config would be rejected by the boot reader)"; exit 5; }
+	[ "$src" = 0 ] || { say "p5 stale: unverifiable (staging the comparison failed in the run dir)"; exit 5; }
 	keys=$(diff_keys); keys=${keys%,}
 	if [ -n "$REJECTED" ]; then
 		say "p5 stale: $(echo "$REJECTED" | tr ' ' ',' | sed 's/^,//') (unpersistable — change the value, --save cannot fix this)"; exit 5
@@ -547,10 +658,27 @@ fi
 
 # ---- write modes -----------------------------------------------------------------------------
 [ "$mode" = --seed ] && { seed_key_ok || { err "refusing --seed without a usable public key in /etc/dropbear/authorized_keys — a locked node with no key is unreachable. Install the operator public key first (#137)."; exit 1; }; }
+# not_saved <step> [<state of p5>]: rc 15, no "saved" line, and its explanation is the LAST stderr line (callers show
+# `tail -1`). The state defaults to what PUB says: nothing renamed yet = unchanged. The stage and the directories this
+# run made are removed first; the on-join cache is dropped and the on-join backoff marker written (cfgsave-stage-enospc).
+not_saved() {
+	[ -n "$STAGE" ] && rm -rf "$STAGE" 2>/dev/null; STAGE=""
+	for d in $MADE; do rmdir "$MNT/$d" 2>/dev/null; done   # directories this run made on p5 (empty unless renamed into)
+	# PUB=1 only says a rename returned 0: an I/O error that aborts the journal can still keep the last committed state
+	if [ -n "${2:-}" ]; then ns=$2; elif [ "$PUB" = 1 ]; then ns="p5 may be PARTLY updated (each file whole; an I/O error may have kept the last committed state)"; else ns="p5 is unchanged"; fi
+	rm -f "$ST"; [ "$RDOK" = 1 ] && ( umask 077; echo "$(up) $1" > "$SAVEFAIL" )
+	logger -t batman-config-save -p daemon.err "p5 NOT saved ($mode): $1 failed — $ns" 2>/dev/null
+	err "p5 NOT saved: $1 failed — $ns ($(df -k "$MNT" 2>/dev/null | awk 'END {print $(NF - 2)}') KiB free on p5)"
+	exit 15
+}
+MADE=""; PUB=0
+mkd() { [ -d "$MNT/$1" ] && return 0; mkdir "$MNT/$1" && MADE="$1 $MADE"; }   # <p5-relative dir>, parent first
 STAGE="$MNT/.stage.$$"
-rm -rf "$STAGE"; stage_overrides "$STAGE"
+rm -rf "$STAGE"; stage_overrides "$STAGE"; src=$?
+[ "$src" = 2 ] && not_saved "the boot reader's check of the staged overrides (valid_batch would reject them at boot)"
+[ "$src" = 0 ] || not_saved staging
 case "$mode" in --seed|--on-join|--save) [ "$HAS_SHADOW" = 1 ] || err "root has no password hash — persisting radio config only; node stays UNPROVISIONED (open) until a password is set (#137)" ;; esac
-[ -n "$REJECTED" ] && err "cannot persist$REJECTED (forbidden characters: backtick \$ ( ) ; | & < > ') — change the value"
+[ -n "$REJECTED" ] && err "cannot persist$REJECTED (forbidden characters: backtick \$ ( ) ; | & < > ' newline) — change the value"
 
 mark_mesh_expected() {
 	# A seeded node is provisioned to live in a mesh: mirror that onto p6 so batman-autocommit's OTA gate
@@ -565,7 +693,7 @@ final_rc() { if [ -n "$REJECTED" ]; then echo 6; elif [ "$mode" = --on-join ] &&
 # already holds exactly what this save would write — overrides, the proven lkg copy (a --save in between
 # updates overrides but not lkg; this joined boot must rotate it, review M0-R3), schema, every identity file.
 if [ "$mode" = --on-join ] && p5_matches && cmp -s "$STAGE/overrides.uci" "$MNT/lkg/overrides.uci"; then
-	rm -rf "$STAGE"; STAGE=""; sync; umount "$MNT" 2>/dev/null
+	rm -rf "$STAGE"; STAGE=""; sync; umount "$MNT" 2>/dev/null; rm -f "$SAVEFAIL"
 	say "unchanged ($mode) — skip"
 	mark_mesh_expected
 	rc=$(final_rc); onjoin_record "$rc"; exit "$rc"
@@ -591,21 +719,43 @@ if [ -n "$SEQ0" ] && [ "$(txn_seq)" != "$SEQ0" ]; then
 	rm -rf "$STAGE"; STAGE=""; umount "$MNT" 2>/dev/null
 	err "provisioning transaction started — next tick"; exit 1
 fi
-mkdir -p "$MNT/identity" "$MNT/lkg"
-# identity files: renamed from the stage (same filesystem) into place, one by one — never copied over in place
-( cd "$STAGE/identity" && find . -type f ) | while IFS= read -r f; do
-	f=${f#./}; d=${f%/*}; [ "$d" = "$f" ] || mkdir -p "$MNT/identity/$d"
-	mv -f "$STAGE/identity/$f" "$MNT/identity/$f"
-done
-mv "$STAGE/overrides.uci" "$MNT/overrides.uci"
+# everything that needs a new block (directories, the lkg copy, a first .seeded) is made BEFORE the first rename, so
+# the publish below is renames only (cfgsave-stage-enospc). The identity names are fixed (no blanks): plain splitting.
+ids=$(cd "$STAGE/identity" && find . -type f) || not_saved "listing the stage"
+mkd identity && mkd lkg || not_saved "mkdir on p5"
+for f in $ids; do f=${f#./}; d=${f%/*}; [ "$d" = "$f" ] || mkd "identity/$d" || not_saved "mkdir identity/$d"; done
+LKG=0
 if [ "$mode" = --seed ] || [ "$mode" = --if-healthy ] || [ "$mode" = --on-join ] || [ "$PROMOTE" = 1 ]; then
-	cp -a "$MNT/overrides.uci" "$MNT/lkg/overrides.uci.tmp" && mv -f "$MNT/lkg/overrides.uci.tmp" "$MNT/lkg/overrides.uci"
+	LKG=1; cp -a "$STAGE/overrides.uci" "$STAGE/lkg.uci" && cmp -s "$STAGE/overrides.uci" "$STAGE/lkg.uci" || not_saved "staging the lkg copy"
 fi
+if [ ! -f "$MNT/.seeded" ]; then printf '' > "$STAGE/.seeded" || not_saved "staging .seeded"; fi
+# fsync every stage file BEFORE the first rename (review A-F1): a write error on the data blocks only (the journal and
+# the metadata fine) is reported by nothing else — busybox sync returns 0, the journal does not abort, and the renames
+# would publish files whose blocks never reached the card (they read back as NULs after a remount). busybox `fsync`
+# (CONFIG_FSYNC=y in both SoC builds; /bin/fsync) returns 1 on an fsync error. No `fsync` = fail closed: busybox `sync
+# FILE` without SYNC_FANCY ignores FILE and returns 0 (review A-r2 F3 / B-r2 MINOR-3). The list must be complete: find's
+# rc is checked and the count must be the identity files + overrides + schema (+ lkg, + .seeded) (review A-r2 F5).
+command -v fsync >/dev/null 2>&1 || not_saved "fsync of the stage (no fsync tool on this system)"
+flist=$(cd "$STAGE" && find . -type f) || not_saved "listing the stage for fsync"
+nwant=$(( $(printf '%s\n' "$ids" | grep -c .) + 2 + LKG )); [ -f "$STAGE/.seeded" ] && nwant=$((nwant + 1))
+[ "$(printf '%s\n' "$flist" | grep -c .)" = "$nwant" ] || not_saved "listing the stage for fsync ($(printf '%s\n' "$flist" | grep -c .) files, want $nwant)"
+for f in $flist; do fsync "$STAGE/${f#./}" 2>/dev/null || not_saved "fsync of the stage (${f#./})"; done
+# publish: identity files renamed from the stage (same filesystem) into place, one by one — never copied over in place
+for f in $ids; do f=${f#./}; mv -f "$STAGE/identity/$f" "$MNT/identity/$f" || not_saved "renaming identity/$f"; PUB=1; done
+mv "$STAGE/overrides.uci" "$MNT/overrides.uci" || not_saved "renaming overrides.uci"; PUB=1
+if [ "$LKG" = 1 ]; then mv -f "$STAGE/lkg.uci" "$MNT/lkg/overrides.uci" || not_saved "renaming lkg/overrides.uci"; fi
 mv "$STAGE/schema_version" "$MNT/schema_version"
+[ ! -e "$STAGE/schema_version" ] || not_saved "renaming schema_version"
+# sentinel LAST (DR-2)
+if [ -f "$STAGE/.seeded" ]; then mv "$STAGE/.seeded" "$MNT/.seeded" || not_saved "renaming .seeded" "p5 may be PARTLY updated and is still unseeded"; fi
 rm -rf "$STAGE"; STAGE=""
-: > "$MNT/.seeded"        # sentinel written LAST (DR-2)
 sync
-umount "$MNT" 2>/dev/null
+# a write error on the journal or the metadata at writeback aborts the ext4 journal: busybox sync still returns 0 and
+# /proc/mounts still says rw, but the next file create fails (EROFS / EIO). An empty-file probe catches that case; an
+# error after the probe (at umount) is not seen.
+printf '' > "$MNT/.wprobe.$$" && rm -f "$MNT/.wprobe.$$" || not_saved "the final sync (p5 refuses writes now: an I/O error?)" "p5 holds its last committed state (most likely the old one)"
+umount "$MNT" 2>/dev/null || logger -t batman-config-save -p daemon.warn "umount of p5 at $MNT failed after a save — it stays mounted until reboot" 2>/dev/null
+rm -f "$SAVEFAIL"
 if [ "$mode" = --on-join ] && [ "$RDOK" = 1 ]; then
 	wn=$((wn + 1)); ( umask 077; echo "$wn $(up)" > "$WRITES" )
 	[ "$wn" = 20 ] && logger -t batman-config-save -p daemon.warn "20 p5 writes this boot — a config value is churning; further writes limited to one per 60 s" 2>/dev/null

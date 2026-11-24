@@ -6,6 +6,9 @@ CS=$1; W=$(mktemp -d); trap 'umount $W/m 2>/dev/null; losetup -d $LOOP 2>/dev/nu
 SRC=${PROV_SRC:-$(cd "$(dirname "$1")/../.." && pwd)}   # files/ of the product tree (override for a copied file)
 truncate -s 64M $W/p5.img; LOOP=$(losetup -f --show $W/p5.img); mkfs.ext4 -q -F $W/p5.img
 mkdir -p $W/prov $W/m $W/bin $W/run; chmod 700 $W/run
+# the node's busybox has an `fsync` applet and batman-config-save refuses to save without one (cfgsave-stage-enospc): this
+# host has none, so a shim runs the same syscall (coreutils `sync FILE` = fsync per file, errors reported)
+printf '#!/bin/sh\nexec /bin/sync -- "$@"\n' > $W/bin/fsync; chmod +x $W/bin/fsync
 cat > $W/rundir.sh <<X
 batman_rundir(){ return 0; }
 RUNDIR=$W/run
