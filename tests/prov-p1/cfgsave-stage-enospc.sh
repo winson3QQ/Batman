@@ -21,8 +21,10 @@
 # "unchanged". Never a 0-byte file (other than .seeded) outside a leftover stage, in either branch.
 # Further cases: --check with a full run dir -> rc 5 "unverifiable"; the --on-join backoff after a failed save (one
 # attempt per 300 s, no rw mount while backing off); a stale .stage.<pid> / .wprobe / .wprobe.<pid> removed by the next
-# save (a .wprobe DIRECTORY: only the cleanup removes it); a .wprobe symlink to a file outside p5 on the no-lock path
-# (RDOK=0, no cleanup) is never written through; the
+# save (a .wprobe DIRECTORY: only the cleanup removes it); on the no-lock path (RDOK=0, no cleanup) a .wprobe symlink
+# to a file outside p5 is never written through, and a .wprobe directory or an immutable .wprobe file (a stand-in for
+# another lock-less writer's probe) does not fail the save; two real concurrent lock-less saves never give the false
+# "p5 refuses writes" text; the
 # on-join cache dropped by a failed save; values with a newline / CR -> rc 6 (the rest saved) or skipped (ssid);
 # white-box: a staged batch the boot reader would reject -> rc 15 with its own message. Lint: batch_ok awk == 96's.
 # Round 3 (review A-r2 / B-r2): a read-only remount / write errors after the FIRST rename (hook 3) -> "may be PARTLY",
@@ -260,6 +262,7 @@ case_run(){
 	h1=$(hashes); rd=$(reader)
 	zero=$(cd $W/m && find . \( -path ./lost+found -o -path './.stage.*' \) -prune -o -type f -size 0 ! -name .seeded -print | tr '\n' ' ')
 	stage=$(cd $W/m && ls -d .stage.* .wprobe* 2>/dev/null | tr '\n' ' ')
+	stgleft=$(cd $W/m && ls -d .stage.* 2>/dev/null | tr '\n' ' ')
 	why=""
 	[ -z "$zero" ] || why="$why 0-byte:[$zero]"
 	if grep -q "saved ($1)" $W/out; then
@@ -279,6 +282,13 @@ $(cat $W/expect.NEW)" ] || why="$why reader!=NEW[$(echo "$rd" | head -2 | tr '\n
 		v="not-saved"
 		[ "$rc" = 15 ] || why="$why rc=$rc(want 15)"
 		lastline_ok || why="$why last-stderr-line:[$(tail -1 $W/err | cut -c1-80)]"
+		# a stage left on p5 must be named in the text (review of a87baa3, A-3). Not judged where the product cannot know:
+		# on the final-sync path (STAGE is cleared before the probe) and on a device with I/O errors (eio*, datafail): there
+		# `rm -rf` of the stage returns 0 in memory and the removal never reaches the card (seen: eio6 x3, the stage was
+		# committed before the error), so the leftover appears only after a remount (design §3)
+		case "$kind" in eio*|datafail) stgleft="" ;; esac
+		if [ -n "$stgleft" ] && ! tail -1 $W/err | grep -q 'p5 refuses writes now' && ! tail -1 $W/err | grep -q 'its stage \.stage\.'; then
+			why="$why stage-left-but-not-named:[$stgleft]"; fi
 		# a read-only or failing device cannot have its stage removed: that leftover is reported, not judged
 		case "$kind" in ro|eio*|datafail) h1=$(echo "$h1" | grep -v '\./\.stage\.') ;; esac
 		# after a journal abort a rename that returned 0 may not be on the card: eio* / datafail may say "may be PARTLY"
@@ -361,8 +371,8 @@ else bad "--on-join backoff: setup"; fi
 NCASE=$((NCASE + 1))
 # ---- a stale .stage.<pid> / .wprobe.<pid> is removed by the next save (review A-F9 / B MAJOR-1) ----------------------
 if fresh && mnt; then
-	# .wprobe as a DIRECTORY: the probe's own `rm -f` cannot remove it, so only the cleanup at the rw mount does (review of
-	# cdee8b0, A-2: dropping "$MNT"/.wprobe from that cleanup must FAIL this case)
+	# .wprobe as a DIRECTORY (an old leftover; the probe uses new random names): only the cleanup at the rw mount removes
+	# it (review of cdee8b0, A-2: dropping "$MNT"/.wprobe from that cleanup must FAIL this case)
 	mkdir -p $W/m/.stage.99999/identity $W/m/.wprobe && dd if=/dev/zero of=$W/m/.stage.99999/identity/junk bs=4k count=40 2>/dev/null && : > $W/m/.wprobe.99999 && : > $W/m/.wprobe/x; umount $W/m
 	if fill 0; then
 		o=$(cs --save 2>&1); r=$?
@@ -449,7 +459,7 @@ partcase(){	# <label> <kind ro|eiow> <mode>
 		tail -1 $W/err | grep -q 'may be PARTLY' || why="$why text:[$(tail -1 $W/err | cut -c1-90)]"
 		[ "$ovs" = OLD ] || why="$why overrides-published"; [ "$idnew" = NEW ] || why="$why ro-kept-no-rename"
 	else	# write errors: the later renames still succeed in memory, the journal aborts at the sync -> the probe reports it
-		tail -1 $W/err | grep -qE 'may be PARTLY|last committed state' || why="$why text:[$(tail -1 $W/err | cut -c1-90)]"
+		tail -1 $W/err | grep -qE 'may be PARTLY|the renames returned 0 but p5 refuses writes now' || why="$why text:[$(tail -1 $W/err | cut -c1-90)]"
 	fi
 	[ -z "$why" ] && okk "$1: rc 15 'may be PARTLY', p5 identity=$idnew overrides=$ovs, every file OLD or NEW" || bad "$1:$why"
 }
@@ -622,7 +632,7 @@ elif devfree && mkfs_p5; then
 	dd=$(diff <(echo "$h0") <(echo "$h1") | grep '^[<>]')
 	# the immutable stage files cannot be removed either: the text must say the stage stays (review of cdee8b0, B-1)
 	[ "$r" = 15 ] && tail -1 $W/err | grep -q 'p5 is unchanged except empty directories it could not remove:.*identity' && dirs_only_listed "$dd" \
-		&& tail -1 $W/err | grep -q '; its stage \.stage\.[0-9]* stays (removed by the next save)' && [ "$rd" = unseeded ] \
+		&& tail -1 $W/err | grep -q '; its stage \.stage\.[0-9]* stays (removed by the next save that holds the lock)' && [ "$rd" = unseeded ] \
 		&& okk "first --seed, renames fail, new dirs + the stage stay: rc 15, the text names them exactly [$(tail -1 $W/err | cut -c21-200)]" \
 		|| bad "seed dirs left: rc $r [$(tail -1 $W/err | cut -c1-220)] diff=[$(echo "$dd" | tr '\n' '|' | cut -c1-120)] listed=[$(listed_dirs | tr '\n' ' ')] reader=$rd"
 else bad "seed dirs left: setup"; fi
@@ -635,11 +645,40 @@ if fresh && mnt; then
 	o=$(cs --save 2>&1); r=$?
 	chmod 755 $W/run
 	mnt -o ro; pl=$(ls -la $W/m/.wprobe 2>/dev/null | cut -c1); umount $W/m
-	[ "$r" = 0 ] && [ ! -e $W/run/batman ] && [ "$(cat $W/outside)" = ORIGINAL ] && [ -z "$pl" ] \
-		&& okk "no lock, a .wprobe symlink to a file outside p5: saved rc 0, the target untouched, the link gone" \
+	[ "$r" = 0 ] && [ ! -e $W/run/batman ] && [ "$(cat $W/outside)" = ORIGINAL ] \
+		&& okk "no lock, a .wprobe symlink to a file outside p5: saved rc 0, the target untouched (the link: [${pl:-gone}])" \
 		|| bad "wprobe symlink: rc $r target=[$(cat $W/outside)] left=[$pl] no-lock-path=$([ -e $W/run/batman ] && echo NO-the-run-dir-was-made || echo yes) [$(echo "$o" | tail -1 | cut -c1-120)]"
 	rm -f $W/outside
 else bad "wprobe symlink: setup"; fi
+# no lock + a leftover at the old fixed probe name: a .wprobe DIRECTORY, and an immutable .wprobe file (a deterministic
+# stand-in for another lock-less writer's probe that exists at that moment) -> the save is rc 0, never the false
+# "p5 refuses writes now" (review of a87baa3, A-1 / B-1)
+probename(){	# <label> <setup on the mounted p5>
+	NCASE=$((NCASE + 1))
+	if fresh && mnt; then
+		( cd $W/m && eval "$2" ) || bad "$1: setup"; umount $W/m
+		chmod 777 $W/run; o=$(cs --save 2>&1); r=$?; chmod 755 $W/run
+		mnt && { chattr -i $W/m/.wprobe 2>/dev/null; rm -rf $W/m/.wprobe; umount $W/m; }
+		[ "$r" = 0 ] && ! echo "$o" | grep -q 'refuses writes now' && okk "no lock, $1: saved rc 0" \
+			|| bad "$1: rc $r [$(echo "$o" | tail -1 | cut -c1-150)]"
+	else bad "$1: setup"; fi
+}
+probename "a .wprobe directory" 'mkdir .wprobe && : > .wprobe/x'
+command -v chattr >/dev/null 2>&1 && probename "an immutable .wprobe file (another writer's probe)" ': > .wprobe && chattr +i .wprobe' || bad "immutable .wprobe: no chattr"
+# two REAL concurrent lock-less saves, 10 pairs: neither may report the false "refuses writes now" text (with a fixed
+# probe name they can collide; the window is narrow, so this is best effort — the stand-in above is the deterministic one)
+NCASE=$((NCASE + 1))
+if fresh; then
+	chmod 777 $W/run; nfalse=0; nbad=0
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		cs --save > $W/c1 2>&1 & p1=$!; cs --save > $W/c2 2>&1 & p2=$!; wait $p1; r1=$?; wait $p2; r2=$?
+		grep -q 'refuses writes now' $W/c1 $W/c2 && nfalse=$((nfalse + 1))
+		{ [ "$r1" = 0 ] && [ "$r2" = 0 ]; } || nbad=$((nbad + 1))
+	done
+	chmod 755 $W/run
+	[ "$nfalse" = 0 ] && okk "10 pairs of concurrent lock-less saves: no false 'refuses writes now' (pairs with an rc != 0: $nbad)" \
+		|| bad "concurrent lock-less saves: $nfalse of 10 pairs reported 'refuses writes now'"
+else bad "concurrent lock-less: setup"; fi
 # ---- the busy lookup must not read a filesystem that is not p5 (review B-r5 MINOR-1) ---------------------------------
 # A: a tmpfs stacked on the mountpoint where p5 is mounted rw: reading through that path would read the tmpfs
 NCASE=$((NCASE + 1))
