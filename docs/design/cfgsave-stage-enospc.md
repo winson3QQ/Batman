@@ -396,7 +396,7 @@ dm 的切換一律 `load → suspend → resume`,任何一步失敗都 `resume`(
 | B-2b | 文字改成「removed by the next save that holds the lock」 | seed 案例斷言 |
 | B-2a | §3:最後 sync 的路徑先清空 `STAGE`,所以不會有 stage 後綴 | §3 |
 | A-2(文件) | 程式註解與 §2 改寫成新探針實際保證的事,附實測 | 註解、§2 |
-| A-3 | case_run:not-saved 時 p5 上留有 `.stage.*`,最後一行就必須含 `its stage .stage.`。不判的情況是產品無從知道的路徑:最後 sync 的路徑,以及有 I/O 錯誤的裝置(eio*、datafail;`rm -rf` 在記憶體中回 0,但刪除沒寫到卡上——實測 eio6 ×3,stage 在錯誤前已 commit) | 測試;在 ro 與確定性案例上是嚴格的 |
+| A-3 | (c8650a1 已取消「最後 sync 的路徑不判」:那條路徑現在會列出 stage,見下一節)case_run:not-saved 時 p5 上留有 `.stage.*`,最後一行就必須含 `its stage .stage.`。不判的情況是產品無從知道的路徑:最後 sync 的路徑,以及有 I/O 錯誤的裝置(eio*、datafail;`rm -rf` 在記憶體中回 0,但刪除沒寫到卡上——實測 eio6 ×3,stage 在錯誤前已 commit) | 測試;在 ro 與確定性案例上是嚴格的 |
 
 ### 審查 c302064(B APPROVE、A APPROVE-WITH-CHANGES)
 
