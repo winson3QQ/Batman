@@ -41,9 +41,9 @@ WSL Ubuntu-24.04 root,loop ext4(`mkfs.ext4 -b 4096 -L batconfig`,同 `scripts/bu
 | `$RUNDIR/cfgsave-onjoin.state`(on-join 快取) | `batman-config-save` | `batman-config-save` |
 | **新** `$RUNDIR/cfgsave-save.failed`(`<uptime> <step>`) | `batman-config-save`:`not_saved` 寫、任何成功刪 | `batman-config-save --on-join`(退避) |
 
-新暫存名(`$STAGE/lkg.uci`、`$STAGE/.seeded`、`$MNT/.wprobe`)都在本程序持鎖期間、私有掛載點(`$RUNDIR` 0700 下的 `tmpd`)內建立。
+新暫存名(`$STAGE/lkg.uci`、`$STAGE/.seeded`、`$MNT/.wprobe`)都建在本程序自己的掛載點裡:平常是 `$RUNDIR`(0700)下的 `tmpd`,而且持鎖;run dir 不能用時(`RDOK=0`)則是 `mktemp -d` 的目錄,**沒有鎖**,也不做殘留清除。所以寫入探針不能信任名字上已經有的東西:它先 `rm -f "$MNT/.wprobe"`(只刪 link 本身,不跟隨),再在 `set -C`(noclobber,busybox ash 用 O_EXCL)下建立,任何已存在的東西(檔案或 symlink)都讓它失敗,絕不寫穿。節點 busybox 1.36.1(qemu)與主機 busybox 實測:新檔 rc 0;已存在的檔 rc 1;指向一般檔的 symlink rc 1 且目標不變;`rm -f` 後再建立 rc 0、建出的是一般檔、目標不變。
 
-**清除殘留**:rw 掛載驗證成功後,若持鎖(`LOCK_MINE=1`),刪除 `$MNT/.stage.*` 與 `$MNT/.wprobe.*`(`:396-398`)。持鎖證明它們的寫者已不在(一次只有一個寫者);沒鎖(`RDOK=0`)時不刪,因為可能有別的寫者正擁有它。`rm -rf` 不跟隨 symlink;p5 只有 root 能 rw 掛載。
+**清除殘留**:rw 掛載驗證成功後,若持鎖(`LOCK_MINE=1`),刪除 `$MNT/.stage.*`、`$MNT/.wprobe` 與 `$MNT/.wprobe.*`(`:420-422`;`.wprobe.*` 是舊版留下的名字)。持鎖證明它們的寫者已不在(一次只有一個寫者);沒鎖(`RDOK=0`)時不刪,因為可能有別的寫者正擁有它。`rm -rf` 不跟隨 symlink;p5 只有 root 能 rw 掛載。
 
 ## 3. 契約變更
 
@@ -52,6 +52,8 @@ WSL Ubuntu-24.04 root,loop ext4(`mkfs.ext4 -b 4096 -L batconfig`,同 `scripts/bu
 - **最後一行 stderr** 是說明:`batman-config-save: p5 NOT saved: <step> failed — <state> (<N> KiB free on p5)`。它是最後一行,因為 stage 在印之前就刪掉,cleanup 的 `rm` 也靜音(審查 A-F6)。另有一行 syslog `daemon.err`。**不印 `saved`**。
 - `<state>`:
   - 任何 rename 之前的失敗(staging、預先配置、fsync)→ `p5 is unchanged`(並移除這次建立的空目錄);
+  - 這次建立的目錄刪不掉時(檔案系統已變唯讀 / I/O 錯誤;PR #381 的 CI 在第一次 `--seed` 上遇到)→ `p5 is unchanged except empty directories it could not remove: <清單>`;
+  - stage 刪不掉時(同樣原因;裡面有 host key 與 shadow 的副本),不論前面是哪一種狀態,都再接上 `; its stage .stage.<pid> stays (removed by the next save)`;
   - 第一個 rename 回 0 之後才失敗 → `p5 may be PARTLY updated (each file whole; an I/O error may have kept the last committed state)`(`PUB` 旗標,審查 A-F7)。用「may be」:rename 回 0 只代表記憶體裡成功,journal 在 rename 迴圈中途 abort 時,卡上仍是上一次 commit 的狀態(審查 A-r2 F1:6 個案例中觀察到 1 次 p5 其實未變);read-only remount 則保留已完成的 rename(真的部分更新,測試兩種都驗);
   - `.seeded` rename 失敗 → `p5 may be PARTLY updated and is still unseeded`;
   - sync 後探針失敗 → `p5 holds its last committed state (most likely the old one)`。
@@ -69,7 +71,7 @@ WSL Ubuntu-24.04 root,loop ext4(`mkfs.ext4 -b 4096 -L batconfig`,同 `scripts/bu
   - 只有「**沒有掛在任何地方**而且掛不上」才是 `p5 stale: unverifiable (p5 does not mount read-only: <mount 自己的錯誤,一行>[; a save failed earlier this boot: <step>])`,**不需要**失敗標記(審查 A-r4 F1:錯誤訊息保留,EBUSY 與損壞分得出來)。#202 防的暫時性失敗是 rw 掛載撞上唯讀讀者(T11)。LUKS p5 沒有 ext4 magic,不會走到這裡。這也蓋住了「最後一次存檔之後卡才壞、沒有標記」的情況(審查 A-r3 F1)。
 
 兩者在新槽的 96 也同樣讀不到 p5,所以 OTA 不該放行。
-- batman-slot 對 `p5 stale: unverifiable` 有自己的拒絕文字(`batman-slot:576-579`,審查 A-r2 F6):`p5 (config) freshness cannot be verified (<why>) — refusing an OTA; '--save' does not fix this. If /tmp is full …, free it and retry; if p5 does not mount, the card needs attention`,加上 allow-stale-p5 的覆寫方法;不再顯示「Run --save」的 `P5_STALE_HINT`。測試在 `tests/prov-p1/slot-p5gate-txn.sh`(4eba26d 的 batman-slot FAIL 2 條)。
+- batman-slot 對 `p5 stale: unverifiable` 有自己的拒絕文字(`batman-slot:576-579`,審查 A-r2 F6):`p5 (config) freshness cannot be verified (<why>) — refusing an OTA; '--save' does not fix this. If the run dir's filesystem is full (a sysupgrade image in it?), free space and retry; if p5 does not mount, the card needs attention`,加上 allow-stale-p5 的覆寫方法;不再顯示「Run --save」的 `P5_STALE_HINT`。測試在 `tests/prov-p1/slot-p5gate-txn.sh`(4eba26d 的 batman-slot FAIL 2 條)。
 - 理由:`batman-slot:559-588` 對 rc 5 擋 OTA(`:577`,可用 allow-stale-p5 覆寫,`:571`);對 rc 1 走 `*)`,沒有 `cfgsave-mount.failed` / `cfgsave-lock.busy` 時是 `skip:error … not blocking`(`:587`)——fail-open。
 - p5 沒有被**證明**是最新的,OTA 就不該在沒有人工覆寫的情況下進行。舊版在 /tmp 滿時意外回 rc 5(0 B stage ≠ p5),v1 把它變成 rc 1(審查 A E3);v2 明確回 rc 5。
 - 其他讀 `--check` 的呼叫者:helper `parseCheck` 把 rc 5 + `p5 stale` 當成「stale」(`status.go:52-58`);`onlyP3Stale` 只在每個項目都是 P3 key 時才自動 save,`unverifiable (…)` 不是(`status.go:67-80`);`halow-setkey:231` 的 `--check || p3_persist` 會去做一次 `--save`(stage 在 p5 上,不在 run dir)。
@@ -128,7 +130,7 @@ WSL Ubuntu-24.04 root,loop ext4(`mkfs.ext4 -b 4096 -L batconfig`,同 `scripts/bu
 | `--on-join` | K=1–9 兩份都 0 B、快取記成功;壞卡上每 tick 重試 | 存好或 rc 15、快取不記、之後 300 s 退避 | `--on-join K=0..12`、ro、EIO×5、control、退避、快取 |
 | `--if-healthy` | 同 on-join(無快取) | 存好或 rc 15 | `--if-healthy K=0..12`、ro、EIO×5、control |
 | OTA precheck `--check` | 寫入失敗後 rc 5;run dir 滿時意外 rc 5 | 寫入失敗後 rc 5;run dir 滿時 rc 5 `unverifiable` | 每個案例後的 `--check`;run dir 滿 |
-| 重開 / 斷電 / SIGKILL 在 staging 中 | p5 未變,`.stage.<pid>/` 永久殘留 | p5 未變;殘留在下一次持鎖寫入時刪除 | 預放 `.stage.99999` + `.wprobe.99999` 於滿的 p5;ro 跑完的殘留被下一次 save 刪 |
+| 重開 / 斷電 / SIGKILL 在 staging 中 | p5 未變,`.stage.<pid>/` 永久殘留 | p5 未變;殘留在下一次持鎖寫入時刪除 | 預放 `.stage.99999` + `.wprobe/`(目錄)+ `.wprobe.99999` 於滿的 p5;ro 跑完的殘留被下一次 save 刪 |
 | 斷電在 publish 中(rename 之間) | 部分新部分舊,每檔完整 | 同(資料已 fsync,rename 原子) | 不新增 |
 | 卡持續壞 / 滿 | on-join 每 15 s 掛載 + 寫 + log | 每 300 s 一次 | 退避案例 |
 | 升級到含修正的版本 | — | p5 格式不變,無遷移;舊版留下的 `.stage.*` 會被清掉 | 殘留案例 |
@@ -177,12 +179,13 @@ dm 的切換一律 `load → suspend → resume`,任何一步失敗都 `resume`(
 
 **斷言**:每個案例都必須是下面兩種結果之一,而且任何分支都不得有 0 B 檔(`.seeded` 與壞裝置上留下的 stage 除外)。
 - saved:rc 0,p5 = NEW,reader 讀 NEW,`--check` 0;
-- not saved:rc 15,最後一行 stderr 是說明,p5 位元組相同,reader 讀 OLD,`--check` 5,無快取,下一個 tick 不 `unchanged`。p5 未變時不得說 PARTLY;例外是 I/O 錯誤類(eio*、datafail)可以說「may be PARTLY」(journal abort,審查 A-r2 F1)。
+- not saved:rc 15,最後一行 stderr 是說明,p5 位元組相同——唯一的例外是只多了空目錄,而且那些目錄**正好**就是說明行冒號後列出的那些(集合完全相同,多一個少一個都 FAIL)——reader 讀 OLD,`--check` 5,無快取,下一個 tick 不 `unchanged`。p5 未變時不得說 PARTLY;例外是 I/O 錯誤類(eio*、datafail)可以說「may be PARTLY」(journal abort,審查 A-r2 F1)。
 
 **其他案例**:
 - run dir 滿時 `--check` rc 5 `unverifiable`;
 - `--on-join` 退避:第 1 tick rc 15、第 2 tick rc 1 且 ext4 mount count 不變、把標記調早 301 s 後第 3 tick 再嘗試、成功的 `--save` 解除;
-- 預放的 `.stage.99999`(40 block)+ `.wprobe.99999` 在滿的 p5 上被刪,存檔因而放得下;
+- 預放的 `.stage.99999`(40 block)+ `.wprobe/`(目錄,探針自己的 `rm -f` 刪不掉,只有掛載時的清除會刪)+ `.wprobe.99999` 在滿的 p5 上被刪,存檔因而放得下;
+- 沒有鎖的路徑(run dir 的上層變成 777,`RDOK=0`,不做清除):p5 上預放 `.wprobe` → 一個 p5 外的檔;存檔 rc 0,那個檔內容不變,link 被刪;
 - ro 失敗留下的 stage 被下一次 save 刪除;
 - on-join 快取被失敗的 tick 移除;
 - hostname 含換行 → rc 6、其餘存好、`--check` 5;ssid 含換行 → rc 0、不存、`--check` 0;mesh key 含 CR → rc 0、該行位元組原樣存下、`--check` 0;
@@ -365,3 +368,17 @@ dm 的切換一律 `load → suspend → resume`,任何一步失敗都 `resume`(
 | A-r6 F1 / B-r6 MINOR-1 | MINOR | 修:`remount,bind,ro` 的結果要檢查,而且我們那一行 mountinfo 的掛載選項必須是 `ro`(連同 major:minor 與 root `/`);否則 umount 我們的 bind,回 rc 5「busy … could not be compared」 | 新案例:`mount` 的 remount 被 shim 拒絕 → rc 5;f49107a FAIL(經由 rw bind 給出 fresh) |
 | A-r6 F2 | MINOR | §8 一行:private namespace + 主機鎖讓執行排隊(含等待約 200 s);CI 只跑一個實例 | §8 |
 | B-r6 MINOR-2 | MINOR | 不另做:節點上的 `mount` 是 mount-utils 的 `/usr/bin/mount`(審查者 A;韌體 `.config` `CONFIG_PACKAGE_mount-utils=y`,節點 busybox 沒有 `SH_STANDALONE`,所以走 PATH,`/usr/bin` 在 `/bin` 之前)。測試裡兩種都有跑到:主機的 busybox sh 會把 `mount` 解析成它自己的 applet(實測:PATH 前面的 shim 不會被呼叫),而 remount shim 的案例改用 dash 跑,走 PATH,用的是 util-linux 的 `mount` | 審查 A-r6;shim 實測 |
+
+### PR #381 的 CI(5bc77c8)與之後的審查(cdee8b0)
+
+| 失敗 / 項目 | 原因(證據) | 處置 |
+|---|---|---|
+| lint:`check-tmp-trust` | `.wprobe.$$` 被當成可預測的暫存名;batman-slot 的拒絕訊息裡有 `/tmp is full`;`cfgsave-save.failed` 沒登記在 `scripts/rundir-paths.txt`(CI log) | 探針改成固定名 `.wprobe`;訊息改成「the run dir's filesystem is full」;登記到 `rundir-paths.txt` 與 `280-tmp-trust.md` 的寫者 / 讀者表(cdee8b0) |
+| lint:s5 on-node,`test-s5-node-254.sh` 的 FB6「an env -i child keeping fd 9」 | **既有的時序 flake,與本 PR 無關**:案例用假的 batman-slot,不碰本 PR 的程式;同一台 WSL 各跑 3 次,4eba26d `181/1`、`182/0`、`180/2`,cdee8b0 `182/0` ×3 | 不在本 PR 修 |
+| prov-p1:`--seed (unseeded p5) data blocks only fail` | runner 上 data-only 的錯誤到 rename 才出現(本機是 fsync 先擋下);未 seed 的 p5 上為這次建的目錄刪不掉,文字卻說「p5 is unchanged」 | 文字改成列出那些空目錄;確定性案例(immutable stage 檔 + append-only `identity/`);5bc77c8 FAIL |
+| dv-sbx | 不是產品回歸:`FAIL exit=…` 那些行是 96 mutant 的預期 FAIL;唯一真正的失敗是 `cfgsave` 的 check-late mutant 錨點(`$MNT` → `$P5R`)套不上 | 錨點更新;sed 套到 4eba26d / HEAD 的 flip 確認(dv-sbx 依設計只在 CI runner 跑) |
+| 審查 A-1 / B-4 | 固定名的探針在沒有鎖(`RDOK=0`)時會寫穿預放的 `.wprobe` symlink | `rm -f` + `set -C` 建立;沒鎖案例;cdee8b0 FAIL(目標被截斷) |
+| 審查 A-2 | 殘留案例只放 `.wprobe.99999`,拿掉清除裡的 `.wprobe` 不會被抓到 | 加放 `.wprobe/` 目錄;mutant(拿掉 `"$MNT"/.wprobe`)FAIL |
+| 審查 B-1 | stage 刪不掉時(唯讀 / I/O 錯誤)文字沒提到它 | 文字接上「its stage … stays (removed by the next save)」;確定性案例斷言 |
+| 審查 B-3 | case_run 接受任何新增目錄 | 新增目錄的集合必須等於說明行列出的集合 |
+| 審查 A-3 / B-2 | 文件與目前行為不符的句子 | §2、§3、§5、§8 更正(本 commit) |

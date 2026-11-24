@@ -20,7 +20,9 @@
 # judged), the reader picks OLD, --check says stale, no on-join cache, and the next --on-join tick does not skip as
 # "unchanged". Never a 0-byte file (other than .seeded) outside a leftover stage, in either branch.
 # Further cases: --check with a full run dir -> rc 5 "unverifiable"; the --on-join backoff after a failed save (one
-# attempt per 300 s, no rw mount while backing off); a stale .stage.<pid> / .wprobe.<pid> removed by the next save; the
+# attempt per 300 s, no rw mount while backing off); a stale .stage.<pid> / .wprobe / .wprobe.<pid> removed by the next
+# save (a .wprobe DIRECTORY: only the cleanup removes it); a .wprobe symlink to a file outside p5 on the no-lock path
+# (RDOK=0, no cleanup) is never written through; the
 # on-join cache dropped by a failed save; values with a newline / CR -> rc 6 (the rest saved) or skipped (ssid);
 # white-box: a staged batch the boot reader would reject -> rc 15 with its own message. Lint: batch_ok awk == 96's.
 # Round 3 (review A-r2 / B-r2): a read-only remount / write errors after the FIRST rename (hook 3) -> "may be PARTLY",
@@ -222,6 +224,13 @@ datafail_table(){
 }
 restore_dev(){ grep " $W/run/" /proc/mounts | cut -d' ' -f2 | xargs -r -n1 umount -l 2>/dev/null; dmtab "linear $LOOP 0"; }
 lastline_ok(){ tail -1 $W/err | grep -q 'p5 NOT saved'; }
+# the directories the last stderr line says it could not remove, and the directories a hash diff added: they must be
+# the SAME set, and the diff must add nothing else (review of cdee8b0, B-3)
+listed_dirs(){ tail -1 $W/err | sed -n 's/.*could not remove: *//p' | sed 's/[;(].*//' | tr ' ' '\n' | grep . | sort; }
+dirs_only_listed(){	# <diff lines> -> rc 0 if they only add directories and exactly the listed ones
+	printf '%s\n' "$1" | grep . | grep -qv '^> \./' && return 1
+	[ "$(printf '%s\n' "$1" | sed -n 's|^> \./||p' | sort)" = "$(listed_dirs)" ] && [ -n "$(listed_dirs)" ]
+}
 # one case: <label> <seed: 1 = seeded OLD first, 0 = unseeded> <kind> <mode...>
 NCASE=0
 case_run(){
@@ -278,8 +287,8 @@ $(cat $W/expect.NEW)" ] || why="$why reader!=NEW[$(echo "$rd" | head -2 | tr '\n
 		else	# the one accepted change: empty directories this run made and could not remove (an I/O error), when the text
 			# names them (CI run of PR #381: a first --seed whose rename failed on a journal abort); anything else FAILs
 			dd=$(diff <(echo "$h0") <(echo "$h1") | grep '^[<>]')
-			if echo "$dd" | grep -qv '^> \./' || ! tail -1 $W/err | grep -q 'except empty directories it could not remove'; then
-				why="$why p5-changed:[$(echo "$dd" | head -4 | tr '\n' '|')]"; fi
+			if ! tail -1 $W/err | grep -q 'except empty directories it could not remove' || ! dirs_only_listed "$dd"; then
+				why="$why p5-changed:[$(echo "$dd" | head -4 | tr '\n' '|')] listed:[$(listed_dirs | tr '\n' ' ')]"; fi
 		fi
 		if [ "$seeded" = 1 ]; then [ "$rd" = "overrides.uci@1
 $(cat $W/expect.OLD)" ] || why="$why reader!=OLD[$(echo "$rd" | head -2 | tr '\n' '|')]"
@@ -352,11 +361,13 @@ else bad "--on-join backoff: setup"; fi
 NCASE=$((NCASE + 1))
 # ---- a stale .stage.<pid> / .wprobe.<pid> is removed by the next save (review A-F9 / B MAJOR-1) ----------------------
 if fresh && mnt; then
-	mkdir -p $W/m/.stage.99999/identity && dd if=/dev/zero of=$W/m/.stage.99999/identity/junk bs=4k count=40 2>/dev/null && : > $W/m/.wprobe.99999; umount $W/m
+	# .wprobe as a DIRECTORY: the probe's own `rm -f` cannot remove it, so only the cleanup at the rw mount does (review of
+	# cdee8b0, A-2: dropping "$MNT"/.wprobe from that cleanup must FAIL this case)
+	mkdir -p $W/m/.stage.99999/identity $W/m/.wprobe && dd if=/dev/zero of=$W/m/.stage.99999/identity/junk bs=4k count=40 2>/dev/null && : > $W/m/.wprobe.99999 && : > $W/m/.wprobe/x; umount $W/m
 	if fill 0; then
 		o=$(cs --save 2>&1); r=$?
 		mnt -o ro; left=$(cd $W/m && ls -d .stage.* .wprobe* 2>/dev/null | tr '\n' ' '); ov=$(cmp -s $W/m/overrides.uci $W/expect.NEW && echo NEW || echo not-NEW); umount $W/m
-		[ "$r" = 0 ] && [ -z "$left" ] && [ "$ov" = NEW ] && okk "stale .stage.99999 (40 blocks) + .wprobe.99999 on a full p5: removed, the save fits (rc 0, p5 NEW)" \
+		[ "$r" = 0 ] && [ -z "$left" ] && [ "$ov" = NEW ] && okk "stale .stage.99999 (40 blocks) + .wprobe/ + .wprobe.99999 on a full p5: removed, the save fits (rc 0, p5 NEW)" \
 			|| bad "stale stage: rc $r left=[$left] overrides $ov [$(echo "$o" | tail -1)]"
 	else bad "stale stage: fill"; fi
 else bad "stale stage: setup"; fi
@@ -609,10 +620,26 @@ elif devfree && mkfs_p5; then
 	mnt && { chattr -a $W/m/identity 2>/dev/null; find $W/m/.stage.* -type f -exec chattr -i {} + 2>/dev/null; rm -rf $W/m/.stage.*; umount $W/m; }
 	mnt -o ro; h1=$(hashes); rd=$(reader); umount $W/m
 	dd=$(diff <(echo "$h0") <(echo "$h1") | grep '^[<>]')
-	[ "$r" = 15 ] && tail -1 $W/err | grep -q 'p5 is unchanged except empty directories it could not remove:.*identity' && ! echo "$dd" | grep -qv '^> \./' && [ "$rd" = unseeded ] \
-		&& okk "first --seed, renames fail, new dirs stay: rc 15, the text names them [$(tail -1 $W/err | cut -c21-150)]" \
-		|| bad "seed dirs left: rc $r [$(tail -1 $W/err | cut -c1-160)] diff=[$(echo "$dd" | tr '\n' '|' | cut -c1-120)] reader=$rd"
+	# the immutable stage files cannot be removed either: the text must say the stage stays (review of cdee8b0, B-1)
+	[ "$r" = 15 ] && tail -1 $W/err | grep -q 'p5 is unchanged except empty directories it could not remove:.*identity' && dirs_only_listed "$dd" \
+		&& tail -1 $W/err | grep -q '; its stage \.stage\.[0-9]* stays (removed by the next save)' && [ "$rd" = unseeded ] \
+		&& okk "first --seed, renames fail, new dirs + the stage stay: rc 15, the text names them exactly [$(tail -1 $W/err | cut -c21-200)]" \
+		|| bad "seed dirs left: rc $r [$(tail -1 $W/err | cut -c1-220)] diff=[$(echo "$dd" | tr '\n' '|' | cut -c1-120)] listed=[$(listed_dirs | tr '\n' ' ')] reader=$rd"
 else bad "seed dirs left: setup"; fi
+# ---- no lock (RDOK=0: the run dir is unusable, so the stale-name cleanup does not run): a .wprobe symlink to a file
+# outside p5 must not be written through (review of cdee8b0, A-1 / B-4)
+NCASE=$((NCASE + 1))
+if fresh && mnt; then
+	echo ORIGINAL > $W/outside; ln -s $W/outside $W/m/.wprobe; umount $W/m
+	chmod 777 $W/run   # rundir.sh refuses a group/other-writable parent -> RDOK=0: no lock, no cleanup
+	o=$(cs --save 2>&1); r=$?
+	chmod 755 $W/run
+	mnt -o ro; pl=$(ls -la $W/m/.wprobe 2>/dev/null | cut -c1); umount $W/m
+	[ "$r" = 0 ] && [ ! -e $W/run/batman ] && [ "$(cat $W/outside)" = ORIGINAL ] && [ -z "$pl" ] \
+		&& okk "no lock, a .wprobe symlink to a file outside p5: saved rc 0, the target untouched, the link gone" \
+		|| bad "wprobe symlink: rc $r target=[$(cat $W/outside)] left=[$pl] no-lock-path=$([ -e $W/run/batman ] && echo NO-the-run-dir-was-made || echo yes) [$(echo "$o" | tail -1 | cut -c1-120)]"
+	rm -f $W/outside
+else bad "wprobe symlink: setup"; fi
 # ---- the busy lookup must not read a filesystem that is not p5 (review B-r5 MINOR-1) ---------------------------------
 # A: a tmpfs stacked on the mountpoint where p5 is mounted rw: reading through that path would read the tmpfs
 NCASE=$((NCASE + 1))

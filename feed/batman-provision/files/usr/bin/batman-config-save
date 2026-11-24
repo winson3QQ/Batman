@@ -662,7 +662,9 @@ fi
 # `tail -1`). The state defaults to what PUB says: nothing renamed yet = unchanged. The stage and the directories this
 # run made are removed first; the on-join cache is dropped and the on-join backoff marker written (cfgsave-stage-enospc).
 not_saved() {
-	[ -n "$STAGE" ] && rm -rf "$STAGE" 2>/dev/null; STAGE=""
+	# a stage that cannot be removed (the fs went read-only / I/O error) stays on p5 with copies of the identity files:
+	# say so (review of cdee8b0, B-1); the next save that holds the lock removes it
+	stg=""; if [ -n "$STAGE" ]; then rm -rf "$STAGE" 2>/dev/null; [ -e "$STAGE" ] && stg=${STAGE##*/}; fi; STAGE=""
 	for d in $MADE; do rmdir "$MNT/$d" 2>/dev/null; done   # directories this run made on p5 (empty unless renamed into)
 	# a directory this run made that could not be removed again (the fs went read-only / I/O error, CI run of PR #381 on
 	# a first --seed): p5 then is NOT "unchanged" — say which empty directories stayed
@@ -670,6 +672,7 @@ not_saved() {
 	# PUB=1 only says a rename returned 0: an I/O error that aborts the journal can still keep the last committed state
 	if [ -n "${2:-}" ]; then ns=$2; elif [ "$PUB" = 1 ]; then ns="p5 may be PARTLY updated (each file whole; an I/O error may have kept the last committed state)"
 	elif [ -n "$left" ]; then ns="p5 is unchanged except empty directories it could not remove:$left"; else ns="p5 is unchanged"; fi
+	[ -z "$stg" ] || ns="$ns; its stage $stg stays (removed by the next save)"
 	rm -f "$ST"; [ "$RDOK" = 1 ] && ( umask 077; echo "$(up) $1" > "$SAVEFAIL" )
 	logger -t batman-config-save -p daemon.err "p5 NOT saved ($mode): $1 failed — $ns" 2>/dev/null
 	err "p5 NOT saved: $1 failed — $ns ($(df -k "$MNT" 2>/dev/null | awk 'END {print $(NF - 2)}') KiB free on p5)"
@@ -756,8 +759,10 @@ rm -rf "$STAGE"; STAGE=""
 sync
 # a write error on the journal or the metadata at writeback aborts the ext4 journal: busybox sync still returns 0 and
 # /proc/mounts still says rw, but the next file create fails (EROFS / EIO). An empty-file probe catches that case; an
-# error after the probe (at umount) is not seen.
-printf '' > "$MNT/.wprobe" && rm -f "$MNT/.wprobe" || not_saved "the final sync (p5 refuses writes now: an I/O error?)" "p5 holds its last committed state (most likely the old one)"
+# error after the probe (at umount) is not seen. The probe never follows a link or reuses a file: rm -f removes a link
+# itself, and noclobber (set -C: O_EXCL in busybox ash) refuses anything that exists — without the lock (RDOK=0) the
+# stale-name cleanup above does not run, so a .wprobe link to a file outside p5 must not be written through.
+rm -f "$MNT/.wprobe" && ( set -C; printf '' > "$MNT/.wprobe" ) 2>/dev/null && rm -f "$MNT/.wprobe" || not_saved "the final sync (p5 refuses writes now: an I/O error?)" "p5 holds its last committed state (most likely the old one)"
 umount "$MNT" 2>/dev/null || logger -t batman-config-save -p daemon.warn "umount of p5 at $MNT failed after a save — it stays mounted until reboot" 2>/dev/null
 rm -f "$SAVEFAIL"
 if [ "$mode" = --on-join ] && [ "$RDOK" = 1 ]; then
