@@ -57,6 +57,11 @@ S5="batman-config-save: p5 stale: wireless.radio1.channel"
 r=$(run "$S5" 5 ""); case "$r" in "rc=$RC_STALE verdict=stale:wireless.radio1.channel out=DIE: p5 (config) is STALE"*) ok "control: an ordinary stale key dies [$r]" ;; *) bad "control stale: [$r]" ;; esac
 r=$(run "$S5" 5 STALE_P5); case "$r" in "rc=0 verdict=stale-allowed out=PASSED-GATE"*) ok "control: the override still works for an ordinary stale key [$r]" ;; *) bad "control override: [$r]" ;; esac
 r=$(run "batman-config-save: p5 lock-busy pid 123" 8 ""); case "$r" in "rc=$RC_BUSY verdict=error:lock-busy out=DIE: a batman-config-save is still running"*) ok "a config-save still running: refused, busy class [$r]" ;; *) bad "config-save lock-busy: [$r]" ;; esac
+# cfgsave-stage-enospc (review A-r2 F6): --check could not verify p5 -> refused, and the text does not send the operator to --save
+UV="batman-config-save: p5 stale: unverifiable (staging the comparison failed in the run dir)"
+r=$(run "$UV" 5 ""); case "$r" in "rc=$RC_STALE verdict=stale:unverifiable out=DIE: p5 (config) freshness cannot be verified (staging the comparison failed in the run dir)"*"does not fix this"*) ok "unverifiable: refused with its own text [$(echo "$r" | cut -c1-140)]" ;; *) bad "unverifiable: [$r]" ;; esac
+case "$r" in *"(hint)"*) bad "unverifiable: the refusal still shows P5_STALE_HINT (run --save)" ;; *) ok "unverifiable: the refusal does not show P5_STALE_HINT (--save)" ;; esac
+r=$(run "$UV" 5 STALE_P5); case "$r" in "rc=0 verdict=stale-allowed out=PASSED-GATE"*) ok "unverifiable + stale override: passes (deliberate) [$r]" ;; *) bad "unverifiable + override: [$r]" ;; esac
 r=$(run "batman-config-save: p5 fresh" 0 ""); case "$r" in "rc=0 verdict=fresh out=PASSED-GATE"*) ok "control: fresh passes [$r]" ;; *) bad "control fresh: [$r]" ;; esac
 # stage 1: the dedicated override
 r=$(run "$TXN" 5 UNFINISHED_TXN); case "$r" in "rc=0 verdict=txn-allowed out=PASSED-GATE"*) ok "stage 1: .txn + allow-unfinished-txn passes [$r]" ;; *) bad "stage 1 allow-unfinished-txn: [$r]" ;; esac

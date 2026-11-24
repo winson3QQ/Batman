@@ -21,7 +21,7 @@ IDF="node.key ecdh.key node.cert claim.secret backend sn"
 case "$M" in
 	meta-first) cp $CS /sbx/run/cs && sed -i 's|^\tcp "\$PF" "\$MNT/prov.cbor.tmp"|\tcp "$PM" "$MNT/prov.meta"; sync; cp "$PF" "$MNT/prov.cbor.tmp"|' /sbx/run/cs ;;
 	onjoin-prov) cp $CS /sbx/run/cs && sed -i 's|^mv "\$STAGE/schema_version" "\$MNT/schema_version"$|&\n[ "$mode" = --on-join ] \&\& cp /etc/batman-prov/prov.meta "$MNT/prov.meta" 2>/dev/null|' /sbx/run/cs ;;
-	check-late) cp $CS /sbx/run/cs && sed -i 's|^\tprov_compare "\$MNT"$|\t:|; s|^\t\[ -f "\$MNT/.seeded" \] \|\| { say "p5 unseeded"; exit 7; }$|&\n\tprov_compare "$MNT"|' /sbx/run/cs ;;
+	check-late) cp $CS /sbx/run/cs && sed -i 's|^\tprov_compare "\$P5R"$|\t:|; s|^\t\[ -f "\$P5R/.seeded" \] \|\| { say "p5 unseeded"; exit 7; }$|&\n\tprov_compare "$P5R"|' /sbx/run/cs ;;
 esac
 if [ -f /sbx/run/cs ]; then
 	cmp -s /sbx/run/cs $CS && { echo "FAIL mutant $M did not change batman-config-save"; echo "CASE cfgsave cases=0 fails=1"; exit 1; }

@@ -17,6 +17,9 @@ trap 'grep " $W/" /proc/mounts | cut -d" " -f2 | xargs -r -n1 umount 2>/dev/null
 SRC=${PROV_SRC:-$(cd "$(dirname "$1")/../.." && pwd)}   # files/ of the product tree (override for a copied file)
 truncate -s 64M $W/p5.img; LOOP=$(losetup -f --show $W/p5.img); mkfs.ext4 -q -F $W/p5.img
 mkdir -p $W/prov $W/m $W/bin $W/run; chmod 755 $W/run; chmod 700 $W/prov
+# the node's busybox has an `fsync` applet and batman-config-save refuses to save without one (cfgsave-stage-enospc): this
+# host has none, so a shim runs the same syscall (coreutils `sync FILE` = fsync per file, errors reported)
+printf '#!/bin/sh\nexec /bin/sync -- "$@"\n' > $W/bin/fsync; chmod +x $W/bin/fsync
 # a stand-in identity (the copy reads $W/dropbear, never the host's /etc/dropbear): A4 m4 needs a file to rename
 mkdir -p $W/dropbear; echo "ssh-ed25519 AAAAtest dv@cfgsave-txn-save" > $W/dropbear/authorized_keys
 sed "s#^RUNDIR=/tmp/run/batman#RUNDIR=$W/run/batman#" "$SRC/usr/lib/batman/rundir.sh" > $W/rundir.sh
@@ -107,7 +110,8 @@ has_sentinel && okk "--on-join with a dangling .txn symlink: refused, p5 untouch
 # ---- code review 2 (B MAJOR-1): .txn -> rc 5 BEFORE the p5 checks (unmountable / not ext4 / no p5 / bypass) ----------
 # not ext4: a zeroed loop device (HEAD: "p5 SKIP not-ext4" rc 3 -> the OTA gate writes skip:, not blocking)
 truncate -s 8M $W/raw.img; LOOP2=$(losetup -f --show $W/raw.img)
-# unmountable ext4: the magic stays, the superblock counters in front of it are zeroed (HEAD: "p5 error mount" rc 1)
+# unmountable ext4: the magic stays, the superblock counters in front of it are zeroed (cfgsave-stage-enospc review
+# B-r3 MINOR-4: an ext4 p5 that does not mount read-only is "p5 stale: unverifiable" rc 5; before it was "p5 error mount" rc 1)
 truncate -s 64M $W/bad.img; mkfs.ext4 -q -F $W/bad.img; dd if=/dev/zero of=$W/bad.img bs=1 seek=1024 count=56 conv=notrunc 2>/dev/null
 LOOP3=$(losetup -f --show $W/bad.img)
 for v in "raw:$LOOP2" "bad:$LOOP3" "nop5:$W/no-such-p5"; do
@@ -115,7 +119,7 @@ for v in "raw:$LOOP2" "bad:$LOOP3" "nop5:$W/no-such-p5"; do
 done
 cx(){ out=$("$W/cs.$1" --check 2>&1); rc=$?; }
 clean; cx raw; [ $rc = 3 ] && okk "control: not-ext4 p5, no .txn -> rc 3" || bad "control not-ext4: rc=$rc $(echo "$out" | tail -1)"
-clean; cx bad; [ $rc = 1 ] && okk "control: unmountable p5, no .txn -> rc 1" || bad "control unmountable: rc=$rc $(echo "$out" | tail -1)"
+clean; cx bad; [ $rc = 5 ] && echo "$out" | grep -q 'p5 stale: unverifiable (p5 does not mount' && okk "control: unmountable p5, no .txn -> rc 5 unverifiable" || bad "control unmountable: rc=$rc $(echo "$out" | tail -1)"
 txnf $TOK
 for k in raw bad nop5; do
 	cx $k

@@ -76,6 +76,8 @@ joinwatch.state
 cfgsave-onjoin.state
 cfgsave-pi3gate.failed
 cfgsave-mount.failed
+# cfgsave-stage-enospc: the last write-mode save failed (rc 15) -> --on-join backs off 300 s; --check names it
+cfgsave-save.failed
 # #202 close-out: one writer at a time (dir: pid, uptime), its busy marker + counter, the per-boot write counter
 cfgsave.lock
 cfgsave.lock/*

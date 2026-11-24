@@ -5,7 +5,11 @@ set -u
 W=$(mktemp -d); trap 'umount $W/m 2>/dev/null; losetup -d $LOOP 2>/dev/null; rm -rf $W' EXIT
 SRC=${PROV_SRC:-$(cd "$(dirname "$1")/../.." && pwd)}   # files/ of the product tree (override for a copied file)
 truncate -s 64M $W/p5.img; LOOP=$(losetup -f --show $W/p5.img); mkfs.ext4 -q -F $W/p5.img
-mkdir -p $W/lib $W/prov $W/m
+mkdir -p $W/lib $W/prov $W/m $W/bin
+# the node's busybox has an `fsync` applet and batman-config-save refuses to save without one (cfgsave-stage-enospc): this
+# host has none, so a shim runs the same syscall (coreutils `sync FILE` = fsync per file, errors reported)
+printf '#!/bin/sh\nexec /bin/sync -- "$@"\n' > $W/bin/fsync; chmod +x $W/bin/fsync
+export PATH=$W/bin:$PATH
 sed -e "s#^DEV=/dev/mmcblk0p5#DEV=$LOOP#" -e "s#^PROVD=/etc/batman-prov#PROVD=$W/prov#" -e "s#/usr/lib/batman/prov-lock.sh#$SRC/usr/lib/batman/prov-lock.sh#g" "$1" > $W/cs; chmod +x $W/cs
 pass=0; fail=0
 t(){ local want=$1; shift; out=$("$W/cs" "$@" 2>&1); rc=$?; if [ "$rc" = "$want" ]; then pass=$((pass+1)); echo "ok   rc=$rc  $*"; else fail=$((fail+1)); echo "FAIL rc=$rc want=$want  $* :: $(echo "$out" | tail -2)"; fi; }

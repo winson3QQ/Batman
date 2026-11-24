@@ -62,8 +62,11 @@ if [ "$(id -u)" = 0 ] && command -v losetup >/dev/null 2>&1; then
 	if grep -q -- '--save \[--promote-lkg\] \[--txn' "$F/usr/bin/batman-config-save"; then PROV_SRC=$REPO/$F stub 'FAIL=0$' cfgsave-txn-save "$F/usr/bin/batman-config-save"
 	else echo "FAIL prov-p1-stubs: batman-config-save in this checkout has no --save --txn — KNOWN until feat/254-p1b-seams lands (#254)"; r=1; fi
 	for t in cfgsave-identity-freeze cfgsave-frozen-nomount cfgsave-provget-rc10; do PROV_SRC=$REPO/$F stub 'FAIL=0|PASS$' $t "$F/usr/bin/batman-config-save"; done
+	# docs/design/cfgsave-stage-enospc.md: a full / read-only / failing p5 is never reported "saved" (loop + device-mapper;
+	# CFGSAVE_REQUIRE_DM=1: a host without dm / dm-flakey FAILs instead of skipping the I/O-error cases)
+	CFGSAVE_REQUIRE_DM=1 PROV_SRC=$REPO/$F stub 'PASS=[1-9][0-9]* FAIL=0$' cfgsave-stage-enospc "$F/usr/bin/batman-config-save"
 	stub 'fails=0$' prov-base-statecmp scripts/node/prov-base-254.sh
 	stub 'fails=0$' prov-base-stateset scripts/node/prov-base-254.sh
 	stub 'fails=0$' batman-slot-stage-root "$F/usr/sbin/batman-slot" "$F/usr/lib/batman/prov-lock.sh"
-else echo "note: loop-device tests (config-save, prov-base compare, stage-root, P3 cfgsave-ssid) skipped here — need root + losetup (CI prov-p1 / ab-card run them)"; fi
+else echo "note: loop-device tests (config-save incl. stage-enospc, prov-base compare, stage-root, P3 cfgsave-ssid) skipped here — need root + losetup (CI prov-p1 / ab-card run them)"; fi
 echo "PROV-P1-STUBS stubs=$n fails=$([ $r = 0 ] && echo 0 || echo some)"; [ "$n" -gt 0 ] && [ $r = 0 ]

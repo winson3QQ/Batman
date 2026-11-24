@@ -14,6 +14,9 @@ trap 'umount $W/m 2>/dev/null; losetup -d $LOOP 2>/dev/null; rm -rf $W' EXIT
 SRC=${PROV_SRC:-$(cd "$(dirname "$1")/../.." && pwd)}
 truncate -s 64M $W/p5.img; LOOP=$(losetup -f --show $W/p5.img); mkfs.ext4 -q -F $W/p5.img
 mkdir -p $W/prov $W/m $W/bin $W/run; chmod 755 $W/run; chmod 700 $W/prov
+# the node's busybox has an `fsync` applet and batman-config-save refuses to save without one (cfgsave-stage-enospc): this
+# host has none, so a shim runs the same syscall (coreutils `sync FILE` = fsync per file, errors reported)
+printf '#!/bin/sh\nexec /bin/sync -- "$@"\n' > $W/bin/fsync; chmod +x $W/bin/fsync
 sed "s#^RUNDIR=/tmp/run/batman#RUNDIR=$W/run/batman#" "$SRC/usr/lib/batman/rundir.sh" > $W/rundir.sh
 sed -e "s#^DEV=/dev/mmcblk0p5#DEV=$LOOP#" -e "s#^PROVD=/etc/batman-prov#PROVD=$W/prov#" \
 	-e "s#/usr/lib/batman/prov-lock.sh#$SRC/usr/lib/batman/prov-lock.sh#g" -e "s#/usr/lib/batman/rundir.sh#$W/rundir.sh#g" "$1" > $W/cs
