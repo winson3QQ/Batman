@@ -36,7 +36,7 @@ WSL Ubuntu-24.04 root,loop ext4(`mkfs.ext4 -b 4096 -L batconfig`,同 `scripts/bu
 
 | 資源 | 唯一寫者 | 讀者(唯讀) |
 |---|---|---|
-| p5 的 `overrides.uci`、`lkg/overrides.uci`、`schema_version`、`identity/{dropbear,openmanet,shadow-root}`、`.seeded`、`.stage.<pid>/`、`.wprobe` | `batman-config-save` 寫入模式,持 `cfgsave.lock`(`batman-config-save:239-275`) | `96-batman-config-migrate`(開機)、`--check`、`99-batman-chanfix`、`batman-prov-lock`、`batman-autocommit`、`batman-slot` precheck |
+| p5 的 `overrides.uci`、`lkg/overrides.uci`、`schema_version`、`identity/{dropbear,openmanet,shadow-root}`、`.seeded`、`.stage.<pid>/`、`.wprobe.XXXXXX`(寫入探針;`.wprobe` 只會是舊版的殘留) | `batman-config-save` 寫入模式,持 `cfgsave.lock`(`batman-config-save:239-275`) | `96-batman-config-migrate`(開機)、`--check`、`99-batman-chanfix`、`batman-prov-lock`、`batman-autocommit`、`batman-slot` precheck |
 | p5 的 `prov.cbor` / `prov.meta` / `identity/prov/` | `--prov-only`(本次不改) | 同上 + `--prov-get` |
 | `$RUNDIR/cfgsave-onjoin.state`(on-join 快取) | `batman-config-save` | `batman-config-save` |
 | **新** `$RUNDIR/cfgsave-save.failed`(`<uptime> <step>`) | `batman-config-save`:`not_saved` 寫、任何成功刪 | `batman-config-save --on-join`(退避) |
@@ -46,7 +46,7 @@ WSL Ubuntu-24.04 root,loop ext4(`mkfs.ext4 -b 4096 -L batconfig`,同 `scripts/bu
 - O_CREAT|O_EXCL 絕不開啟既有的路徑(同一個 kernel 實測):對指向一般檔、懸空、指向 FIFO 的 symlink 都回 EEXIST,目標都不變。所以預放的東西不會被寫穿,名字上留下的東西(另一個沒有鎖的寫者的探針、一個 `.wprobe` 目錄、不可刪除的檔案)也不會讓探針失敗。
 - v6–a87baa3 用的是固定名 `.wprobe` 加 `set -C`:依審查 A(a87baa3),busybox ash 的 noclobber 遇到指向非一般檔(FIFO、裝置)的 link 時仍會開啟它(我沒有另外量測),而且兩個沒有鎖的寫者會撞名;已改掉(審查 a87baa3 A-1 / A-2)。
 
-**清除殘留**:rw 掛載驗證成功後,若持鎖(`LOCK_MINE=1`),刪除 `$MNT/.stage.*`、`$MNT/.wprobe` 與 `$MNT/.wprobe.*`(`:420-422`;`.wprobe.*` 是舊版留下的名字)。持鎖證明它們的寫者已不在(一次只有一個寫者);沒鎖(`RDOK=0`)時不刪,因為可能有別的寫者正擁有它。`rm -rf` 不跟隨 symlink;p5 只有 root 能 rw 掛載。
+**清除殘留**:rw 掛載驗證成功後,若持鎖(`LOCK_MINE=1`),刪除 `$MNT/.stage.*`、`$MNT/.wprobe` 與 `$MNT/.wprobe.*`(`:420-422`;`.wprobe` 是舊版的殘留,`.wprobe.*` 則同時是舊版的名字與目前探針在斷電時可能留下的名字)。沒有鎖(`RDOK=0`)的執行不做這個清除,所以它們留下的東西會累積到下一次持鎖的存檔才被刪除。持鎖證明它們的寫者已不在(一次只有一個寫者);沒鎖(`RDOK=0`)時不刪,因為可能有別的寫者正擁有它。`rm -rf` 不跟隨 symlink;p5 只有 root 能 rw 掛載。
 
 ## 3. 契約變更
 
@@ -56,7 +56,8 @@ WSL Ubuntu-24.04 root,loop ext4(`mkfs.ext4 -b 4096 -L batconfig`,同 `scripts/bu
 - `<state>`:
   - 任何 rename 之前的失敗(staging、預先配置、fsync)→ `p5 is unchanged`(並移除這次建立的空目錄);
   - 這次建立的目錄刪不掉時(檔案系統已變唯讀 / I/O 錯誤;PR #381 的 CI 在第一次 `--seed` 上遇到)→ `p5 is unchanged except empty directories it could not remove: <清單>`;
-  - stage 刪不掉時(同樣原因;裡面有 host key 與 shadow 的副本),不論前面是哪一種狀態,都再接上 `; its stage .stage.<pid> stays (removed by the next save that holds the lock)`。最後 sync 的路徑例外:它在探針之前就清空了 `STAGE`(那時 `rm -rf` 在記憶體中回 0),所以這個後綴不會出現;那條路徑上若有東西留下,只可能是這次建立的空目錄或還沒寫到卡上的刪除;
+  - stage 刪不掉時(同樣原因;裡面有 host key 與 shadow 的副本),不論前面是哪一種狀態,都再接上 `; its stage .stage.<pid> stays (removed by the next save that holds the lock)`。最後 sync 的路徑也一樣:探針之前的 `rm -rf "$STAGE"` 若沒刪掉 stage,`STAGE` 會保留,探針失敗時文字就會列出它(審查 c302064 A-1;測試:stage 裡放不可刪除的檔、p5 根目錄設為不可變)。
+  - **產品無從知道的情況**:裝置有 I/O 錯誤時,`rm -rf` / `rmdir` 可能在記憶體中回 0,刪除卻沒寫到卡上(實測:eio6 ×3,stage 在錯誤發生前已 commit)。這時卡上可能留著沒被列出的 `.stage.*` 或空目錄;下一次持鎖的存檔會刪掉它們。文字裡沒有加「可能還留著」的但書,因為 shell 從 `cp` / `mv` / `fsync` 只拿到非 0 的 rc,拿不到 errno,分不出 I/O 錯誤和空間不足或唯讀;每次失敗都加這句只會是雜訊,而且常常是錯的(審查 c302064 B-2);
   - 第一個 rename 回 0 之後才失敗 → `p5 may be PARTLY updated (each file whole; an I/O error may have kept the last committed state)`(`PUB` 旗標,審查 A-F7)。用「may be」:rename 回 0 只代表記憶體裡成功,journal 在 rename 迴圈中途 abort 時,卡上仍是上一次 commit 的狀態(審查 A-r2 F1:6 個案例中觀察到 1 次 p5 其實未變);read-only remount 則保留已完成的 rename(真的部分更新,測試兩種都驗);
   - `.seeded` rename 失敗 → `p5 may be PARTLY updated and is still unseeded`;
   - sync 後探針失敗 → `the renames returned 0 but p5 refuses writes now: the new files may not survive a reboot (p5 may still hold the old ones)`。這時每個 rename 都回了 0(`PUB=1`),文字只說實際知道的事,不猜卡上是舊的還是新的(審查 a87baa3 A-1)。
@@ -187,8 +188,9 @@ dm 的切換一律 `load → suspend → resume`,任何一步失敗都 `resume`(
 **其他案例**:
 - run dir 滿時 `--check` rc 5 `unverifiable`;
 - `--on-join` 退避:第 1 tick rc 15、第 2 tick rc 1 且 ext4 mount count 不變、把標記調早 301 s 後第 3 tick 再嘗試、成功的 `--save` 解除;
-- 預放的 `.stage.99999`(40 block)+ `.wprobe/`(目錄,探針自己的 `rm -f` 刪不掉,只有掛載時的清除會刪)+ `.wprobe.99999` 在滿的 p5 上被刪,存檔因而放得下;
-- 沒有鎖的路徑(run dir 的上層變成 777,`RDOK=0`,不做清除):p5 上預放 `.wprobe` → 一個 p5 外的檔;存檔 rc 0,那個檔內容不變,link 被刪;
+- 預放的 `.stage.99999`(40 block)+ `.wprobe/`(舊名的目錄;探針不會碰它,只有持鎖掛載時的清除會刪)+ `.wprobe.99999` 在滿的 p5 上被刪,存檔因而放得下;
+- 沒有鎖的路徑(run dir 的上層變成 777,`RDOK=0`,不做清除):p5 上預放 `.wprobe` → 一個 p5 外的檔;存檔 rc 0,那個檔內容不變(link 本身留著:沒鎖時沒人刪它,探針也不碰它);另有 `.wprobe` 目錄、不可刪除的 `.wprobe` 檔兩個確定性案例(都 rc 0);10 對真正並行的無鎖存檔只是盡力而為的 smoke,不當作證據;
+- 最後 sync 失敗而 stage 刪不掉:文字列出 stage;
 - ro 失敗留下的 stage 被下一次 save 刪除;
 - on-join 快取被失敗的 tick 移除;
 - hostname 含換行 → rc 6、其餘存好、`--check` 5;ssid 含換行 → rc 0、不存、`--check` 0;mesh key 含 CR → rc 0、該行位元組原樣存下、`--check` 0;
@@ -390,8 +392,18 @@ dm 的切換一律 `load → suspend → resume`,任何一步失敗都 `resume`(
 
 | # | 處置 | 證據 |
 |---|---|---|
-| A-1 / B-1 / A-2 / B-3(探針) | 固定名 `.wprobe` + `set -C` 改成 `mktemp "$MNT/.wprobe.XXXXXX"`(新隨機名、O_EXCL、0600)後立刻刪除;鎖內的清除仍刪 `.wprobe` 與 `.wprobe.*`(舊的殘留);探針失敗時的文字改為只陳述事實 | §2 的 strace 與 O_EXCL 實測;新案例:沒鎖 + `.wprobe` 目錄、沒鎖 + 不可刪除的 `.wprobe` 檔(另一個寫者的探針的確定性替代)→ rc 0,a87baa3 都 rc 15「most likely the old one」;10 對真的並行無鎖存檔:不會出現「refuses writes now」 |
+| A-1 / B-1 / A-2 / B-3(探針) | 固定名 `.wprobe` + `set -C` 改成 `mktemp "$MNT/.wprobe.XXXXXX"`(新隨機名、O_EXCL、0600)後立刻刪除;鎖內的清除仍刪 `.wprobe` 與 `.wprobe.*`(舊的殘留);探針失敗時的文字改為只陳述事實 | §2 的 strace 與 O_EXCL 實測;新案例:沒鎖 + `.wprobe` 目錄、沒鎖 + 不可刪除的 `.wprobe` 檔(另一個寫者的探針的確定性替代)→ rc 0,a87baa3 都 rc 15「most likely the old one」(10 對並行存檔只是 smoke:它在 a87baa3 上也會過,不算證據) |
 | B-2b | 文字改成「removed by the next save that holds the lock」 | seed 案例斷言 |
 | B-2a | §3:最後 sync 的路徑先清空 `STAGE`,所以不會有 stage 後綴 | §3 |
 | A-2(文件) | 程式註解與 §2 改寫成新探針實際保證的事,附實測 | 註解、§2 |
 | A-3 | case_run:not-saved 時 p5 上留有 `.stage.*`,最後一行就必須含 `its stage .stage.`。不判的情況是產品無從知道的路徑:最後 sync 的路徑,以及有 I/O 錯誤的裝置(eio*、datafail;`rm -rf` 在記憶體中回 0,但刪除沒寫到卡上——實測 eio6 ×3,stage 在錯誤前已 commit) | 測試;在 ro 與確定性案例上是嚴格的 |
+
+### 審查 c302064(B APPROVE、A APPROVE-WITH-CHANGES)
+
+| # | 處置 | 證據 |
+|---|---|---|
+| A-1 | 最後 sync 之前的 `rm -rf "$STAGE"` 沒刪掉時保留 `STAGE`,探針失敗的文字因此會列出 stage;case_run 拿掉「refuses writes now」的文字豁免,只保留 eio* / datafail 的豁免 | 新案例(hook 5:stage 裡放不可刪除的檔、p5 根目錄不可變);c302064 的產品 FAIL |
+| B-2 | §3 說明產品無從知道的情況(I/O 錯誤時刪除只在記憶體中成功);文字不加但書,理由見 §3 | §3 |
+| B-1 | 10 對並行存檔標為 best-effort smoke,不列入證據 | 測試、§8、§10 |
+| A-2 | §2 / §8 的過時句子更正(`.wprobe.XXXXXX`;`.wprobe` 只是舊殘留;`.wprobe.*` 也可能是目前探針斷電後的殘留;symlink 案例不再檢查 link 被刪) | §2、§8 |
+| A-3 | 記一句:沒有鎖的執行留下的東西會累積到下一次持鎖的存檔 | §2 |

@@ -755,7 +755,7 @@ mv "$STAGE/schema_version" "$MNT/schema_version"
 [ ! -e "$STAGE/schema_version" ] || not_saved "renaming schema_version"
 # sentinel LAST (DR-2)
 if [ -f "$STAGE/.seeded" ]; then mv "$STAGE/.seeded" "$MNT/.seeded" || not_saved "renaming .seeded" "p5 may be PARTLY updated and is still unseeded"; fi
-rm -rf "$STAGE"; STAGE=""
+rm -rf "$STAGE" 2>/dev/null; [ -e "$STAGE" ] || STAGE=""   # a stage that stays is named if the probe below fails (review of c302064, A-1)
 sync
 # a write error on the journal or the metadata at writeback aborts the ext4 journal: busybox sync still returns 0 and
 # /proc/mounts still says rw, but the next file create fails (EROFS / EIO). An empty-file probe catches that case; an

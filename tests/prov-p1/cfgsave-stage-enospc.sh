@@ -138,7 +138,8 @@ sed -e "s#^DEV=/dev/mmcblk0p5#DEV=$DEV#" -e "s#^PROVD=/etc/batman-prov#PROVD=$W/
 	-e '/^# txn sequence re-check, right before the p5 write/i [ -n "${CS_TEST_HOOK:-}" ] \&\& eval "$CS_TEST_HOOK"' \
 	-E -e '/^# (publish: )?identity files:? renamed from the stage/i [ -n "${CS_TEST_HOOK2:-}" ] \&\& eval "$CS_TEST_HOOK2"' \
 	-e '/^mv "\$STAGE\/overrides.uci" "\$MNT\/overrides.uci"/i [ -n "${CS_TEST_HOOK3:-}" ] \&\& eval "$CS_TEST_HOOK3"' \
-	-e '/^# fsync every stage file BEFORE the first rename/i [ -n "${CS_TEST_HOOK4:-}" ] \&\& eval "$CS_TEST_HOOK4"' "$CSIN" > $W/sbin/batman-config-save
+	-e '/^# fsync every stage file BEFORE the first rename/i [ -n "${CS_TEST_HOOK4:-}" ] \&\& eval "$CS_TEST_HOOK4"' \
+	-e '/^# sentinel LAST \(DR-2\)/i [ -n "${CS_TEST_HOOK5:-}" ] \&\& eval "$CS_TEST_HOOK5"' "$CSIN" > $W/sbin/batman-config-save
 # hooks 1-3 have anchors in every version (4eba26d included); hook 4 (before the stage fsync) only where there is one
 for h in CS_TEST_HOOK: CS_TEST_HOOK2 CS_TEST_HOOK3; do grep -q "\${$h" $W/sbin/batman-config-save || die "could not insert test hook ${h%:} (anchor gone)"; done
 H4OK=0; grep -q 'CS_TEST_HOOK4' $W/sbin/batman-config-save && H4OK=1
@@ -282,12 +283,12 @@ $(cat $W/expect.NEW)" ] || why="$why reader!=NEW[$(echo "$rd" | head -2 | tr '\n
 		v="not-saved"
 		[ "$rc" = 15 ] || why="$why rc=$rc(want 15)"
 		lastline_ok || why="$why last-stderr-line:[$(tail -1 $W/err | cut -c1-80)]"
-		# a stage left on p5 must be named in the text (review of a87baa3, A-3). Not judged where the product cannot know:
-		# on the final-sync path (STAGE is cleared before the probe) and on a device with I/O errors (eio*, datafail): there
-		# `rm -rf` of the stage returns 0 in memory and the removal never reaches the card (seen: eio6 x3, the stage was
-		# committed before the error), so the leftover appears only after a remount (design §3)
+		# a stage left on p5 must be named in the text (review of a87baa3, A-3; the final-sync path too since the review of
+		# c302064). Not judged on a device with I/O errors (eio*, datafail), where the product cannot know: `rm -rf` of the
+		# stage returns 0 in memory and the removal never reaches the card (seen: eio6 x3, the stage was committed before
+		# the error), so the leftover appears only after a remount (design §3)
 		case "$kind" in eio*|datafail) stgleft="" ;; esac
-		if [ -n "$stgleft" ] && ! tail -1 $W/err | grep -q 'p5 refuses writes now' && ! tail -1 $W/err | grep -q 'its stage \.stage\.'; then
+		if [ -n "$stgleft" ] && ! tail -1 $W/err | grep -q 'its stage \.stage\.'; then
 			why="$why stage-left-but-not-named:[$stgleft]"; fi
 		# a read-only or failing device cannot have its stage removed: that leftover is reported, not judged
 		case "$kind" in ro|eio*|datafail) h1=$(echo "$h1" | grep -v '\./\.stage\.') ;; esac
@@ -665,8 +666,21 @@ probename(){	# <label> <setup on the mounted p5>
 }
 probename "a .wprobe directory" 'mkdir .wprobe && : > .wprobe/x'
 command -v chattr >/dev/null 2>&1 && probename "an immutable .wprobe file (another writer's probe)" ': > .wprobe && chattr +i .wprobe' || bad "immutable .wprobe: no chattr"
-# two REAL concurrent lock-less saves, 10 pairs: neither may report the false "refuses writes now" text (with a fixed
-# probe name they can collide; the window is narrow, so this is best effort — the stand-in above is the deterministic one)
+# ---- the final-sync path names a stage it could not remove (review of c302064, A-1). Deterministic: at hook 5 (after
+# the renames) an immutable file is put in the stage and p5's root is made immutable: the stage cannot be removed and
+# the probe cannot create its file, so the save fails on the final sync with the stage still there
+NCASE=$((NCASE + 1))
+if ! command -v chattr >/dev/null 2>&1; then bad "final-sync stage: no chattr"
+elif fresh; then
+	CS_TEST_HOOK5=': > "$STAGE/keep" && chattr +i "$STAGE/keep" "$MNT"' cs --save > $W/out 2> $W/err; r=$?
+	mnt && { chattr -i $W/m $W/m/.stage.*/keep 2>/dev/null; rm -rf $W/m/.stage.*; umount $W/m; }
+	[ "$r" = 15 ] && tail -1 $W/err | grep -q 'the renames returned 0 but p5 refuses writes now' && tail -1 $W/err | grep -q '; its stage \.stage\.[0-9]* stays' \
+		&& okk "final sync fails with the stage still on p5: rc 15, the text names the stage [$(tail -1 $W/err | cut -c21-200)]" \
+		|| bad "final-sync stage: rc $r [$(tail -1 $W/err | cut -c1-220)]"
+else bad "final-sync stage: setup"; fi
+# BEST-EFFORT SMOKE, not evidence: two REAL concurrent lock-less saves, 10 pairs, neither may report "refuses writes
+# now". It does not discriminate the old fixed-name probe reliably (it passed on a87baa3; a reviewer saw 1 of 10); the
+# deterministic stand-ins above are the evidence (review of c302064, B-1)
 NCASE=$((NCASE + 1))
 if fresh; then
 	chmod 777 $W/run; nfalse=0; nbad=0
@@ -676,7 +690,7 @@ if fresh; then
 		{ [ "$r1" = 0 ] && [ "$r2" = 0 ]; } || nbad=$((nbad + 1))
 	done
 	chmod 755 $W/run
-	[ "$nfalse" = 0 ] && okk "10 pairs of concurrent lock-less saves: no false 'refuses writes now' (pairs with an rc != 0: $nbad)" \
+	[ "$nfalse" = 0 ] && okk "smoke (best effort): 10 pairs of concurrent lock-less saves, no 'refuses writes now' (pairs with an rc != 0: $nbad)" \
 		|| bad "concurrent lock-less saves: $nfalse of 10 pairs reported 'refuses writes now'"
 else bad "concurrent lock-less: setup"; fi
 # ---- the busy lookup must not read a filesystem that is not p5 (review B-r5 MINOR-1) ---------------------------------
