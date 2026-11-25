@@ -35,11 +35,11 @@
 - `scripts/validation-known-failures.txt` 每條要有 issue 與到期日;延期要寫理由,移除要附該測項在新版 PASS。
 
 ## 流程
-- 動手前先給計畫,計畫裡標出**審查等級** L0–L3。完整定義和 L3 觸發清單以 `docs/design/REVIEW.md` § Review level 為準,下面只是摘要。作者或 reviewer 發現碰到更多時往上升;只有使用者能往下降:
+- 動手前先給計畫,計畫裡標出**審查等級** L0–L3。**下面只是摘要,不完整**;判斷等級前一定要讀 `docs/design/REVIEW.md` § Review level 的完整定義和 L3 觸發清單。作者或 reviewer 發現碰到更多時往上升(已有程式就以新等級重審);只有使用者能往下降:
   - L0 文件(不是程式、也不是定規則的檔案):不用設計、不用審查。
-  - L1 介面(只改 `app/lib/ui/` 底下的檔案,或程式檔裡只改註解;App 其他檔案至少 L2,`src/{nodelink,flows,rust}`、claim、金鑰相關檔案是 L3):issue 內幾行計畫 + `/code-review medium`。
-  - L2 一般(含新增測項但不改既有測項、定規則的文件如本檔與 REVIEW.md):設計文件 + 一位 reviewer(第 2 輪後還有 BLOCKER/MAJOR 就升 L3 或問使用者)+ `/code-review high`。
-  - L3 關鍵(金鑰/憑證/608B/OTP/LUKS、供裝與權限、開機鏈/A-B/OTA/LKG、mesh/網路/防火牆/BLE 協定、root 服務與 payload/guardian、p5/p6 與 overlay 的持久狀態、效能、相依套件、build 與建卡腳本、CI、修改或放寬既有的檢查與 harness):設計必寫擁有權/介面契約/生命週期矩陣/依賴證據/安全(威脅模型),兩位獨立 reviewer 審整份直到沒有 BLOCKER/MAJOR(第 5 輪還有 BLOCKER/MAJOR 就停下來問使用者),開 PR 前 `/code-review high` + `/security-review`。
+  - L1 介面(**看 diff,不看資料夾**:只改畫面上看到的文字、版面、樣式;或程式檔裡只改註解,lint/analyzer 指令除外。改到任何對 `src/`、Rust bridge、store、link、flow 的呼叫或其結果處理,就不是 L1;`app/lib/ui/` 裡多數檔案都有這種呼叫):issue 內幾行計畫 + `/code-review medium`。
+  - L2 一般(含新增或收緊驗證測項、修改定規則文件的規則、L3 審查留下的 MINOR 後續修正):設計文件 + 一位 reviewer(第 2 輪後還有 BLOCKER/MAJOR 就**停下來問使用者**,通常是升 L3)+ `/code-review high`。
+  - L3 關鍵(例如:金鑰/憑證/608B/OTP/LUKS、供裝/認領/成員/權限、開機鏈/A-B/OTA/autocommit/LKG、mesh/網路/防火牆/BLE 協定、網路或 BLE 可達的新輸入(CGI、port、訊息)、root 服務與 payload/guardian、p5/p6 與 overlay 的持久狀態、kernel patch 與 overlay、效能(附前後量測)、相依套件、build 與建卡腳本、firmware 白名單、共用 A/B 檔、CI、放寬驗證閘門):設計必寫擁有權/介面契約/生命週期矩陣/依賴證據/安全(威脅模型),兩位獨立 reviewer 審整份直到沒有 BLOCKER/MAJOR(第 5 輪還有 BLOCKER/MAJOR 就停下來問使用者),開 PR 前 `/code-review high` + `/security-review`。
   - 硬體設計用 `docs/design/REVIEW-hw.md`。
 - PR 的 Review 段寫等級、設計審查、code review、security review 各一行;PR 附實測結果(哪台、做什麼、原始輸出;沒測到的要寫出來);PR 由使用者 merge。
 - 回覆使用繁體中文。

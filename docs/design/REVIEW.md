@@ -6,13 +6,13 @@ This file is the review checklist. Give it to every independent reviewer, togeth
 
 ## Review level (decided 2026-11-25)
 
-The level depends on **what the change touches**, not on its label or its size. It costs too much to run the full process on every change, and too little review on the wrong change costs more.
+The level depends on **what the change touches**, not on its label, its size or the folder it is in. It costs too much to run the full process on every change, and too little review on the wrong change costs more.
 
 | Level | Applies to | Design | Adversarial review | Before the PR | Test evidence |
 |---|---|---|---|---|---|
-| **L0 docs** | files that are not code: roadmap, plans, explanations, typos, issue housekeeping (not the rule-setting files listed below) | none | none | self-check: links work, the text matches the current state of the repo and GitHub | "docs only, n/a" |
-| **L1 presentation** | App files under `app/lib/ui/` only: screens, wording, layout; comment-only edits in code files | a few lines of plan in the issue | none | `/code-review medium` | a screenshot, or a run on one node |
-| **L2 normal** | a change that hits none of the L3 triggers; adding new test cases; rule-setting docs | design doc; items 1–3 may be short only when no state is shared across components (see below) | **one** reviewer, at most 2 rounds | `/code-review high` (rule-setting docs: n/a) | on a node, with a negative control (rule-setting docs: n/a; the reviewer checks them against the files they govern) |
+| **L0 docs** | files that are not code and set no rules: roadmap, plans, explanations, typos, issue housekeeping. Also a rule-setting file edited only to match a decision already made elsewhere (a rename, a milestone sync, a link) | none | none | self-check: links work, the text matches the current state of the repo and GitHub | "docs only, n/a" |
+| **L1 presentation** | a diff that changes **only** what the user sees: visible text, layout, styling, widget structure, assets; comment-only edits that are not lint or analyzer directives | a few lines of plan in the issue | none | `/code-review medium`, which also confirms the diff is presentation only | a screenshot, or a run on one node |
+| **L2 normal** | anything that hits no L3 trigger; adding a new validation test case; tightening a check; changing the rules in a rule-setting file; follow-up fixes of MINORs left by an approved L3 review | design doc; items 1–3 may be short only when no state is shared across components. For a rule-setting file the PR diff is the design | **one** reviewer, at most 2 rounds | `/code-review high` (rule-setting docs: n/a) | on a node, with a negative control (rule-setting docs: n/a; the reviewer checks them against the files they govern) |
 | **L3 critical** | anything that hits an L3 trigger | full design, items 1–5 | **two** independent reviewers, until no BLOCKER or MAJOR is open | `/code-review high` **and** `/security-review` (always) | on a node, negative controls, untested parts listed |
 
 **L3 triggers.** Touching any one of these makes the change L3:
@@ -20,27 +20,29 @@ The level depends on **what the change touches**, not on its label or its size. 
 - provisioning, claiming, members, permissions;
 - the boot chain, A/B, OTA, autocommit, LKG;
 - mesh, network, firewall, the BLE protocol;
+- **any new or changed input reachable from the network, BLE or mesh**: a CGI (for example `deploy/provisioning/www/*`), a port (including the OTS gateway), a message format;
 - services that run as root; payload / guardian; persistent state on p5 / p6;
+- kernel and driver patches (`patches/`), device-tree overlays (`overlays/`);
 - performance and resource limits. A performance change also carries before/after numbers from a node; measurement matters more here than argument;
 - new or changed dependencies and anything else in the supply chain (gate 10, #46);
 - build and card scripts, the firmware allowlist, the shared A/B files (`CLAUDE.md` § 改共用 A/B 程式), CI workflows;
 - anything that writes state to the rootfs overlay (gate 13);
-- editing or weakening an existing check: the validation harness, a `check-*.sh` / `test-*.sh`, an allowlist, `rundir-paths.txt`, a known-failure entry. These are the gate for every other change. The #290 harness-PR rules in `CLAUDE.md` § 驗證 apply on top.
+- **weakening the validation gate**: changing the runner or preflight (`scripts/daily-validation.sh`, `scripts/dv-preflight.sh`), changing or removing an existing suite in `scripts/dv/*` or a `check-*` / `test-*` / `lint-*` CI check, widening an allowlist or `rundir-paths.txt`, adding a known-failure entry or extending its expiry. The #290 harness-PR rules in `CLAUDE.md` § 驗證 apply on top.
 
 **Rules.**
-- The author proposes the level in the plan. The user can change it.
-- During the work the level can only go **up**. The author or a reviewer raises it when the change turns out to touch more, for example an L3 trigger. Only the user can lower it.
-- **L1 means presentation only.** The list of L1 files is an allowlist: `app/lib/ui/**`. Every other App file is at least L2, and the ones that carry protocol, keys or provisioning are L3 by trigger: `app/lib/src/{nodelink,flows,rust}/**`, `app/rust/**` (including `batman-proto`), and the top-level `claim*`, `key_abilities`, `member_ui`, `secure_screen` files. Node code, BLE characteristics and the node's status page or CGI are never L1.
-- **Adding a new test case** without changing an existing one (for example a new suite registered in `scripts/daily-validation.sh`) is L2 and must prove itself: old FAIL (negative control) and new PASS, per #290. Changing the runner, the preflight, or any existing test or check is L3 (trigger above).
+- **Proposing the level.** The author proposes the level in the plan, with the reason (which trigger, if any). The user can change it when approving the plan.
+- **Changing the level.** During the work the level can only go **up**. The author or a reviewer raises it when the change turns out to touch more. Only the user can lower it. If the level goes up after code exists, the design review at the new level runs before more code is written, and the existing code is reviewed again at that level.
+- **L1 is decided by the diff, not the folder.** Most files in `app/lib/ui/` also call flows, the sealed store or the node link (`remove_pages.dart` revokes members, `send_key.dart` sends keys, `dev_pages.dart` edits ssh keys). A diff that adds, removes or changes a call into `src/`, the Rust bridge, a store, a link, a flow, or how their results are handled is not L1. If that flow is keys, members or provisioning, it is L3. Node code, BLE characteristics and the node's status page or CGI are never L1.
+- **Tests.** A unit or widget test changed in the same PR as the code it tests takes that code's level (a wording change that updates a `find.text` test stays L1). For the validation gate: adding a new suite that proves itself (old FAIL as the negative control, new PASS, per #290), tightening a check, or removing a known-failure entry with PASS evidence is L2. Weakening the gate is L3 (trigger above).
 - **Shared state across components** (a uci key, file, flag or log line that another tool reads) is the #274 class of bug: at L2, items 1–3 are written in full. Many "UX" issues are not L1: #329's App work ended up touching the rotating id and ssh keys. Anything with correctness semantics, such as an honest message-delivery status (#387), is at least L2.
-- **Rule-setting files are at least L2**, because they set rules for everything else: `CLAUDE.md`, `docs/dev-process.md`, `docs/threat-model.md`, `docs/design/REVIEW.md`, `docs/design/REVIEW-hw.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `docs/boards-and-builds.md` (its §6 is the CI `paths` list), `docs/storage-architecture.md` (the write-placement contract, gate 13) and `docs/VERSIONS.md`. Design docs are reviewed as part of their own change's level.
+- **Rule-setting files** set rules for everything else: `CLAUDE.md`, `docs/dev-process.md`, `docs/threat-model.md`, `docs/design/REVIEW.md`, `docs/design/REVIEW-hw.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `docs/boards-and-builds.md` (its §6 is the CI `paths` list), `docs/storage-architecture.md` (the write-placement contract, gate 13) and `docs/VERSIONS.md`. Changing a rule in them is L2; a sync to a decision already made is L0. Design docs are reviewed as part of their own change's level.
 - The PR states its level in the **Review** section of the PR template.
 
-**Keeping L3 affordable.**
-- After round 3, open MINORs go into a findings register (like `264-review-register.md`) and no longer trigger a full re-review. Only an open BLOCKER or MAJOR does.
-- **L2:** if a BLOCKER or MAJOR is still open after round 2, the change becomes L3 (a second reviewer joins), or the user decides.
+**Rounds and escalation.**
+- A round means: every reviewer of that level reads the **whole** design again (the #274 lesson below), and the author fixes what they found.
+- **L2:** if a BLOCKER or MAJOR is still open after round 2, the author stops and asks the user: raise to L3 (a second reviewer joins and round counting continues, so the next round is round 3), or the user decides otherwise.
+- **L2 and L3:** from round 3 on, open MINORs go into a findings register (like `264-review-register.md`) or the PR's Review section, and no longer trigger a full re-review. Only an open BLOCKER or MAJOR does.
 - **L3:** if a BLOCKER or MAJOR is still open after round 5, stop and report to the user. The user decides: keep going, split the issue, or accept the residual risk in writing.
-- The re-review still reads the **whole** design (the #274 lesson below).
 
 ## Why
 
