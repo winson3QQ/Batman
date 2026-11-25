@@ -41,7 +41,7 @@
 | 本機非特權程序 | 讀 / 換 shadow、搶暫存檔名 | 共用 `/etc/shadow.prov`(root 0755 的 `/etc`,非特權不能寫) | 每次 `mktemp`,不變的權限 |
 | 本機非特權程序 | 卡住 procd / dropbear 的 flock(`/var/lock` 1777,既有面 #280 類) | — | S13 不經 procd 寫 uci,不受影響;dropbear 由 procd 啟動時才讀 uci |
 | 被攻陷的 provd | 送 claim / replay / reset | helper 驗授權(既有) | 不變;新增的 `ELockIncomplete` 不洩漏任何秘密 |
-| 實體接觸(拿到裝置) | 序列埠 / 拔 SD 卡 | 免密碼 | 序列埠要密碼;**誠實界線**:階段 1 rootfs / p5 未加密(608B 設計 doc),拔卡即可讀寫,序列埠防護只擋「不拆機」的人 |
+| 實體接觸(拿到裝置) | 序列埠 / 拔 SD 卡 | 免密碼 | 序列埠要密碼;**誠實界線**:v1.6 rootfs / p5 未加密(608B 設計 doc),拔卡即可讀寫,序列埠防護只擋「不拆機」的人 |
 | 網路上的人 | ssh 密碼 | 開著 | `-s -g`(只收 key);**誠實界線**:LuCI / rpcd 以 root 密碼登入(24 字元隨機,約 139 bit,猜不到);ttyd(`@lan`,04 停用)走 `/bin/login` |
 | 供應鏈 / 我們自己 | 縮 image、換 CM4、升 busybox | 再次靜默壞掉 | 不依賴外部指令;CI + 真機回歸 |
 | 操作員 | 網頁終端機 / ssh 下 `batman-slot commit` | 放行偶爾遺失 | 不受 hangup 影響 |
@@ -175,7 +175,7 @@ hash 只含 `[./0-9A-Za-z]`,整個欄位不含 `:` 與換行。其他一律不�
   - `--no-reload`(新旗標,96 與 S13 帶):明確跳過第 2 步(dropbear 還沒啟動,不靠 ubus 判斷,v3 A-m3)。
   - 結果寫一行 log;stdin 一律 `</dev/null`(rcS 已如此,✅ `procd rcS.c:97-98`)。
   - crash loop:每次開機都 ro 掛一次 p5(不寫入);掛不上 → 依 p6(v3 B-m4)。
-- **誠實界線**:procd 在 rcS 之前就啟動 askconsole(✅ `procd state.c:160-166`),login.sh 在使用者按 Enter 的那一刻才讀 `ttylogin`。只有在「上一次上鎖連 uci 都沒寫成」的那一次開機,S13 之前按 Enter 的人才拿得到 root shell。實體接觸在階段 1 本來就能拔卡改 rootfs(§2),這個窗口不增加能力;不改上游 `login.sh` / inittab(overlay 蓋上游不耐久,#264 教訓)。**CM4 eMMC** 量產機沒有卡可拔,這個前提較弱(要 rpiboot + USB),列殘項,到 CM4 時重評。
+- **誠實界線**:procd 在 rcS 之前就啟動 askconsole(✅ `procd state.c:160-166`),login.sh 在使用者按 Enter 的那一刻才讀 `ttylogin`。只有在「上一次上鎖連 uci 都沒寫成」的那一次開機,S13 之前按 Enter 的人才拿得到 root shell。實體接觸在v1.6 本來就能拔卡改 rootfs(§2),這個窗口不增加能力;不改上游 `login.sh` / inittab(overlay 蓋上游不耐久,#264 教訓)。**CM4 eMMC** 量產機沒有卡可拔,這個前提較弱(要 rpiboot + USB),列殘項,到 CM4 時重評。
 
 ### 5.5 `addr_defer_release` 改寫
 `batman-slot:750` 改為在**父程序 fork 之前**忽略 HUP:

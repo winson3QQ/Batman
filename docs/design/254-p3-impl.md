@@ -755,7 +755,7 @@ Go:§3.2 邊界、§3.6、§3.7 每個拒絕分支(mutant)、tar 白名單、版
 
 ## 10. 要改的文件與檔案(本 PR)
 
-- `219-protocol.md`:`:218` 拿掉「階段 1 不實作」;§4.2:PSK-only、什麼時候聽、`/msg` 多塊取回、上傳端點、**回應遺失 = session 中止(不做冪等快取)**;`:155`、`:212` 的 bulk「一次性 PSK」改為現行 AP 密碼;`:447` 改為輪替 `adv_owner_key`;`:210` 與 field-provisioning `:474` 對齊 D10;§5.2 `E_REJECTED` 改為「被拒(附原因)」不限更新。
+- `219-protocol.md`:`:218` 拿掉「v1.6 不實作」;§4.2:PSK-only、什麼時候聽、`/msg` 多塊取回、上傳端點、**回應遺失 = session 中止(不做冪等快取)**;`:155`、`:212` 的 bulk「一次性 PSK」改為現行 AP 密碼;`:447` 改為輪替 `adv_owner_key`;`:210` 與 field-provisioning `:474` 對齊 D10;§5.2 `E_REJECTED` 改為「被拒(附原因)」不限更新。
 - firmware(另一個 repo、另一個 PR):`scripts/stamp-batman-build.sh`(依通道放鑰匙檔、通道白名單)、`scripts/check-release-key-gate.sh`(新)、`gate-rootfs.sh` 兩種模式與 `build-board.sh` 第 7 步呼叫它、`build-firmware.yml` 改呼叫 `gate-rootfs.sh --ci`、`local-ab-tar.sh`、`.gitignore`、「上傳前有 gate」的結構測試。
 - harness(#290,先進 main):`tests/keys/README.md` 與 `tests/tools/peer/signrel.py:4` 的「T 只給 prov_test」改為「只有 bench build(含以 `--bench` 建的 prov_test)信任 T」;鎖外掛 boot FAT 的腳本改在鎖內或用 `bootinfo`;讀 `.busy` 或依 rc 1 判斷的測試改成 flock / rc 14(`daily-validation.sh:2067`、`setkey-persists-202.sh:65`、`p5-follows-202.sh:121`、`negctl-old-slot-254.sh:29`;Go `wtxn_v10b_test.go:59`、`p3review_test.go:147`);`p3-units.tsv:108` UD18 的「`.busy` 不在」改成 flock 判斷(否則永遠 PASS);`rundir-paths.txt:23-24` 加 `batman-slot.flock`。
 - `219-protocol.cddl`:reason-code 11–23;`update-manifest` key 5(= CBOR `[E, S]`)、key 6 語意、S 的 key 7–9;`update/prepare`、`update/apply` 的 key 1 = sha(由 owner-op 的 `args_hash` 綁定);`status-resp` key 2–4 改選填;settings key 20;`bulk-open-resp` key 2 的註解;`update-phase` 2 的名稱;冪等欄位(`idem-type`、各請求的 `? 7`)註記「保留、P3 不使用(provd 回 `E_UNSUPPORTED{idem}`)」。
