@@ -37,9 +37,9 @@ v2 → v2.1: review v3-B = APPROVE-WITH-CHANGES (0 / 1 / 7). §3.0 now states th
   - SSH by build (2026-11-23): **customer (production) builds keep SSH closed by default** — R118 as written;
     **development builds may keep it open**. Nothing else differs between the two builds. This settles the K15
     trade noted under T-ND9.
-  - Hardware roadmap: nodes get an RTC from **v2.0 (#174)**; the production secure element is not settled: #414 (v2.3) plans the
-    608B bound to the CM4, while `255-608b-config.md` (user, 2026-11-23) says the production chip is not a blank 608B
-    and is chosen later. Until v2.0 (#174), residual risk 3 holds as
+  - Hardware roadmap: nodes get an RTC from **v2.0 (#174)**; the production build uses a **certified** secure element, not the 608B
+    (user, 2026-11-25); it is chosen and checked on an evaluation board in #426 (v2.2) and bound to the CM4 in #414
+    (v2.3). Certification type and level are not yet stated. Until v2.0 (#174), residual risk 3 holds as
     written; after it, the node has a clock that a holder of the node can set (R41 and R113 still apply).
 - Follow-up outside this file, not done here (v2.2): devices on the bridged segment can act as a rogue DHCP server,
   send IPv6 router advertisements, or forge alfred / openmanetd address-reservation data. That is network-layer and
@@ -1248,7 +1248,7 @@ None has been tested.
 11. **No FIPS 140 module validation is claimed for the ATECC608B.** [author v1 §6 item 7] [A — the author's v1
     says the chip is not found in the NIST CMVP list; the first design draft cited a CMVP certificate number that
     reviewer v1-A listed as unchecked. Neither was verified in this merge; check before any customer statement.]
-    [v2.2] Superseded by the header (no 608B module certificate). Ends for the chip only when the production secure element (still open, see the header) replaces the 608B; the product
+    [v2.2] Superseded by the header (no 608B module certificate). Ends for the chip only when the certified production secure element (#426) replaces the 608B; the product
     itself still has no certification of its own.
 12. **A copy of the recovery material is permanent, silent ability to take the organisation**, including replacing
     the recovery path itself; the legitimate owner cannot take it back with their own copy and is left with a
