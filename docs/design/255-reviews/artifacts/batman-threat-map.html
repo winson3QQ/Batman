@@ -1,0 +1,353 @@
+<title>Batman 威脅地圖</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one reading column (max 72rem) with full-width figures; field-radio palette — slate ground, signal-amber accent, semantic red/amber/green for severity */
+:root {
+  --bg: #f3f5f7;
+  --surface: #ffffff;
+  --fg: #1b2530;
+  --muted: #586676;
+  --line: #c9d1da;
+  --accent: #b35c00;
+  --hit: #c62828;
+  --warn: #a86700;
+  --ok: #2e7d4f;
+  --chip-bg: #e7ebf0;
+  --f-text: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11171d; --surface: #18212a; --fg: #e3e9ef; --muted: #9aa8b6; --line: #33414f;
+    --accent: #f0a04b; --hit: #ff6b6b; --warn: #f2b84b; --ok: #5cc98a; --chip-bg: #22303c; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11171d; --surface: #18212a; --fg: #e3e9ef; --muted: #9aa8b6; --line: #33414f;
+  --accent: #f0a04b; --hit: #ff6b6b; --warn: #f2b84b; --ok: #5cc98a; --chip-bg: #22303c; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--f-text); font-size: 15.5px; line-height: 1.7;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 2rem 4rem;
+}
+main { max-width: 72rem; margin: 0 auto; display: flex; flex-direction: column; gap: 3rem; }
+header { display: flex; flex-direction: column; gap: .6rem; }
+.eyebrow { font-family: var(--f-mono); font-size: .78rem; letter-spacing: .08em; color: var(--accent); text-transform: uppercase; }
+h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); line-height: 1.25; margin: 0; text-wrap: balance; }
+h2 { font-size: 1.35rem; margin: 0 0 .8rem; text-wrap: balance; }
+h3 { font-size: 1.02rem; margin: 0 0 .3rem; }
+p { margin: 0; max-width: 46rem; }
+.lead { color: var(--muted); font-size: 1.02rem; }
+.status { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .4rem; }
+.tag { font-family: var(--f-mono); font-size: .75rem; padding: .15rem .55rem; border-radius: 4px; background: var(--chip-bg); color: var(--muted); }
+.tag.warn { color: var(--warn); }
+section { display: flex; flex-direction: column; gap: 1rem; }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 1rem; overflow-x: auto; }
+figure svg { display: block; width: 100%; min-width: 640px; height: auto; color: var(--fg); }
+figcaption { font-size: .88rem; color: var(--muted); margin-top: .6rem; max-width: 60rem; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(16.5rem, 1fr)); gap: .8rem; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1rem; display: flex; flex-direction: column; gap: .35rem; min-width: 0; }
+.card .no { font-family: var(--f-mono); font-weight: 600; color: var(--hit); }
+.card p { font-size: .9rem; }
+.card .fix { font-size: .82rem; color: var(--muted); border-top: 1px dashed var(--line); padding-top: .35rem; margin-top: auto; }
+.tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: .9rem; }
+th, td { text-align: left; padding: .55rem .75rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: .78rem; letter-spacing: .05em; color: var(--muted); font-weight: 500; }
+td.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.score { display: inline-block; min-width: 2.2rem; text-align: center; font-family: var(--f-mono); font-weight: 600; border-radius: 4px; padding: 0 .3rem; }
+.s-high { background: color-mix(in srgb, var(--hit) 18%, transparent); color: var(--hit); }
+.s-mid { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.s-low { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.phase { font-family: var(--f-mono); font-size: .78rem; color: var(--muted); white-space: nowrap; }
+ol.residual { margin: 0; padding-left: 1.3rem; display: flex; flex-direction: column; gap: .35rem; max-width: 52rem; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: .8rem; }
+.note { font-size: .85rem; color: var(--muted); }
+code { font-family: var(--f-mono); font-size: .85em; background: var(--chip-bg); padding: 0 .25rem; border-radius: 3px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<main>
+<header>
+  <div class="eyebrow">#255 · 金鑰管理面 · 2026-11-23</div>
+  <h1>Batman 威脅地圖</h1>
+  <p class="lead">誰可能從哪裡進來、拿到什麼。範圍是「誰能管理節點與網路」這一面；干擾、惡意路由、偽造 TAK 訊息屬網路層，另見 <code>docs/threat-model.md</code>。</p>
+  <div class="status">
+    <span class="tag warn">自評，未經外部驗證</span>
+    <span class="tag">來源：255-threat-model.md v2.1（117 條需求）</span>
+    <span class="tag">設計：255-key-authority.md v3.1、255-608b-config.md v3</span>
+  </div>
+</header>
+
+<section>
+  <h2>1. 系統與入口</h2>
+  <p>紅色編號是攻擊者可以碰到的地方。虛線是還沒做的部分（發證站在第 3 期）。</p>
+  <figure>
+    <svg viewBox="0 0 1000 560" role="img" aria-label="Batman 的元件、連線與十個攻擊入口：手機、發證站、工廠在左；節點內有 provd、helper、608B 晶片、SD 卡、手機 Wi-Fi、機身 QR、HaLow 無線；右邊是其他節點、隊員手機與空中旁觀者。">
+      <defs>
+        <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+      </defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.4" font-family="Noto Sans TC, sans-serif" font-size="13">
+        <!-- left column -->
+        <rect x="20" y="40" width="200" height="110" rx="6" fill="var(--surface)"/>
+        <rect x="20" y="220" width="200" height="90" rx="6" stroke-dasharray="6 4" fill="var(--surface)"/>
+        <rect x="20" y="400" width="200" height="100" rx="6" fill="var(--surface)"/>
+        <!-- node boundary -->
+        <rect x="290" y="20" width="420" height="520" rx="10" stroke-width="2" stroke="var(--accent)" fill="none"/>
+        <rect x="320" y="70" width="170" height="60" rx="5" fill="var(--surface)"/>
+        <rect x="320" y="190" width="170" height="60" rx="5" fill="var(--surface)"/>
+        <rect x="320" y="320" width="170" height="60" rx="5" fill="var(--surface)"/>
+        <rect x="520" y="70" width="160" height="60" rx="5" fill="var(--surface)"/>
+        <rect x="520" y="190" width="160" height="60" rx="5" fill="var(--surface)"/>
+        <rect x="520" y="320" width="160" height="60" rx="5" fill="var(--surface)"/>
+        <rect x="400" y="440" width="200" height="60" rx="5" fill="var(--surface)"/>
+        <!-- right column -->
+        <rect x="780" y="60" width="200" height="80" rx="6" fill="var(--surface)"/>
+        <rect x="780" y="200" width="200" height="80" rx="6" fill="var(--surface)"/>
+        <rect x="780" y="420" width="200" height="80" rx="6" stroke-dasharray="3 3" fill="var(--surface)"/>
+        <!-- flows -->
+        <line x1="220" y1="100" x2="318" y2="100" marker-end="url(#a1)" marker-start="url(#a1)"/>
+        <line x1="120" y1="220" x2="120" y2="152" stroke-dasharray="6 4" marker-end="url(#a1)"/>
+        <line x1="220" y1="440" x2="318" y2="360" marker-end="url(#a1)"/>
+        <line x1="405" y1="130" x2="405" y2="188" marker-end="url(#a1)" marker-start="url(#a1)"/>
+        <line x1="405" y1="250" x2="405" y2="318" marker-end="url(#a1)" marker-start="url(#a1)"/>
+        <line x1="490" y1="220" x2="518" y2="220" marker-end="url(#a1)" marker-start="url(#a1)"/>
+        <line x1="680" y1="100" x2="778" y2="100" marker-end="url(#a1)" marker-start="url(#a1)"/>
+        <line x1="600" y1="475" x2="778" y2="282" marker-end="url(#a1)" marker-start="url(#a1)"/>
+        <line x1="600" y1="485" x2="778" y2="460" stroke-dasharray="3 3" marker-end="url(#a1)"/>
+      </g>
+      <g fill="currentColor" font-family="Noto Sans TC, sans-serif" font-size="13" text-anchor="middle">
+        <text x="120" y="88" font-weight="700">手機 app</text>
+        <text x="120" y="108" font-size="12" fill="var(--muted)">擁有者、管理員、隊員</text>
+        <text x="120" y="126" font-size="12" fill="var(--muted)">金鑰在 Keystore</text>
+        <text x="120" y="258" font-weight="700">ICS 發證站</text>
+        <text x="120" y="278" font-size="12" fill="var(--muted)">第 3 期；小隊用</text>
+        <text x="120" y="440" font-weight="700">工廠／開發者電腦</text>
+        <text x="120" y="460" font-size="12" fill="var(--muted)">開發根、發行簽章</text>
+        <text x="120" y="478" font-size="12" fill="var(--muted)">燒錄晶片</text>
+        <text x="500" y="44" font-weight="700" fill="var(--accent)">節點（Pi + HAT）</text>
+        <text x="405" y="96" font-weight="700">provd</text>
+        <text x="405" y="116" font-size="12" fill="var(--muted)">非 root；面對藍牙</text>
+        <text x="405" y="216" font-weight="700">helper</text>
+        <text x="405" y="236" font-size="12" fill="var(--muted)">root；驗證、套用</text>
+        <text x="405" y="346" font-weight="700">608B 晶片</text>
+        <text x="405" y="366" font-size="12" fill="var(--muted)">三把金鑰、認領秘密</text>
+        <text x="600" y="96" font-weight="700">手機 Wi-Fi AP</text>
+        <text x="600" y="116" font-size="12" fill="var(--muted)">與 mesh 同一座橋</text>
+        <text x="600" y="216" font-weight="700">SD 卡 p5／p6</text>
+        <text x="600" y="236" font-size="12" fill="var(--muted)">網路密碼；今天未加密</text>
+        <text x="600" y="346" font-weight="700">機身 QR</text>
+        <text x="600" y="366" font-size="12" fill="var(--muted)">認領秘密，印在外殼</text>
+        <text x="500" y="466" font-weight="700">HaLow 無線</text>
+        <text x="500" y="486" font-size="12" fill="var(--muted)">全網共用一組密碼</text>
+        <text x="880" y="96" font-weight="700">隊員手機／TAK</text>
+        <text x="880" y="116" font-size="12" fill="var(--muted)">連自己的節點</text>
+        <text x="880" y="236" font-weight="700">其他節點</text>
+        <text x="880" y="256" font-size="12" fill="var(--muted)">同一個 mesh</text>
+        <text x="880" y="456" font-weight="700">空中的旁觀者</text>
+        <text x="880" y="476" font-size="12" fill="var(--muted)">只聽，不連</text>
+      </g>
+      <g fill="var(--muted)" font-family="IBM Plex Mono, monospace" font-size="11" text-anchor="middle">
+        <text x="269" y="92">藍牙 Noise</text>
+        <text x="152" y="190">發證</text>
+        <text x="252" y="384">燒錄／更新</text>
+        <text x="432" y="164">socket</text>
+        <text x="425" y="290">I2C</text>
+        <text x="730" y="92">Wi-Fi</text>
+        <text x="700" y="340">SAE 密碼</text>
+        <text x="700" y="492">收聽</text>
+      </g>
+      <g font-family="IBM Plex Mono, monospace" font-size="12" font-weight="600" text-anchor="middle">
+        <g fill="var(--hit)"><circle cx="210" cy="48" r="11"/><circle cx="482" cy="78" r="11"/><circle cx="672" cy="78" r="11"/><circle cx="672" cy="198" r="11"/><circle cx="482" cy="328" r="11"/><circle cx="672" cy="328" r="11"/><circle cx="210" cy="228" r="11"/><circle cx="210" cy="408" r="11"/><circle cx="592" cy="448" r="11"/><circle cx="972" cy="428" r="11"/></g>
+        <g fill="#ffffff"><text x="210" y="52">1</text><text x="482" y="82">6</text><text x="672" y="82">2</text><text x="672" y="202">4</text><text x="482" y="332">3</text><text x="672" y="332">5</text><text x="210" y="232">7</text><text x="210" y="412">9</text><text x="592" y="452">10</text><text x="972" y="432">8</text></g>
+      </g>
+    </svg>
+    <figcaption>節點的權力集中在 root 的 helper：它驗證簽章、寫 SD 卡、唯一能叫晶片簽章。面對外界的 provd 刻意不是 root，但它是加密通道的終點，看得到所有回覆的明文。</figcaption>
+  </figure>
+
+  <div class="grid">
+    <div class="card"><span class="no">1 被偷的管理員手機</span><p>手機沒鎖時，一個簽章就能換掉整組管理員並植入 SSH 金鑰（今天的程式只要求上一版任一位管理員簽，<code>node.go:1192</code>）。</p><div class="fix">規則 K18；金鑰每次使用要解鎖。第 2 期</div></div>
+    <div class="card"><span class="no">2 被移除的人</span><p>他還知道手機 Wi-Fi 密碼、看過 root 密碼、裝過 SSH 金鑰；移除擁有者時這些都不會清（<code>node.go:966-995</code>）。</p><div class="fix">規則 K17。第 2 期</div></div>
+    <div class="card"><span class="no">3 碰到晶片 5 分鐘</span><p>維修、轉賣時接上匯流排，叫晶片簽「這把加密公鑰屬於這台」，之後每次換密碼他都解得開。</p><div class="fix">規則 K16；三把金鑰分工。第 1 期</div></div>
+    <div class="card"><span class="no">4 拔 SD 卡</span><p>今天 SD 卡未加密：讀出網路密碼，或還原舊映像讓已收回的管理權回來（紀錄只有沒有金鑰的雜湊）。</p><div class="fix">secure boot + 分割區加密（全部版本都開）</div></div>
+    <div class="card"><span class="no">5 拍到機身 QR</span><p>608B 之後重燒也不會讓 QR 失效：工廠、經銷商、維修店、前任擁有者永遠持有它。</p><div class="fix">bench 接受；量產晶片選定時重新決定</div></div>
+    <div class="card"><span class="no">6 被入侵的 provd</span><p>它解析外來位元組，又是加密通道的終點：能看到經過它的秘密，能偽造送給 helper 的請求。</p><div class="fix">規則 K10、K12：秘密不明文經過它，驗證都在 helper</div></div>
+    <div class="card"><span class="no">7 發證站被當簽章工具</span><p>解鎖狀態下，操作員的登入、主機上的自動化程式、從備份還原，都能發出現場有效的憑證。</p><div class="fix">根金鑰不在日常主機（D6）。第 3 期</div></div>
+    <div class="card"><span class="no">8 空中追蹤</span><p>固定的無線識別碼或全單位共用的辨識金鑰，讓旁觀者長期追蹤單位的節點。</p><div class="fix">規則 K9；無線層識別碼屬殘餘風險</div></div>
+    <div class="card"><span class="no">9 工廠與供應鏈</span><p>出廠前換身分、注入已知的私鑰，或發行簽章金鑰外洩。</p><div class="fix">金鑰在資料區鎖定後才產生；開發根讀回確認才簽</div></div>
+    <div class="card"><span class="no">10 拿到網路密碼的外人</span><p>mesh 是一組共用密碼：知道它的裝置就能加入；移除一個人等於全網換密碼。</p><div class="fix">逐台認證屬 #13；換密碼的送達是第 2 期問題</div></div>
+  </div>
+</section>
+
+<section>
+  <h2>2. 被移除之後，他還剩什麼</h2>
+  <p>排名第 2 的威脅。移除是一個要花時間的過程，不是一個按鈕：每一條線都要另外處理。</p>
+  <figure>
+    <svg viewBox="0 0 900 300" role="img" aria-label="被移除的成員仍持有四樣東西，分別通往手機 Wi-Fi 到 mesh 的橋、root shell、以及還沒換密碼的節點。">
+      <defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.4">
+        <rect x="20" y="115" width="160" height="70" rx="6" fill="var(--surface)" stroke="var(--hit)" stroke-width="2"/>
+        <rect x="290" y="20" width="230" height="50" rx="5" fill="var(--surface)"/>
+        <rect x="290" y="90" width="230" height="50" rx="5" fill="var(--surface)"/>
+        <rect x="290" y="160" width="230" height="50" rx="5" fill="var(--surface)"/>
+        <rect x="290" y="230" width="230" height="50" rx="5" fill="var(--surface)"/>
+        <rect x="660" y="20" width="220" height="50" rx="5" fill="var(--surface)"/>
+        <rect x="660" y="125" width="220" height="50" rx="5" fill="var(--surface)"/>
+        <rect x="660" y="230" width="220" height="50" rx="5" fill="var(--surface)"/>
+        <line x1="180" y1="140" x2="288" y2="45" marker-end="url(#a2)"/>
+        <line x1="180" y1="145" x2="288" y2="115" marker-end="url(#a2)"/>
+        <line x1="180" y1="155" x2="288" y2="185" marker-end="url(#a2)"/>
+        <line x1="180" y1="160" x2="288" y2="255" marker-end="url(#a2)"/>
+        <line x1="520" y1="45" x2="658" y2="45" marker-end="url(#a2)"/>
+        <line x1="520" y1="115" x2="658" y2="145" marker-end="url(#a2)"/>
+        <line x1="520" y1="185" x2="658" y2="155" marker-end="url(#a2)"/>
+        <line x1="520" y1="255" x2="658" y2="255" marker-end="url(#a2)"/>
+      </g>
+      <g fill="currentColor" font-family="Noto Sans TC, sans-serif" font-size="13" text-anchor="middle">
+        <text x="100" y="146" font-weight="700">被移除的隊員</text>
+        <text x="100" y="166" font-size="12" fill="var(--muted)">或離隊的人</text>
+        <text x="405" y="50">知道手機 Wi-Fi 密碼</text>
+        <text x="405" y="120">裝過的 SSH 金鑰還在</text>
+        <text x="405" y="190">看過的 root 密碼沒換</text>
+        <text x="405" y="260">舊 mesh 密碼</text>
+        <text x="770" y="50">AP → 同一座橋 → mesh</text>
+        <text x="770" y="155">節點的 root shell</text>
+        <text x="770" y="260">還沒換密碼的節點</text>
+      </g>
+    </svg>
+    <figcaption>今天移除擁有者不會清掉他裝的 SSH 金鑰，也不換 root 密碼（<code>node.go:966-995</code>）；換 mesh 密碼擋不住知道手機 Wi-Fi 密碼的人，因為兩者在同一座橋上。規則 K17 要求移除時四條都要處理。</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>3. 晶片被當成簽章工具</h2>
+  <p>排名第 3。左邊是「一把金鑰給什麼簽什麼」的做法，右邊是 608B 的三把金鑰分工。差別在中間那條線斷了沒有。</p>
+  <figure>
+    <svg viewBox="0 0 960 330" role="img" aria-label="比較：左邊一把身分金鑰替攻擊者的公鑰背書，管理員把新密碼加密給攻擊者；右邊三把金鑰分工，背書金鑰不接受外部資料，這條路斷掉。">
+      <defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+      <g fill="currentColor" font-family="Noto Sans TC, sans-serif" font-size="14" font-weight="700" text-anchor="middle">
+        <text x="235" y="24">今天（軟體身分）：一把金鑰</text>
+        <text x="725" y="24">608B：三把金鑰各做一件事</text>
+      </g>
+      <line x1="480" y1="10" x2="480" y2="320" stroke="var(--line)" stroke-width="1"/>
+      <g fill="none" stroke="currentColor" stroke-width="1.4">
+        <rect x="20" y="50" width="190" height="50" rx="5" fill="var(--surface)" stroke="var(--hit)" stroke-width="2"/>
+        <rect x="260" y="50" width="200" height="50" rx="5" fill="var(--surface)"/>
+        <rect x="260" y="150" width="200" height="60" rx="5" fill="var(--surface)"/>
+        <rect x="20" y="250" width="190" height="60" rx="5" fill="var(--surface)"/>
+        <line x1="210" y1="75" x2="258" y2="75" marker-end="url(#a3)"/>
+        <line x1="360" y1="100" x2="360" y2="148" marker-end="url(#a3)"/>
+        <line x1="260" y1="200" x2="212" y2="260" marker-end="url(#a3)"/>
+        <rect x="500" y="50" width="190" height="50" rx="5" fill="var(--surface)" stroke="var(--hit)" stroke-width="2"/>
+        <rect x="740" y="50" width="200" height="50" rx="5" fill="var(--surface)"/>
+        <rect x="740" y="130" width="200" height="50" rx="5" fill="var(--surface)"/>
+        <rect x="740" y="210" width="200" height="50" rx="5" fill="var(--surface)"/>
+        <line x1="690" y1="75" x2="738" y2="75" marker-end="url(#a3)"/>
+        <line x1="690" y1="85" x2="738" y2="150" stroke-dasharray="5 4"/>
+        <line x1="690" y1="90" x2="738" y2="232" stroke-dasharray="5 4"/>
+      </g>
+      <g stroke="var(--ok)" stroke-width="3" stroke-linecap="round">
+        <line x1="706" y1="108" x2="722" y2="124"/><line x1="722" y1="108" x2="706" y2="124"/>
+        <line x1="706" y1="152" x2="722" y2="168"/><line x1="722" y1="152" x2="706" y2="168"/>
+      </g>
+      <g fill="currentColor" font-family="Noto Sans TC, sans-serif" font-size="13" text-anchor="middle">
+        <text x="115" y="80">接上匯流排的人</text>
+        <text x="360" y="72">身分金鑰</text>
+        <text x="360" y="90" font-size="11" fill="var(--muted)">給什麼簽什麼</text>
+        <text x="360" y="176">「這把加密公鑰</text>
+        <text x="360" y="194">屬於這台節點」</text>
+        <text x="115" y="276">管理員把新密碼</text>
+        <text x="115" y="294">加密給攻擊者的公鑰</text>
+        <text x="595" y="80">接上匯流排的人</text>
+        <text x="840" y="72">連線金鑰（槽 0）</text>
+        <text x="840" y="90" font-size="11" fill="var(--muted)">只簽「標籤 ‖ 這次交握」</text>
+        <text x="840" y="152">背書金鑰（槽 1）</text>
+        <text x="840" y="170" font-size="11" fill="var(--muted)">只簽晶片自己組的訊息</text>
+        <text x="840" y="232">解密金鑰（槽 2）</text>
+        <text x="840" y="250" font-size="11" fill="var(--muted)">只做 ECDH，不簽</text>
+      </g>
+      <g fill="var(--muted)" font-family="IBM Plex Mono, monospace" font-size="11">
+        <text x="378" y="128">簽出</text>
+        <text x="200" y="232">信了</text>
+        <text x="500" y="300">第 1 期改由開發根憑證直接寫明三把公鑰；</text>
+        <text x="500" y="316">晶片能否被繞過，靠實驗 E7 實測（不擋第 1 期）。</text>
+      </g>
+    </svg>
+    <figcaption>今天的軟體身分用同一把金鑰做身分簽章和 ECDH 背書，只靠程式裡的用途標籤把關（<code>keystore.go:79-99</code>）。換成晶片後，用途由晶片的設定位元強制，不是由軟體。</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>4. 拿到一台節點能做什麼</h2>
+  <p>你已決定所有版本都開 secure boot（加上資料分割區加密）。這張表是開與沒開的差別；第 1 期的 bench 與開發機仍是「沒開」。</p>
+  <div class="two">
+    <div class="card">
+      <h3>沒開（今天、第 1 期 bench）</h3>
+      <p>拿到 SD 卡就讀得到網路密碼；能換卡跑自己的程式；能叫晶片簽任何它肯簽的東西；能把卡還原成舊映像，讓已收回的權力回來。</p>
+      <div class="fix">「實體持有 = 完全控制」</div>
+    </div>
+    <div class="card">
+      <h3>開了（出貨狀態）</h3>
+      <p>跑不了自己的程式；資料分割區加密；晶片只被我們簽過的程式使用。仍然可以：在被移除前把這台當成員使用；實體降版到舊映像（舊映像不知道之後的撤銷）。</p>
+      <div class="fix">前提未驗證：可寫的 overlay 也要在加密與驗證範圍內（#111 還沒設計）</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>5. 前 15 名</h2>
+  <p>可能性 × 影響，各 1–5 分，以「部署給機關客戶、整個產品生命週期」來估。第 10–14 名依攻擊成本排序，不完全照分數。</p>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>#</th><th>威脅</th><th>分數</th><th>為什麼</th><th>怎麼處理</th></tr></thead>
+      <tbody>
+        <tr><td class="num">1</td><td>沒鎖或惡意的管理員手機，一個簽章換掉整組管理員、植入 SSH 金鑰</td><td class="num"><span class="score s-high">20</span></td><td>手機會掉；今天的程式只要一個簽章</td><td>K18；金鑰每次使用解鎖 <span class="phase">第 2 期</span></td></tr>
+        <tr><td class="num">2</td><td>被移除的人留得下來</td><td class="num"><span class="score s-high">20</span></td><td>人員異動是常態；多種殘留已在程式中確認</td><td>K17 <span class="phase">第 2 期</span></td></tr>
+        <tr><td class="num">3</td><td>晶片被當簽章工具，偽造加密公鑰的歸屬</td><td class="num"><span class="score s-high">15</span></td><td>只要幾分鐘接觸；無聲；晶片鎖錯就無法補救</td><td>K16、三金鑰分工 <span class="phase">第 1 期</span></td></tr>
+        <tr><td class="num">4</td><td>發證站被當簽章工具</td><td class="num"><span class="score s-high">15</span></td><td>解鎖後金鑰是活的；ICS 已記錄同類風險</td><td>根不在日常主機 <span class="phase">第 3 期</span></td></tr>
+        <tr><td class="num">5</td><td>永久的機身 QR + 實體重設 = 撿到的節點被接手</td><td class="num"><span class="score s-high">15</span></td><td>QR 就在攻擊者手上的東西上</td><td>量產晶片時重新決定</td></tr>
+        <tr><td class="num">6</td><td>節點分成兩群、互不接受</td><td class="num"><span class="score s-high">15</span></td><td>今天的程式就會發生；兩位誠實管理員同時改也會</td><td>待解問題 5 <span class="phase">第 2 期</span></td></tr>
+        <tr><td class="num">7</td><td>新密碼送不到關機的節點；過渡期被移除者也在</td><td class="num"><span class="score s-high">15</span></td><td>現場一定會發生</td><td>待解問題 4 <span class="phase">第 2 期</span></td></tr>
+        <tr><td class="num">8</td><td>根金鑰或復原材料外洩或遺失</td><td class="num"><span class="score s-mid">10</span></td><td>頻率低、影響全面；家庭的根在日常手機上</td><td>助記詞、復原卡 <span class="phase">第 2–3 期</span></td></tr>
+        <tr><td class="num">9</td><td>一整批晶片鎖錯設定</td><td class="num"><span class="score s-mid">10</span></td><td>不可逆、備品少、位元欄位複雜</td><td>犧牲晶片實驗、多輪審查 <span class="phase">第 1 期</span></td></tr>
+        <tr><td class="num">10</td><td>手機 Wi-Fi 密碼或網路孔成了沒人管的 mesh 入口</td><td class="num"><span class="score s-mid">12</span></td><td>隊員自訂密碼；同一座橋</td><td>K17 <span class="phase">第 2 期</span></td></tr>
+        <tr><td class="num">11</td><td>短暫接觸晶片後，用軟體複製節點身分</td><td class="num"><span class="score s-mid">12</span></td><td>同第 3 名的接觸，後果較輕</td><td>每次連線當場證明 <span class="phase">第 1 期</span></td></tr>
+        <tr><td class="num">12</td><td>還原或降版讓舊權力回來</td><td class="num"><span class="score s-low">9</span></td><td>需要拿到卡；只影響那一台</td><td>secure boot、K13</td></tr>
+        <tr><td class="num">13</td><td>憑證用錯地方或發錯（TAK、登入、mesh）</td><td class="num"><span class="score s-mid">12</span></td><td>同一個發證站發三類憑證</td><td>金鑰與 CA 分開（D5）</td></tr>
+        <tr><td class="num">14</td><td>穩定的無線識別碼讓節點被追蹤</td><td class="num"><span class="score s-mid">12</span></td><td>被動、便宜、sub-GHz 距離遠</td><td>K9；無線層屬殘餘風險</td></tr>
+        <tr><td class="num">15</td><td>還原備份或回退後狀態倒退</td><td class="num"><span class="score s-low">8</span></td><td>少見，但無聲、遠端難診斷</td><td><span class="phase">第 3 期</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">分數 ≥ 15 標紅、10–14 標黃、≤ 9 標綠。合併時另外加入 10 條「針對特定設計」的威脅（例如撤銷在恢復出廠後失效、可重放的物件），只在設計有那個功能時才存在，沒有排進名次，見威脅模型 §7 第二張表。</p>
+</section>
+
+<section>
+  <h2>6. 任何設計都消除不了的</h2>
+  <p>要對客戶明講的殘餘風險（威脅模型 §10，節錄）。</p>
+  <ol class="residual">
+    <li>mesh 是一組共用密碼：移除一個人等於全網換密碼，而且只完成到最難連到的那一台為止。</li>
+    <li>節點沒有時鐘：沒有東西會自己過期；權力在節點收到通知時才結束。</li>
+    <li>還沒收到撤銷的節點，會服從已被撤銷的人。設計能讓它可以補救，不能讓它不發生。</li>
+    <li>最上層的授權者是單點：持有它（或它的復原材料）的人能做任何事。</li>
+    <li>發證站在解鎖狀態下可能發錯憑證，只能事後發現。</li>
+    <li>app 發行者、發行簽章者、工廠都是被信任的一方。</li>
+    <li>被脅迫的管理員能做管理員能做的一切。</li>
+    <li>無線層的識別碼讓旁觀者能追蹤節點，與管理面無關。</li>
+    <li>收得到訊號的人可以拖慢節點的管理。</li>
+    <li>608B 沒有 FIPS 140 模組認證（NIST CMVP 查無；需要認證時換 TA101）。</li>
+    <li>復原材料的副本是永久、無聲的接管能力。</li>
+    <li>舊映像不知道它建置之後才決定的事；實體降版時它只執行它知道的規則。</li>
+  </ol>
+</section>
+
+<section>
+  <h2>出處與狀態</h2>
+  <p class="note">本頁整理自本機設計分支 <code>design/255-key-authority</code> 上的三份文件（尚未推上 GitHub）：<code>255-threat-model.md</code> v2.1（以一份不看作者文件、獨立寫成的威脅模型為底，併入作者版本與四份設計審查找到的威脅）、<code>255-key-authority.md</code> v3.1（規則 K1–K22）、<code>255-608b-config.md</code> v3（bench 專用晶片設定）。進度與決定記在 GitHub issue #255。所有內容都是自評，沒有經過外部驗證；計畫在第 2 期有東西可以攻擊時做一次紅隊測試。程式行號以 main 4eba26d 為準。</p>
+</section>
+</main>
