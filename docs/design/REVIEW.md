@@ -11,8 +11,8 @@ The level depends on **what the change touches**, not on its label or its size. 
 | Level | Applies to | Design | Adversarial review | Before the PR | Test evidence |
 |---|---|---|---|---|---|
 | **L0 docs** | files that are not code: roadmap, plans, explanations, typos, issue housekeeping (not the rule-setting files listed below) | none | none | self-check: links work, the text matches the current state of the repo and GitHub | "docs only, n/a" |
-| **L1 presentation** | App UI only (Dart under `app/lib/`): screens, wording, layout; comment-only edits in code files | a few lines of plan in the issue | none | `/code-review medium` | a screenshot, or a run on one node |
-| **L2 normal** | a change that hits none of the L3 triggers; adding new tests | design doc; items 1–3 may be short only when no state is shared across components | **one** reviewer, at most 2 rounds | `/code-review high` | on a node, with a negative control |
+| **L1 presentation** | App files under `app/lib/ui/` only: screens, wording, layout; comment-only edits in code files | a few lines of plan in the issue | none | `/code-review medium` | a screenshot, or a run on one node |
+| **L2 normal** | a change that hits none of the L3 triggers; adding new test cases; rule-setting docs | design doc; items 1–3 may be short only when no state is shared across components (see below) | **one** reviewer, at most 2 rounds | `/code-review high` (rule-setting docs: n/a) | on a node, with a negative control (rule-setting docs: n/a; the reviewer checks them against the files they govern) |
 | **L3 critical** | anything that hits an L3 trigger | full design, items 1–5 | **two** independent reviewers, until no BLOCKER or MAJOR is open | `/code-review high` **and** `/security-review` (always) | on a node, negative controls, untested parts listed |
 
 **L3 triggers.** Touching any one of these makes the change L3:
@@ -30,8 +30,8 @@ The level depends on **what the change touches**, not on its label or its size. 
 **Rules.**
 - The author proposes the level in the plan. The user can change it.
 - During the work the level can only go **up**. The author or a reviewer raises it when the change turns out to touch more, for example an L3 trigger. Only the user can lower it.
-- **L1 means presentation only.** It changes nothing in the App ↔ node protocol (`app/rust/batman-proto`, BLE characteristics, the status page or CGI on the node) and no node code.
-- **New tests** are L2 and must prove themselves: old FAIL (negative control) and new PASS, per #290. Changing or removing an existing test or check is L3 (trigger above).
+- **L1 means presentation only.** The list of L1 files is an allowlist: `app/lib/ui/**`. Every other App file is at least L2, and the ones that carry protocol, keys or provisioning are L3 by trigger: `app/lib/src/{nodelink,flows,rust}/**`, `app/rust/**` (including `batman-proto`), and the top-level `claim*`, `key_abilities`, `member_ui`, `secure_screen` files. Node code, BLE characteristics and the node's status page or CGI are never L1.
+- **Adding a new test case** without changing an existing one (for example a new suite registered in `scripts/daily-validation.sh`) is L2 and must prove itself: old FAIL (negative control) and new PASS, per #290. Changing the runner, the preflight, or any existing test or check is L3 (trigger above).
 - **Shared state across components** (a uci key, file, flag or log line that another tool reads) is the #274 class of bug: at L2, items 1–3 are written in full. Many "UX" issues are not L1: #329's App work ended up touching the rotating id and ssh keys. Anything with correctness semantics, such as an honest message-delivery status (#387), is at least L2.
 - **Rule-setting files are at least L2**, because they set rules for everything else: `CLAUDE.md`, `docs/dev-process.md`, `docs/threat-model.md`, `docs/design/REVIEW.md`, `docs/design/REVIEW-hw.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `docs/boards-and-builds.md` (its §6 is the CI `paths` list), `docs/storage-architecture.md` (the write-placement contract, gate 13) and `docs/VERSIONS.md`. Design docs are reviewed as part of their own change's level.
 - The PR states its level in the **Review** section of the PR template.
@@ -99,7 +99,7 @@ Two lessons came from #274:
 
    Before the PR, every L3 change also gets `/security-review`, whatever it touches. That review complements the design review and does not replace it.
 
-An L2 change that touches no shared state (internal to one component) may replace 1–3 with one sentence that says so and why.
+When items 1–3 may be short is set in § Review level: at L2, and only when no state is shared across components. Then one sentence that says so and why is enough.
 
 The weight of the review depends on how much shared state the change touches, not on how big the change is.
 
