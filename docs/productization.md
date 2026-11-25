@@ -105,9 +105,9 @@ Layer 3
 
 > **Superseded in part (2026-11-25).** The three models below are the 2026-09 reasoning and are kept for the
 > record. What changed since:
-> - **Secure boot is ON for every build, and nothing ships to customers before the chain is complete** (user
+> - **Secure boot is ON for every build that ships, and nothing ships to customers before the chain is complete** (user
 >   decision 2026-11-23, U8 in `docs/design/255-key-authority.md`, PR #431). The "Base" and "attended" models are
->   therefore not product variants; they describe intermediate bench states.
+>   therefore no longer product variants. (The v2.0 bench Pi 4 builds run without secure boot.)
 > - **"Released by measured boot" is not available on a Raspberry Pi** (no PCR-style measurement; the table
 >   further down already says so). What is reachable: the disk key is derived at boot from a secret in the secure
 >   element together with a device secret that only a signed image on that CM4 can use (#414, #111). On the bench

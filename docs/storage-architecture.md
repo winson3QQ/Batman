@@ -32,8 +32,9 @@ or recording tenants 64 GB+ or an external SSD (productization.md sizing).
 > **"Secure tiers" in the table (note added 2026-11-25).** The tiers are no longer product variants: secure boot
 > and data encryption are ON for every build that ships (user decision 2026-11-23, U8, `docs/design/255-key-authority.md`,
 > PR #431). LUKS on p5 / p6 therefore applies to every shipped node; until the CM4 platform the key is a
-> placeholder on the card (#111). The slot state that must be readable before LUKS unlock stays in `autoboot.txt`
-> on p1; a config reset never reformats p5 (`docs/design/security-architecture.md` (#423, PR #430) §8).
+> placeholder on the card (#111). The slot state that must be readable before LUKS unlock is `autoboot.txt` on p1,
+> as today. Reset behaviour is described in `docs/design/security-architecture.md` (#423, PR #430) §8; this file
+> states no new rule about it.
 
 **Pi 3A+ profile (`bcm2710`):** no EEPROM bootloader → one boot partition (p1) holding both kernel sets
 under `os_prefix=A/` and `B/` switched by `tryboot.txt`; p2/p3 = rootfs A/B; p4 config; p5
@@ -73,7 +74,9 @@ record; the tryboot_a_b fact and the small-node profile (Zero 2 W, now Pi 3A+) m
 > **Partition numbers in the older sections (note added 2026-11-25).** This section, "First-boot provisioning",
 > "Open design decisions", "B2", "B3" and "Validation" were written for the v1 table (one boot partition). Where
 > they say **p4 (config / identity)** read **p5** in scheme v2 above, and where they say **p5 (data)** read
-> **p6**. Section B1 is not covered by this note: it reports partition numbers as measured on the bench card of that day (where boot B was that card's p4). The text is otherwise unchanged.
+> **p6**. Section B1 is not covered by this note: it reports partition numbers as measured on the bench card of that day (where boot B was that card's p4). The write-placement
+> contract below names the data partition "(p5; interim p6)"; it means the partition mounted at `/opt/batdata`,
+> which is **p6** in scheme v2 (see "Logs & crash"). The text is otherwise unchanged.
 
 - **rootfs (A/B, verity, read-only):** OS, kernel, the FTS/payload **images**. Replaced
   wholesale by an update. Holds **no** state.
