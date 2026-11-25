@@ -33,17 +33,20 @@ half of the problem.
 | **L3 / admission** | Random/anonymous node joins the mesh | ✅ **Yes** — PKI admission + attribution | **#13** per-node certs |
 | **App / TAK** | Unauthorised client injects forged CoT (position, chat, orders) | ✅ **Yes** — mutual-TLS client certs | TAK mTLS (below) |
 
-## Trust architecture: one PKI, two certificate populations
+## Trust architecture: separate roots (superseded 2026-11-25)
 
-A single offline/air-gapped **root CA** signs:
+This section used to say that a single offline root CA signs both node certificates and
+TAK client certificates. That is no longer the design. The current trust architecture is
+`docs/design/security-architecture.md` (#423) §2: **five trust roots that cannot stand in
+for each other**. In particular the node-identity root (factory root) and the TAK CA are
+separate keys and separate CAs (`docs/design/255-key-authority.md` D5), and the node
+certificate carries identity only, never roles or network membership.
 
-1. **Node certificates** — each mesh node has a unique identity used for admission,
-   attribution, and (future) signed routing / WireGuard peer identity (**#16**).
-2. **TAK client certificates** — each ATAK/iTAK device is enrolled with its own cert.
-
-Benefits over a shared key: per-entity attribution, **revocation of one entity
-without re-keying the fleet** (CRL / short-lived certs), and a clean provisioning
-story (**#11**: enrol identity at first boot).
+Still true from the old text: per-entity attribution beats a shared key. No longer
+claimed: "revocation of one entity without re-keying the fleet (CRL / short-lived certs)".
+Nodes have no trusted clock and no connectivity to a CA, so removing an entity today means
+a new network configuration plus a new network password; what replaces that is an open
+problem (`security-architecture.md` §10 O-1).
 
 ### TAK client authentication (current gap)
 
