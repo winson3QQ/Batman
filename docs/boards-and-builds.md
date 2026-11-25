@@ -3,7 +3,7 @@
 **要 build、改 A/B 相關程式、或在 Pi 3A+ / Pi 4 上驗證之前,先讀這份。** 這份是正本;`CLAUDE.md`(本 repo 與 firmware fork 各一份)只放規則和指向這裡的連結。
 來源:#209(Pi 3 A/B)S5,2026-10-02。設計細節見 `docs/design/209-ab-on-pi3.md`、`docs/design/ab-autocommit.md`、`docs/design/ab-sysupgrade-platform.md`。
 
-> **2026-11-17 產品決定:Pi 3A+ 版本已排除**,產品只剩 Pi 4(`ekh-bcm2711`),只有 Pi 4 的 image 對外發布(#203、#208 關閉;見 `docs/roadmap.md` § Roadmap v4)。
+> **2026-11-17 產品決定:Pi 3A+ 版本已排除**,產品只剩 Pi 4(`ekh-bcm2711`),只有 Pi 4 的 image 對外發布(#203、#208 關閉;見 `docs/roadmap.md` § Roadmap v4)。量產主機改 CM4 的規劃在 HAT v2 規格(PR #303),CM4 的板子段落由 #413(roadmap v5 的 v2.3)補上。
 > **程式與 CI 還沒跟著改**:firmware fork 仍會 build `ekh-bcm2710`;下面的 Pi 3 版面、p7、firmware 白名單、共用 A/B 檔案清單,以及 CI `ab-shared-change` 要求的 `### bcm2710` 實測段落都照舊有效,直到另外決定移除 bcm2710 支援為止。v1.5.11 release note 記載 Pi 3 驗證節點 03 於 2026-10-15 硬體故障。
 
 ## 1. 板子矩陣
