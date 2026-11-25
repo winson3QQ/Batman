@@ -573,6 +573,10 @@ p5_freshness_gate() {
 				# #254: the provisioning record is written by batman-provhelper, not by --save
 				case "$out" in *"p5 stale: prov-identity"*) die_c 12 "p5 and this slot hold DIFFERENT node identities — refusing an OTA. This needs the owner (app) or a reflash; it is not fixed by --save or --persist-now (#254 identity-mismatch)." ;; esac
 				case "$out" in *"p5 stale: prov"*) die_c 12 "p5's provisioning record lags this slot's — batman-provhelper rewrites it at the next boot; if it stays stale, run 'batman-provhelper --persist-now' (as root)." ;; esac
+				# cfgsave-stage-enospc (review A-r2 F6): "unverifiable" = --check could not build its comparison (the run dir /tmp
+				# full) or p5 does not mount after a failed save; '--save' is not the remedy, so P5_STALE_HINT is not shown
+				case "$out" in *"p5 stale: unverifiable"*) why=$(echo "$out" | sed -n 's/.*p5 stale: unverifiable (\(.*\))$/\1/p' | head -1)
+					die_c 12 "p5 (config) freshness cannot be verified (${why:-?}) — refusing an OTA; '--save' does not fix this. If the run dir's filesystem is full (a sysupgrade image in it?), free space and retry; if p5 does not mount, the card needs attention. Deliberate override: touch /tmp/batman-slot.allow-stale-p5 (as root) for sysupgrade, BATMAN_ALLOW_STALE_P5=1 for a direct batman-slot call." ;; esac
 				case "$out" in *unpersistable*) die_c 12 "p5 (config) cannot hold the running config: $keys contains forbidden characters (backtick \$ ( ) ; | & < > ') — change that value; '--save' cannot fix this. A reflash now would boot the fresh slot without it." ;; esac
 				die_c 12 "p5 (config) is STALE vs the running config ($keys) — a reflash now would boot the fresh slot with the OLD settings. $P5_STALE_HINT" ; fi ;;
 			8) p5_verdict_write error:lock-busy; die_c 14 "a batman-config-save is still running (${out#*lock-busy }) — p5 may be out of date; wait for it or investigate before an OTA." ;;

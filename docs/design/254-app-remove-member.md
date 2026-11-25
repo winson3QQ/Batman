@@ -33,7 +33,7 @@
 - 改國碼 / 頻道 / 名稱:同一條 update 路,但本單產生的版本只改 SAE、net_root、成員清單;**不變式:本單產生的每一版 netcfg 除 version / prev_hash 外與前一版逐欄相同,admins 永遠不變**(NU §3)。
 - QR:相機另案;16 人的成員清單約 4.6 KB,一張 QR 放不下(R16)。kind 4 與剪貼簿只在 dev-trust build(同邀請,invite.rs:12)。
 - LoRa PSK / team AP:app 的 secrets 沒有這兩個欄位(R21)→ 不適用。
-- 219 §3.3 換密碼前的新鮮 peers/challenge:擁有者連線已 pin DAC、階段 1 file 後端;不做。
+- 219 §3.3 換密碼前的新鮮 peers/challenge:擁有者連線已 pin DAC、v1.6 file 後端;不做。
 - 網主確認別人的節點換好了沒:連不到、沒有回報管道;誠實寫出(§3.5)。
 - 網主手機遺失 / 被拿走:ADMIN_SIGN 不需要使用者驗證(Keys.kt:70-80),拿到解鎖手機的人能做任何網主動作。不是本單新增的面 → 誠實界線 + checklist(§6、§9)。
 

@@ -1,8 +1,49 @@
 # Design review: what every design must state, and what the reviewer checks
 
-Every design, whether a feature or a fix, passes an adversarial review before any code is written or anything goes onto a node.
+Every change gets a **review level** (L0–L3, below). An L2 or L3 design, whether a feature or a fix, passes an adversarial review before any code is written or anything goes onto a node.
 
-This file is the review checklist. Give it to every independent reviewer, together with the design doc.
+This file is the review checklist. Give it to every independent reviewer, together with the design doc. Hardware designs (schematics, power tree, the HAT) use [`REVIEW-hw.md`](REVIEW-hw.md) instead.
+
+## Review level (decided 2026-11-25)
+
+The level depends on **what the change touches**, not on its label, its size or the folder it is in. It costs too much to run the full process on every change, and too little review on the wrong change costs more.
+
+| Level | Applies to | Design | Adversarial review | Before the PR | Test evidence |
+|---|---|---|---|---|---|
+| **L0 docs** | files that are not code and set no rules: roadmap, plans, explanations, typos, issue housekeeping | none | none | self-check: links work, the text matches the current state of the repo and GitHub | "docs only, n/a" |
+| **L1 presentation** | a diff that changes **only** what the user sees: visible text, layout, styling, assets, widget structure as long as no callback, builder or dialog that calls into `src/` is added, removed or moved, no `Key(...)` that a flow or test looks up moves, and no enabled/busy state changes; comment-only edits that are not lint or analyzer directives; a **sync** of a rule-setting file (below) | a few lines of plan in the issue | none | `/code-review medium`, which also confirms the diff is presentation only (or only a sync) | a screenshot, or a run on one node (sync: the linked decision) |
+| **L2 normal** | anything that hits no L3 trigger; adding a new validation test case; tightening a check; changing the rules in a rule-setting file; follow-up fixes of MINORs left by an approved L3 review (the design review only; see Rules) | design doc; items 1–3 may be short only when no state is shared across components. For a rule-setting file the PR diff is the design | **one** reviewer, at most 2 rounds | `/code-review high` (rule-setting docs: n/a) | on a node, with a negative control (rule-setting docs: n/a; the reviewer checks them against the files they govern) |
+| **L3 critical** | anything that hits an L3 trigger | full design, items 1–5 | **two** independent reviewers, until no BLOCKER or MAJOR is open | `/code-review high` **and** `/security-review` (always; rule-setting docs with no code: n/a) | on a node, negative controls, untested parts listed |
+
+**L3 triggers.** Touching any one of these makes the change L3 (for MINOR follow-ups of an approved L3 review, see Rules):
+- keys, certificates, the 608B, OTP, LUKS keys;
+- provisioning, claiming, members, permissions;
+- the boot chain, A/B, OTA, autocommit, LKG;
+- mesh, network, firewall, the BLE protocol;
+- **any new or changed input reachable from the network, BLE or mesh**: a CGI (for example `deploy/provisioning/www/*`), a port (including the OTS gateway), a message format;
+- services that run as root; payload / guardian; persistent state on p5 / p6;
+- kernel and driver patches (`patches/`), device-tree overlays (`overlays/`);
+- performance and resource limits. A performance change also carries before/after numbers from a node; measurement matters more here than argument;
+- new or changed dependencies and anything else in the supply chain (gate 10, #46);
+- build and card scripts, the firmware allowlist, the shared A/B files (`CLAUDE.md` § 改共用 A/B 程式), CI workflows;
+- anything that writes state to the rootfs overlay (gate 13);
+- **weakening the validation gate**: changing the runner or preflight (`scripts/daily-validation.sh`, `scripts/dv-preflight.sh`), changing or removing an existing suite in `scripts/dv/*` or a `check-*` / `test-*` / `lint-*` CI check, widening an allowlist or `rundir-paths.txt`, adding a known-failure entry or extending its expiry. The #290 harness-PR rules in `CLAUDE.md` § 驗證 apply on top.
+
+**Rules.**
+- **Proposing the level.** The author proposes the level in the plan, with the reason (which trigger, if any). The user can change it when approving the plan.
+- **Changing the level.** During the work the level can only go **up**. The author or a reviewer raises it when the change turns out to touch more. Only the user can lower it. If the level goes up after code exists, the design review at the new level runs before more code is written, and the existing code is reviewed again at that level.
+- **L1 is decided by the diff, not the folder.** Most files in `app/lib/ui/` also call flows, the sealed store or the node link (`remove_pages.dart` revokes members, `send_key.dart` sends keys, `dev_pages.dart` edits ssh keys). A diff that adds, removes or changes a call into `src/`, the Rust bridge, a store, a link, a flow, or how their results are handled is not L1. If that flow is keys, members or provisioning, it is L3. Node code, BLE characteristics and the node's status page or CGI are never L1.
+- **Tests.** A unit or widget test changed in the same PR as the code it tests takes that code's level (a wording change that updates a `find.text` test stays L1), but only for the expectations that follow the changed behaviour. Removing or loosening any other assertion takes the level of what that assertion guards. For the validation gate: adding a new suite that proves itself (old FAIL as the negative control, new PASS, per #290), tightening a check, or removing a known-failure entry with PASS evidence is L2. Adding the new suite's `. "$REPO/scripts/dv/<new>.sh"` line and its report row to `scripts/daily-validation.sh` is part of adding the suite, as long as it does not reorder or skip any existing suite; any other runner change is L3. Weakening the gate is L3 (trigger above).
+- **MINOR follow-ups of an approved L3 review.** The design review is L2: one reviewer, and the register entry is the design. If the diff touches an L3 trigger, `/code-review high`, `/security-review` and the L3 test evidence still apply.
+- **Shared state across components** (a uci key, file, flag or log line that another tool reads) is the #274 class of bug: at L2, items 1–3 are written in full. Many "UX" issues are not L1: #329's App work ended up touching the rotating id and ssh keys. Anything with correctness semantics, such as an honest message-delivery status (#387), is at least L2.
+- **Rule-setting files** set rules for everything else: `CLAUDE.md`, `docs/dev-process.md`, `docs/threat-model.md`, `docs/design/REVIEW.md`, `docs/design/REVIEW-hw.md`, `.github/PULL_REQUEST_TEMPLATE.md`, `docs/boards-and-builds.md` (its §6 is the CI `paths` list), `docs/storage-architecture.md` (the write-placement contract, gate 13) and `docs/VERSIONS.md`. Changing a rule in them is L2. A **sync** (a rename, a milestone or link update) is L1, on three conditions: the PR links the decision it follows (the user's message with its date, or the issue or PR); the diff adds, removes or loosens no rule; and `/code-review medium` confirms both. When in doubt, it is L2. Design docs are reviewed as part of their own change's level.
+- The PR states its level in the **Review** section of the PR template.
+
+**Rounds and escalation.**
+- A round means: every reviewer of that level reads the **whole** design again (the #274 lesson below), and the author fixes what they found.
+- **L2:** if a BLOCKER or MAJOR is still open after round 2, the author stops and asks the user: raise to L3 (a second reviewer joins and round counting continues, so the next round is round 3), or the user decides otherwise.
+- **L2 and L3:** from round 3 on, open MINORs go into a findings register (like `264-review-register.md`) or the PR's Review section, and no longer trigger a full re-review. Only an open BLOCKER or MAJOR does.
+- **L3:** if a BLOCKER or MAJOR is still open after round 5, stop and report to the user. The user decides: keep going, split the issue, or accept the residual risk in writing.
 
 ## Why
 
@@ -40,13 +81,13 @@ Two lessons came from #274:
    - restart of each component it depends on (dockerd, procd service, network);
    - crash or crash loop;
    - downgrade to an image without the change;
-   - both boards (bcm2711 / bcm2710).
+   - each supported board: bcm2711 (Pi 4); bcm2710 only while its build is kept (`docs/boards-and-builds.md`; the Pi 3A+ product was excluded 2026-11-17); CM4 once its image exists (#413): eMMC instead of an SD card, rpiboot rescue (#415), OTP.
 
    Mark any row that does not apply with the reason.
 4. **Assumptions about other code.** List every behaviour of another component the change relies on, upstream ones included (procd, docker, busybox, OpenWrt sysupgrade). Each needs evidence: `file:line` in the source, or output captured on a node. "Should be" is not evidence. Unverified assumptions are checked with a read-only probe on a node before the design is approved.
 
 5. **Security.** This is part of the design review, not a step after the code is written. State:
-   - **Assets and actors.** Assets: control of the node (commit/revert, slot, reboot, halt), radio and mesh, keys and certs, tenant data, availability. Go through each actor:
+   - **Assets and actors.** Assets: control of the node (commit/revert, slot, reboot, halt), radio and mesh, keys and certs (the 608B slots and its config lock, the CM4 OTP, the LUKS key, the image-signing key), tenant data, availability. Go through each actor:
      - remote attacker over the mesh or WiFi;
      - local non-root process;
      - compromised tenant or container;
@@ -59,9 +100,9 @@ Two lessons came from #274:
    - **Failure mode.** Fail-secure by default. Any fail-open needs a stated reason.
    - **Verification.** A negative test that shows the attack is blocked, for example running it as a non-root process (as #280's `tmp-trust-280` will do).
 
-   Before the PR, the code also gets `/security-review`. That review complements the design review and does not replace it.
+   Before the PR, every L3 change also gets `/security-review`, whatever it touches. That review complements the design review and does not replace it.
 
-A change that touches no shared state (internal to one component) may replace 1–3 with one sentence that says so and why.
+When items 1–3 may be short is set in § Review level: at L2, and only when no state is shared across components. Then one sentence that says so and why is enough.
 
 The weight of the review depends on how much shared state the change touches, not on how big the change is.
 
@@ -74,4 +115,4 @@ The weight of the review depends on how much shared state the change touches, no
 - Checks that every claim has a test with a negative control, meaning a test that would fail without the change.
 - Outputs numbered findings (BLOCKER / MAJOR / MINOR), each with a concrete failure scenario, evidence and a fix, and then a verdict: APPROVE / APPROVE-WITH-CHANGES / REJECT.
 
-If a BLOCKER or MAJOR finding is open, change the design and review the whole document again.
+If a BLOCKER or MAJOR finding is open, change the design and review the whole document again. Reviews are saved in `docs/design/<issue>-reviews/`. The round limits for L2 and L3 are in § Review level.
