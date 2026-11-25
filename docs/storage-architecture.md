@@ -29,6 +29,12 @@ boot partition (v1 of this table had a single boot — superseded).
 Fixed part ≈ 4 GB → **minimum supported card 16 GB**; default 32 GB high-endurance; FTS-heavy
 or recording tenants 64 GB+ or an external SSD (productization.md sizing).
 
+> **"Secure tiers" in the table (note added 2026-11-25).** The tiers are no longer product variants: secure boot
+> and data encryption are ON for every build that ships (user decision 2026-11-23, U8, `docs/design/255-key-authority.md`,
+> PR #431). LUKS on p5 / p6 therefore applies to every shipped node; until the CM4 platform the key is a
+> placeholder on the card (#111). The slot state that must be readable before LUKS unlock stays in `autoboot.txt`
+> on p1; a config reset never reformats p5 (`docs/design/security-architecture.md` (#423, PR #430) §8).
+
 **Pi 3A+ profile (`bcm2710`):** no EEPROM bootloader → one boot partition (p1) holding both kernel sets
 under `os_prefix=A/` and `B/` switched by `tryboot.txt`; p2/p3 = rootfs A/B; p4 config; p5
 data; no verity-with-signed-boot guarantee and no LUKS (Base tier). The boot partition is its
@@ -63,6 +69,11 @@ record; the tryboot_a_b fact and the small-node profile (Zero 2 W, now Pi 3A+) m
 > rebuild: `DM_VERITY`/`DM_CRYPT`).
 
 ## What lives where (and the survives-upgrade invariants)
+
+> **Partition numbers in the older sections (note added 2026-11-25).** This section, "First-boot provisioning",
+> "Open design decisions", "B2", "B3" and "Validation" were written for the v1 table (one boot partition). Where
+> they say **p4 (config / identity)** read **p5** in scheme v2 above, and where they say **p5 (data)** read
+> **p6**. Section B1 is not covered by this note: it reports partition numbers as measured on the bench card of that day (where boot B was that card's p4). The text is otherwise unchanged.
 
 - **rootfs (A/B, verity, read-only):** OS, kernel, the FTS/payload **images**. Replaced
   wholesale by an update. Holds **no** state.
@@ -210,6 +221,11 @@ The scheme above is the target; these must be resolved before it's buildable. �
    the key sits on the same card, a stolen card unlocks trivially → encryption at rest is
    theatre.** Value requires the key **sealed to the secure element / TPM and released only on
    a good measured-boot attestation** (#74/#47/#97). **Owned by #47** (this is its crux).
+   > **Update 2026-11-25.** A Raspberry Pi has no measured boot, so "released on a good measured-boot
+   > attestation" cannot be built as written. The reachable design: from the CM4 platform on, the key is derived
+   > at boot from a secret in the secure element and a device secret that only a signed image on that CM4 can use
+   > (#414, #111); on the bench Pi 4 it stays a placeholder file on the card, i.e. no protection against whoever
+   > holds the card. What this does and does not prove: `docs/design/security-architecture.md` (#423, PR #430) §1 (rule P2) and §3.1 (N7).
 4. **Minimum card size.** A/B doubles the rootfs (~8 GB) + boot + p4 + p5 → state a supported
    minimum (e.g. ≥16 GB) and the A/B slot size.
 5. **Expand-to-fill vs. future partitions.** If p5 consumes all free space on first boot,

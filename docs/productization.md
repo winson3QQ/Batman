@@ -102,6 +102,20 @@ Layer 3
 ```
 
 ### Data-at-rest, split by model
+
+> **Superseded in part (2026-11-25).** The three models below are the 2026-09 reasoning and are kept for the
+> record. What changed since:
+> - **Secure boot is ON for every build, and nothing ships to customers before the chain is complete** (user
+>   decision 2026-11-23, U8 in `docs/design/255-key-authority.md`, PR #431). The "Base" and "attended" models are
+>   therefore not product variants; they describe intermediate bench states.
+> - **"Released by measured boot" is not available on a Raspberry Pi** (no PCR-style measurement; the table
+>   further down already says so). What is reachable: the disk key is derived at boot from a secret in the secure
+>   element together with a device secret that only a signed image on that CM4 can use (#414, #111). On the bench
+>   Pi 4 the LUKS key is a placeholder file on the card.
+> - **The production secure element is a certified chip, not the ATECC608B** (user decision 2026-11-25; chosen in
+>   #426, bound to the CM4 in #414). The 608B is bench-only (#255).
+> - Current statement of what each platform state may claim: `docs/design/security-architecture.md` (#423, PR #430) §1.
+
 | Model | Encryption | Port role |
 |---|---|---|
 | **Base** (civil / exercise) | none, or dm-verity (tamper-evident, not confidential) | USB-C/M12 = console/provision |
