@@ -17,7 +17,7 @@ A board mistake costs a fab run and weeks. A software mistake costs a commit. HA
 | The power-only board (#408), or any other board we fabricate | L3: two reviewers, until no BLOCKER or MAJOR is open |
 | **HAT v2 final spec, schematic, layout and Gerber** (#227), before the fab order | L3 |
 
-For hardware, the level sets the number of reviewers and the round and escalation rules in `REVIEW.md` § Review level. The evidence comes from this file (pass limits written before measuring, item 3; the schematic and layout record, item 8), not from the software columns of the level table. `/code-review` and `/security-review` apply only to software in the same PR. Item 8 applies once a schematic exists; the requirements freeze (#417) checks items 1, 2 and 7. The gate for the fab order is: v2.1–v2.3 are done, and the #227 review has no open BLOCKER or MAJOR.
+For hardware, the level sets the number of reviewers and the round and escalation rules in `REVIEW.md` § Review level. The evidence comes from this file (pass limits written before measuring, item 3; the schematic and layout record, item 8), not from the software columns of the level table. `/code-review` and `/security-review` apply only to software in the same PR. Item 8 applies once a schematic exists; the requirements freeze (#417) checks items 1, 2, 4 and 7 (pin ownership is decided there, from the #409 / #410 jumper results). The gate for the fab order is: v2.1–v2.3 are done, and the #227 review has no open BLOCKER or MAJOR.
 
 ## The design must state
 

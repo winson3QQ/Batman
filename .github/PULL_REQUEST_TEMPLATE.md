@@ -13,7 +13,7 @@ Closes #<!-- issue number — every PR references its issue (SoT) -->
 ## Review
 
 <!-- Level per docs/design/REVIEW.md § Review level. Fill every line; write "n/a" where the level does not need it. -->
-- **Level:** L0 docs / L1 presentation / L2 normal / L3 critical — <!-- and why; which L3 trigger, if any -->
+- **Level:** L0 docs / L1 presentation or rule-file sync / L2 normal / L3 critical — <!-- and why; which L3 trigger, if any -->
 - **Design review:** <!-- doc, reviewers × rounds, final verdicts, where saved (docs/design/<issue>-reviews/); L0/L1: n/a -->
 - **Code review:** <!-- /code-review medium (L1) or high (L2, L3): findings and what was done about each; "none" is a valid answer -->
 - **Security review:** <!-- /security-review (L3, always): findings and what was done; L0–L2: n/a -->
