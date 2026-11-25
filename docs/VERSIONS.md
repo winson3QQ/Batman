@@ -69,7 +69,7 @@ Milestones were regrouped again on 2026-11-25 (`docs/roadmap.md` § Roadmap v5).
 
 Earlier names: on 2026-11-17 (§ Roadmap v4) the milestones were `v2.0 內部試用 — 自編映像(Pi 4)+ 階段 1/2` and `v3.0 第一個對外版本 — 新 HAT、外殼、PTT、可鎖`; before that `v2.0 Build gate — own image, both boards`, `v3.0 PROD — trusted, OTA, lockable` and `v4.0 Fleet & HW security`. The Pi 3A+ variant was excluded on 2026-11-17.
 
-- **+1 to MAJOR only when that milestone's full #75 gate checklist is met** and cut via CI — not when work on it merely starts. E.g. `2.0.0` waits for the 608B (#255, #196), mesh admission (#13), the signing pipeline (#405), verified boot / immutable rootfs (#74, #41), LUKS (#111), #108 (CI reproduce build, Pi 4) + #109 + #110 + #113 (HIL) + the #73 gates, and the rest of the v2.0 milestone.
+- **+1 to MAJOR only when that milestone's full #75 gate checklist is met** and cut via CI — not when work on it merely starts. E.g. `2.0.0` waits for the security architecture (#423), the 608B (#255, #196), mesh admission (#13), the signing pipeline (#405), verified boot / immutable rootfs (#74, #41), LUKS (#111), #108 (CI reproduce build, Pi 4) + #109 + #110 + #113 (HIL) + the #73 gates, and the rest of the v2.0 milestone.
 - **MINOR** — a significant capability added within the current MAJOR line. **PATCH** — fixes/rebuilds.
 - A build's **target** milestone (what it is working toward) is recorded in `/etc/batman-build`'s `BATMAN_MILESTONE` field, so aspiration is captured without claiming the number early. Example: `1.3.0` carries `targets v2.0 Build-gate` because docker-in-image (#159) is build-gated, but the v2.0 gate is not yet met, so it stays on the 1.x line.
 
