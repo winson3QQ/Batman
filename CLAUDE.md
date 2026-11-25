@@ -41,5 +41,10 @@
   - L2 一般(含新增或收緊驗證測項、修改定規則文件的規則、L3 審查留下的 MINOR 後續修正(只有設計審查降為一位;diff 碰到 L3 觸發條件時,`/security-review` 和 L3 的實測要求照舊)):設計文件 + 一位 reviewer(第 2 輪後還有 BLOCKER/MAJOR 就**停下來問使用者**,通常是升 L3)+ `/code-review high`。
   - L3 關鍵(例如:金鑰/憑證/608B/OTP/LUKS、供裝/認領/成員/權限、開機鏈/A-B/OTA/autocommit/LKG、mesh/網路/防火牆/BLE 協定、網路或 BLE 可達的新輸入(CGI、port、訊息)、root 服務與 payload/guardian、p5/p6 與 overlay 的持久狀態、kernel patch 與 overlay、效能(附前後量測)、相依套件、build 與建卡腳本、firmware 白名單、共用 A/B 檔、CI、放寬驗證閘門):設計必寫擁有權/介面契約/生命週期矩陣/依賴證據/安全(威脅模型),兩位獨立 reviewer 審整份直到沒有 BLOCKER/MAJOR(第 5 輪還有 BLOCKER/MAJOR 就停下來問使用者),開 PR 前 `/code-review high` + `/security-review`。
   - 硬體設計用 `docs/design/REVIEW-hw.md`。
+- **接手任何單之前**(使用者,2026-11-25):
+  - 先讀該單 body 最上面的區塊(`<!-- start-conditions … -->` 的「開始條件／聯合設計」,或 `<!-- downstream … -->` 的「下游需求」),以及 #75 裡該單所在的段落和群。
+  - 開始條件還沒滿足,或這張單和別張是**聯合設計**:先回報使用者,不要自己開工。聯合設計的單共用一份設計文件,不各自設計。
+  - 有「下游需求」的單:設計時把列出的下游單當成讀者,寫進擁有權、契約和生命週期矩陣(`docs/design/REVIEW.md`)。
+  - 工作中發現新的依賴,或依賴變了:同步更新兩邊單的區塊和 #75,並告訴使用者。
 - PR 的 Review 段寫等級、設計審查、code review、security review 各一行;PR 附實測結果(哪台、做什麼、原始輸出;沒測到的要寫出來);PR 由使用者 merge。
 - 回覆使用繁體中文。
