@@ -2,7 +2,7 @@
 
 照表操課用。從拿起烙鐵到實驗 E3 結束，每一步寫明：做什麼、預期看到什麼、看到別的怎麼辦。
 設計依據：`docs/design/255-608b-config.md` §8（實驗清單）、`docs/design/255-608b-impl.md` §5、`docs/design/security-architecture.md`。這份手冊不新增任何設計。
-審查：`docs/design/255-reviews/review-rig-runbook.md`（0 BLOCKER / 6 MAJOR / 11 MINOR，全部已改進本版）。
+審查：`docs/design/255-reviews/review-rig-runbook.md`。第一輪 0 BLOCKER / 6 MAJOR / 11 MINOR，全部已改；複核 APPROVE（0 / 0 / 6），那 6 個小項也已改進本版。
 
 **範圍**
 - ✅ 包含：焊 608B 與去耦電容、焊 RTC、實驗台開機、E0a（只讀掃描）、E1（只讀晶片）、E2（鎖定前的寫入與亂數）、E3（寫入設定影像並讀回）。
@@ -146,8 +146,8 @@ RTC 和 608B 在同一條 I2C 匯流排上。裝在同一台實驗 Pi，是為�
 
 | 量哪裡 | 預期 | 不符合時 |
 |---|---|---|
-| 模組 VIN ↔ GND | 3.2–3.4 V | **超過 3.6 V：立刻斷電，停** |
-| 模組 SDA ↔ GND、SCL ↔ GND | 3.2–3.4 V | **超過 3.6 V：立刻斷電，停** |
+| 模組 VIN ↔ GND | 3.2–3.4 V | **超過 3.6 V：立刻斷電，停**。低於 3.2 V（含 0 V）：斷電，停，檢查焊點 |
+| 模組 SDA ↔ GND、SCL ↔ GND | 3.2–3.4 V | **超過 3.6 V：立刻斷電，停**。低於 3.2 V（含 0 V）：斷電，停，檢查焊點 |
 
 ---
 
@@ -156,7 +156,7 @@ RTC 和 608B 在同一條 I2C 匯流排上。裝在同一台實驗 Pi，是為�
 ### 3.1 系統
 
 1. SD 卡燒 **Raspberry Pi OS Lite（64 位元）**，開 SSH。
-2. **斷電**後把 HAT 插回 Pi（不插 HaLow 卡）。**40 支腳全部對齊，沒有錯開一排或一格**（錯開會把 5 V 送進 GPIO）。再確認一次晶片 pin 1 的方向。
+2. **斷電**後把 SD 卡插回去（§2 焊接前拔掉的），再把 HAT 插回 Pi（不插 HaLow 卡）。**40 支腳全部對齊，沒有錯開一排或一格**（錯開會把 5 V 送進 GPIO）。再確認一次晶片 pin 1 的方向。
 3. 上電。**10 秒內用手指碰一下 608B：會燙就立刻斷電，停。**
 4. **量電容的 VCC 焊盤（§1.2 d）對地 = 3.2–3.4 V。沒有電壓就停**：`LORA_3V3` 沒供電，後面全部不用做。
 5. 開 I2C、裝工具（實驗台這一步要能上網）：
@@ -174,7 +174,7 @@ sudo apt-get install -y i2c-tools
 ```sh
 cd /dev/shm
 set -o pipefail
-cat /proc/device-tree/model 2>&1 | tee -a e0a.txt; echo
+tr -d '\0' < /proc/device-tree/model | tee -a e0a.txt; echo | tee -a e0a.txt
 ls -l /dev/i2c-1 2>&1 | tee -a e0a.txt
 od -An -tx1 /sys/bus/i2c/devices/i2c-1/of_node/clock-frequency 2>&1 | tee -a e0a.txt
 ls /sys/bus/i2c/devices/ 2>&1 | tee -a e0a.txt
@@ -183,11 +183,13 @@ ls /sys/bus/i2c/devices/ 2>&1 | tee -a e0a.txt
 | 輸出 | 預期 | 不符合時 |
 |---|---|---|
 | model | Pi 的型號 | 只記錄（設計裡標 ⚠️ 的一項） |
-| `/dev/i2c-1` | 存在；通常是 `crw-rw---- root i2c` ⚠️ | 不存在：`sudo reboot` 後再看一次；還是沒有就**停** |
+| `/dev/i2c-1` | 存在；通常是 `crw-rw---- root i2c` ⚠️ | 不存在：`sudo reboot`，重開後**把 §3.2 整段重做**（重開機會清掉 `/dev/shm`）；還是沒有就**停** |
 | clock-frequency | ` 00 01 86 a0`（= 100 kHz） | 不是這個值就**停**（喚醒脈衝要求 ≤ 100 kHz） |
-| devices | 只有 `i2c-N` 這種名稱（那是匯流排本身） | 出現 `1-00xx` 這種名稱 = 核心綁了一個裝置：**停** |
+| devices | 只有 `i2c-N` 這種名稱（那是匯流排本身） | 出現 `1-00xx` 這種名稱 = 核心在 1 號匯流排上綁了一個裝置：**停**。其他匯流排上的 `N-00xx`：只記錄 |
 
 > 新開的 SSH 連線都要先下 `cd /dev/shm; set -o pipefail`。`set -o pipefail` 讓後面每一行印出的 `rc=` 是 `se-lab` 自己的結束代碼。
+>
+> **`/dev/shm` 在重開機或斷電時會清空。** 從這裡到 §8 結束，途中如果實驗台重開機或斷電：**停**，先回報已經做到哪一步（除了上面 `/dev/i2c-1` 不存在的那一次重開）。
 
 ---
 
@@ -274,6 +276,7 @@ set -o pipefail
 
 **⚠️ 這是 `se-lab` 第一次碰到真晶片。** 它的喚醒方式、時序與狀態碼都是照 datasheet 摘要寫的，還沒在真晶片上驗過（程式裡標 `PROVISIONAL`）。
 **`info` 印 `rc=1` 時：最多再試兩次（總共三次），都失敗就做 §9 的原始測試，把結果帶回來。不要自己改參數。**
+**每次重試之前先把上一次的輸出改名留下來**（錯誤訊息是之後修正時序要用的證據）：第一次失敗後下 `mv e1-info.txt e1-info-fail1.txt`，第二次失敗後下 `mv e1-info.txt e1-info-fail2.txt`，再重跑上面那一行。
 
 `info` 成功（`rc=0`）後：
 
@@ -375,6 +378,7 @@ B17=$(grep '^byte17=' e1-dump.txt | cut -d= -f2); echo "byte17=$B17"
 | `compare=` 與 `rc=` | `compare=EQUAL`、`rc=0` | `compare=DIFFERENT`、`rc=4`：輸出會列出哪些位元組不同。**停，不要自己重寫** |
 | `rc=3` 且訊息是 `chip byte 17 = xx, -byte17 = yy` | — | `B17` 設錯：照 §7.2 重設後**重跑一次** |
 | `rc=3` 且是其他訊息 | — | **停**。不要改 `allow.txt` |
+| `rc=2` 且訊息提到 `needs -byte17` | — | 新開的連線沒有設 `B17`：照 §7.2 重設後**重跑一次**。這是 §5「`rc=2` 就停」的唯一例外 |
 
 再確認穩定：
 
