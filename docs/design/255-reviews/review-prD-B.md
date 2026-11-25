@@ -48,7 +48,7 @@ build dir (sources only, nothing installed). Static arm64 build works:
 (grep of `.github/workflows`, `scripts/`, `tests/`). `payload-manifest-sync`, `provisioning-sync`, `ab-shared-change`,
 `hardening-env-sync` have path filters that do not match the new files. `check-tmp-trust.sh` PAT (line 23) does not
 match `/run/lock/...` (see MAJOR-1 for why that is a gap, not a pass). leak-canary deny-list: 0 hits on the new
-files; no `PRIVATE-DO-NOT-PUBLISH`. No harness file needs changing, so #290 (harness-first) is not triggered; the new
+files; no private-only sentinel string. No harness file needs changing, so #290 (harness-first) is not triggered; the new
 tests run in CI automatically through `go test ./...`.
 
 **Re-runnability after an interrupted write-image** (my fault-injection test on a copy: the bus fails every command
