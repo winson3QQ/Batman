@@ -1,8 +1,39 @@
 # Design review: what every design must state, and what the reviewer checks
 
-Every design, whether a feature or a fix, passes an adversarial review before any code is written or anything goes onto a node.
+Every change gets a **review level** (L0–L3, below). An L2 or L3 design, whether a feature or a fix, passes an adversarial review before any code is written or anything goes onto a node.
 
-This file is the review checklist. Give it to every independent reviewer, together with the design doc.
+This file is the review checklist. Give it to every independent reviewer, together with the design doc. Hardware designs (schematics, power tree, the HAT) use [`REVIEW-hw.md`](REVIEW-hw.md) instead.
+
+## Review level (decided 2026-11-25)
+
+The level depends on **what the change touches**, not on its label or its size. It costs too much to run the full process on every change, and too little review on the wrong change costs more.
+
+| Level | Applies to | Design | Adversarial review | Before the PR | Test evidence |
+|---|---|---|---|---|---|
+| **L0 docs** | roadmap, plans, explanations, comments, typos, issue housekeeping | none | none | self-check: links work, the text matches the current state of the repo and GitHub | "docs only, n/a" |
+| **L1 presentation** | App screens, wording and layout; how the status page *displays* something; test- or harness-only changes | a few lines of plan in the issue | none | `/code-review medium` | a screenshot, or a run on one node |
+| **L2 normal** | a change inside one component, with its own state, that hits none of the L3 triggers | design doc; items 1–3 may be short | **one** reviewer, at most 2 rounds | `/code-review high` | on a node, with a negative control |
+| **L3 critical** | anything that hits an L3 trigger | full design, items 1–5 | **two** independent reviewers, until no BLOCKER or MAJOR is open | `/code-review high` **and** `/security-review` (always) | on a node, negative controls, untested parts listed |
+
+**L3 triggers.** Touching any one of these makes the change L3:
+- keys, certificates, the 608B, OTP, LUKS keys;
+- provisioning, claiming, members, permissions;
+- the boot chain, A/B, OTA, autocommit, LKG;
+- mesh, network, firewall, the BLE protocol;
+- services that run as root; payload / guardian; persistent state on p5 / p6;
+- performance and resource limits. A performance change also carries before/after numbers from a node; measurement matters more here than argument.
+
+**Rules.**
+- The author proposes the level in the plan. The user can change it.
+- The level can only go **up** during the work. If the author or a reviewer finds that the change touches an L3 trigger, it becomes L3. Nobody lowers it without the user.
+- **L1 means presentation only.** It changes nothing in the App ↔ node protocol and no node code. Many "UX" issues are not L1: #329's App work ended up touching the rotating id and ssh keys. Anything with correctness semantics, such as an honest message-delivery status (#387), is at least L2.
+- Two L0 exceptions: `docs/threat-model.md` and `docs/dev-process.md` are reviewed as L2, because they set rules for everything else. Design docs are reviewed as part of their own change's level.
+- The PR states its level in the **Review** section of the PR template.
+
+**Keeping L3 affordable.**
+- After round 3, open MINORs go into a findings register (like `264-review-register.md`) and no longer trigger a full re-review. Only an open BLOCKER or MAJOR does.
+- If a MAJOR is still open after round 5, stop and report to the user. The user decides: keep going, split the issue, or accept the residual risk in writing.
+- The re-review still reads the **whole** design (the #274 lesson below).
 
 ## Why
 
@@ -40,13 +71,13 @@ Two lessons came from #274:
    - restart of each component it depends on (dockerd, procd service, network);
    - crash or crash loop;
    - downgrade to an image without the change;
-   - both boards (bcm2711 / bcm2710).
+   - each supported board: bcm2711 (Pi 4); bcm2710 only while its build is kept (`docs/boards-and-builds.md`; the Pi 3A+ product was excluded 2026-11-17); CM4 once its image exists (#413): eMMC instead of an SD card, rpiboot rescue (#415), OTP.
 
    Mark any row that does not apply with the reason.
 4. **Assumptions about other code.** List every behaviour of another component the change relies on, upstream ones included (procd, docker, busybox, OpenWrt sysupgrade). Each needs evidence: `file:line` in the source, or output captured on a node. "Should be" is not evidence. Unverified assumptions are checked with a read-only probe on a node before the design is approved.
 
 5. **Security.** This is part of the design review, not a step after the code is written. State:
-   - **Assets and actors.** Assets: control of the node (commit/revert, slot, reboot, halt), radio and mesh, keys and certs, tenant data, availability. Go through each actor:
+   - **Assets and actors.** Assets: control of the node (commit/revert, slot, reboot, halt), radio and mesh, keys and certs (the 608B slots and its config lock, the CM4 OTP, the LUKS key, the image-signing key), tenant data, availability. Go through each actor:
      - remote attacker over the mesh or WiFi;
      - local non-root process;
      - compromised tenant or container;
@@ -59,9 +90,9 @@ Two lessons came from #274:
    - **Failure mode.** Fail-secure by default. Any fail-open needs a stated reason.
    - **Verification.** A negative test that shows the attack is blocked, for example running it as a non-root process (as #280's `tmp-trust-280` will do).
 
-   Before the PR, the code also gets `/security-review`. That review complements the design review and does not replace it.
+   Before the PR, every L3 change also gets `/security-review`, whatever it touches. That review complements the design review and does not replace it.
 
-A change that touches no shared state (internal to one component) may replace 1–3 with one sentence that says so and why.
+An L2 change that touches no shared state (internal to one component) may replace 1–3 with one sentence that says so and why.
 
 The weight of the review depends on how much shared state the change touches, not on how big the change is.
 
@@ -74,4 +105,4 @@ The weight of the review depends on how much shared state the change touches, no
 - Checks that every claim has a test with a negative control, meaning a test that would fail without the change.
 - Outputs numbered findings (BLOCKER / MAJOR / MINOR), each with a concrete failure scenario, evidence and a fix, and then a verdict: APPROVE / APPROVE-WITH-CHANGES / REJECT.
 
-If a BLOCKER or MAJOR finding is open, change the design and review the whole document again.
+If a BLOCKER or MAJOR finding is open, change the design and review the whole document again. Reviews are saved in `docs/design/<issue>-reviews/`. The round limits for L2 and L3 are in § Review level.

@@ -35,5 +35,11 @@
 - `scripts/validation-known-failures.txt` 每條要有 issue 與到期日;延期要寫理由,移除要附該測項在新版 PASS。
 
 ## 流程
-- 動手前先給計畫;設計(feat 與 fix 皆同)要先過對抗式 review,必寫擁有權/介面契約/生命週期矩陣/依賴證據/安全(威脅模型),reviewer 審整份——見 `docs/design/REVIEW.md`(交給每位獨立 reviewer);PR 附實測結果(哪台、做什麼、原始輸出;沒測到的要寫出來);PR 由使用者 merge。
+- 動手前先給計畫,計畫裡標出**審查等級** L0–L3(`docs/design/REVIEW.md` § Review level;使用者可改,過程中只能往上升):
+  - L0 文件:不用設計、不用審查。
+  - L1 介面(只改呈現,不動 App↔節點協定和節點程式):issue 內幾行計畫 + `/code-review medium`。
+  - L2 一般:設計文件 + 一位 reviewer(最多 2 輪)+ `/code-review high`。
+  - L3 關鍵(金鑰/608B/OTP、供裝與權限、開機鏈/A-B/OTA/LKG、mesh/網路/BLE 協定、root 服務、p5/p6 持久狀態、效能):設計必寫擁有權/介面契約/生命週期矩陣/依賴證據/安全(威脅模型),兩位獨立 reviewer 審整份直到沒有 BLOCKER/MAJOR(第 5 輪還有 MAJOR 就停下來問使用者),開 PR 前 `/code-review high` + `/security-review`。
+  - 硬體設計用 `docs/design/REVIEW-hw.md`。
+- PR 的 Review 段寫等級、設計審查、code review、security review 各一行;PR 附實測結果(哪台、做什麼、原始輸出;沒測到的要寫出來);PR 由使用者 merge。
 - 回覆使用繁體中文。
