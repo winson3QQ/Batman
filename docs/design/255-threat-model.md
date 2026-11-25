@@ -7,7 +7,7 @@ services on the bridge and no node-side requirement for an audit record. Added: 
 residual risks (§10-16, §10-17); §8.1-13 now points to them. One adversarial review of the draft and one of the merged
 text (APPROVE-WITH-CHANGES, 0 / 5 / 4) were folded in. Draft with the code evidence: `255-reviews/v2.2-segmentation-audit-draft.md`. Not re-reviewed.
 
-v2 → v2.1: review v3-B = APPROVE-WITH-CHANGES (0 / 1 / 7). §3.0 now states the platform state per phase (secure boot ON for all shipping builds; phase 1 is OFF with a chip) and the overlay assumption; stale citations to the key-authority document updated. MINOR findings not yet applied: see `255-reviews/review-v3-B.md` Part 3.
+v2 → v2.1: review v3-B = APPROVE-WITH-CHANGES (0 / 1 / 7). §3.0 now states the platform state per version (secure boot ON for all shipping builds; #255 (v2.0) is OFF with a chip) and the overlay assumption; stale citations to the key-authority document updated. MINOR findings not yet applied: see `255-reviews/review-v3-B.md` Part 3.
 
 **Status**
 
@@ -16,7 +16,7 @@ v2 → v2.1: review v3-B = APPROVE-WITH-CHANGES (0 / 1 / 7). §3.0 now states th
   the threats found by two adversarial review rounds of the design (`255-reviews/review-v1-A.md`, `review-v1-B.md`,
   `review-v2-A.md`, `review-v2-B.md`). What was added from which source, what was dropped and every corrected
   citation: `255-reviews/threat-model-merge-notes.md`.
-- **Self-assessed, not externally validated. A red-team pass is planned once phase 2 has something to attack.**
+- **Self-assessed, not externally validated. A red-team pass is planned once #423 (v2.0) has something to attack.**
   No negative test in §9 has been run; "requirement" here means "what a design must make true", not "what is true".
 - Method: STRIDE per trust boundary and per flow, attack trees, likelihood x impact. Method reference: ICS_COMMAND
   `docs/compliance/threat_model.md` (STRIDE). That repository is not in this worktree: every statement quoted from
@@ -37,8 +37,9 @@ v2 → v2.1: review v3-B = APPROVE-WITH-CHANGES (0 / 1 / 7). §3.0 now states th
   - SSH by build (2026-11-23): **customer (production) builds keep SSH closed by default** — R118 as written;
     **development builds may keep it open**. Nothing else differs between the two builds. This settles the K15
     trade noted under T-ND9.
-  - Hardware roadmap: nodes get an RTC from **v7.2**; the **v7.10** production build replaces the 608B with a
-    certified secure element (certification type and level not yet stated). Until v7.2, residual risk 3 holds as
+  - Hardware roadmap: nodes get an RTC from **v2.0 (#174)**; the production secure element is not settled: #414 (v2.3) plans the
+    608B bound to the CM4, while `255-608b-config.md` (user, 2026-11-23) says the production chip is not a blank 608B
+    and is chosen later. Until v2.0 (#174), residual risk 3 holds as
     written; after it, the node has a clock that a holder of the node can set (R41 and R113 still apply).
 - Follow-up outside this file, not done here (v2.2): devices on the bridged segment can act as a rogue DHCP server,
   send IPv6 router advertisements, or forge alfred / openmanetd address-reservation data. That is network-layer and
@@ -157,11 +158,11 @@ confidentiality of the mesh password. A leaked password is fixed by a rekey; a l
 Production hardware is the CM4 (user decision 2026-10-23; `255-608b-config.md` §7.3). The CM4 supports secure boot
 (issues #115, #74). **User decision 2026-11-23: secure boot ON for all builds, and nothing ships to customers before
 the chain (#115 / #74 / #47 / #41 / #111) is complete** (`255-key-authority.md` §6). The states below therefore
-describe phases, not products:
+describe versions, not products:
 
 | Period | State | What it may claim |
 |---|---|---|
-| Phase 1 (608B bring-up), development and bench units | OFF, with chip | R2, R3, R5, R14 (partly), R84 by chip configuration; R102 against non-root processes only. Nothing that relies on the node resisting a holder (R4 against a holder, Appendix A item 19) |
+| #255 (v2.0, 608B bring-up), development and bench units | OFF, with chip | R2, R3, R5, R14 (partly), R84 by chip configuration; R102 against non-root processes only. Nothing that relies on the node resisting a holder (R4 against a holder, Appendix A item 19) |
 | Between the first and the last link of the chain | mixed | As OFF, except: secure boot without encrypted data = S2 as OFF; encrypted data without secure boot = OFF |
 | Shipping | ON | Everything marked "ON" below, subject to the overlay assumption |
 
@@ -187,7 +188,7 @@ the merge.
 |---|---|---|---|
 | S1 | Whoever holds the node can boot any OS on it and drive the SE from that OS | **Yes.** OFF: true. ON: the holder cannot boot their own OS — as far as the chain reaches (root filesystem included only with dm-verity or equivalent). Driving the SE from *another* host wired to the HAT is not prevented by secure boot [A] | OFF: task statement; ON: [A] |
 | S2 | The SD partitions holding the provisioning record are plaintext | **Yes.** OFF: true. ON: encrypted (#111, design not written [A]) | **[D 219-field-provisioning.md:27, :492]** |
-| S3 | The node has no trusted clock | No. An RTC (#174) is a separate product choice and is trustworthy only if set by an authenticated source. [v2.2] Decided: RTC from v7.2 (header), still settable by the holder | task statement |
+| S3 | The node has no trusted clock | No. An RTC (#174) is a separate product choice and is trustworthy only if set by an authenticated source. [v2.2] Decided: RTC from v2.0 (#174) (header), still settable by the holder | task statement |
 | S4 | Node identity today = a P-256 key file on the card; a reflash makes a new identity | No (changes with the SE backend, not with the boot state) | **[V keystore/keystore.go:1-5]**, **[D 219-field-provisioning.md:335]** |
 | S5 | Purpose labels ("the node never signs a caller's value") are enforced by helper software, not by the key store | No: true in both unless the SE configuration enforces it | **[V keystore/keystore.go:78-98]** |
 | S6 | At most 4 owners and 4 admins per node; the last owner cannot be removed except by reflash | No | **[V provstore/provstore.go:147, 181]**, **[V node/node.go:954, 983-984]** |
@@ -651,7 +652,7 @@ administrator, "after-the-fact attribution") have nothing to be found with. -> *
 
 **T-ND11 (R, D) The record is erased, flushed or mis-timed.** (a) Whoever gains root (T-PH1's planted SSH key, X2)
 deletes or edits the node's record; a hash chain does not help, because root can recompute it. (b) Anyone in BLE
-range sends invalid requests until a bounded record has dropped the real changes. (c) Before v7.2 the node's time is
+range sends invalid requests until a bounded record has dropped the real changes. (c) Before v2.0 (#174) the node's time is
 only monotonic (`batman-faketime`, #174); after it, a holder of the node can set the RTC; a forward jump is then kept.
 -> **R120, R123, R119 (records ordered independently of any clock), R41, R113.** Res: §10-16.
 
@@ -980,7 +981,7 @@ author, who saw no design, did not rank them. They are not folded into the ranks
 12. **How does a brand-new or replaced admin phone catch up a node that is 200 versions behind?**
 13. **What is the audit record, where does it live, and who can alter it?** Node logs are on the plaintext card;
     phone clocks are settable. [v2.2] Node side: T-ND10, T-ND11 and R119–R125 state what must be true; where the
-    record lives and its size are phase-2 design. Issuing-station side: still R21, R98.
+    record lives and its size are #423 (v2.0) design. Issuing-station side: still R21, R98.
 14. **Mutual aid:** how does a guest node leave, and what did the guest organisation learn that must be rotated?
 15. **How does the organisation's identity appear to a human** such that two organisations with the same name
     are distinguishable at enrolment?
@@ -1071,7 +1072,7 @@ it serves, for the separate chip-configuration design.
 17. **Any host-usable value derived from the printed secret.** [review v2-A M4; review v2-B B1(a)] A slot that only
     answers a comparison cannot give the host a key derived from the secret. If any flow needs such a value
     (T-SE16), decide before the lock whether it exists at all, and if it does, where it lives and who can read it;
-    do not discover the contradiction in phase 3.
+    do not discover the contradiction in #423 (v2.0) / v2.5.
 18. **What commits the label to the chip's identity key, and where the identity certificate lives.** [review v2-B M1,
     B1(c)] How the device identifier is derived for the chip backend; whether what is printed commits to the
     identity public key (T-SE13); where the certificate or public-key commitment is stored so that it survives a
@@ -1232,7 +1233,7 @@ None has been tested.
 2. **Shared mesh password**: removal of one party is a rekey of all, and is only as complete as the least
    reachable node. Until per-node link credentials exist, "removed" is a process with a duration.
 3. **No clock**: nothing expires on a node by itself. Authority ends when the node is told, not when the paper
-   says. [v2.2] Holds until v7.2; from v7.2 the node has an RTC, but a holder of the node can set it, so time is
+   says. [v2.2] Holds until v2.0 (#174); from v2.0 (#174) the node has an RTC, but a holder of the node can set it, so time is
    still not authenticated (R41, R113).
 4. **A node that has not heard of a revocation obeys the revoked authority.** The design can make this
    recoverable; it cannot make it impossible.
@@ -1247,7 +1248,7 @@ None has been tested.
 11. **No FIPS 140 module validation is claimed for the ATECC608B.** [author v1 §6 item 7] [A — the author's v1
     says the chip is not found in the NIST CMVP list; the first design draft cited a CMVP certificate number that
     reviewer v1-A listed as unchecked. Neither was verified in this merge; check before any customer statement.]
-    [v2.2] Superseded by the header (no 608B module certificate). Ends at v7.10 for the chip only; the product
+    [v2.2] Superseded by the header (no 608B module certificate). Ends for the chip only when the production secure element (still open, see the header) replaces the 608B; the product
     itself still has no certification of its own.
 12. **A copy of the recovery material is permanent, silent ability to take the organisation**, including replacing
     the recovery path itself; the legitimate owner cannot take it back with their own copy and is left with a
@@ -1341,10 +1342,10 @@ R2, R3, R5, R9, R14, R84, R101, R102, R110.
 
 ---
 
-## Appendix B. Open problems for the phase-2 trust-model design
+## Appendix B. Open problems for the trust-model design (#423, v2.0)
 
 These are **problems**, with the pitfalls two review rounds already found. No solution is proposed here; a
-phase-2 design must show how it avoids each pitfall, or accept one explicitly in §10. "Estimate" marks a reviewer's
+#423 (v2.0) design must show how it avoids each pitfall, or accept one explicitly in §10. "Estimate" marks a reviewer's
 unmeasured number.
 
 **B1. Keeping revocation state across factory reset and re-enrolment without a self-referential floor.**
