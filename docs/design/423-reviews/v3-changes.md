@@ -29,6 +29,22 @@ steps, the factory-reset verb, the automatic-reset behaviour) has to be redone f
 | B-m2 | row 3 holds only while the record exists; both missing = row 4 | Fixed |
 | B-m3 | a version bump is itself a format change | Fixed with A-M1 |
 | B-m4 | the helper has no way today to know what the other slot can read | Fixed: stated; a one-line file in the image, added by the ticket that implements conversion |
-| B-m7 | K14 list missing: dev-open marker, rc 7 creates unclaimed | Fixed (two rows). "BLE health only warns" — OPEN: not checked against source in this round; goes to #13's regression work |
+| B-m7 | K14 list missing: dev-open marker, rc 7 creates unclaimed | Fixed (two rows). "BLE health only warns" — fixed in the round-4 follow-up (row added, `batman-autocommit:566-575`) |
 | B-m10 | reflashing bench cards needs the user's consent (deployed-role rule) | Fixed: stated in §8 |
 | B-m12 | `release.go:161` off by one | Fixed (162) |
+
+## Round 4 (final)
+
+Reviewer A (review-v4-A.md): APPROVE 0 / 0 / 3. Reviewer B (review-v4-B.md): APPROVE 0 / 0 / 3. Both round-3 MAJORs
+closed. B repeated the rework check with the v4 text: unchanged, and "v2.0 tickets do not change the key set" makes
+the record-format item firmer. Still unverified, as the document says: V3 and V4 (CM4 device-secret read lock; whether
+the boot signing key can be revoked).
+
+| # | Finding | Status |
+|---|---|---|
+| A4-m1 | I-7 citation a few lines early | Fixed (`node.go:571-585`) |
+| A4-m2 | fail-open row 3: "frozen by I-10" holds only for an unknown verdict | Fixed |
+| A4-m3 | §7 step 3 "count attempts" vs I-7 | Fixed |
+| B4-m1 | "highest record version I can read" must come from the written image, not the release object | Fixed |
+| B4-m2 | the leave transaction needs member state and readable wireless settings | Fixed: #402 must say what happens when it cannot run |
+| B4-m3 | the dev-open marker also relaxes the legacy claim gate | Fixed (citation added) |
