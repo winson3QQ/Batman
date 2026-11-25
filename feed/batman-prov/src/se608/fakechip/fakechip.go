@@ -1,5 +1,5 @@
 // Package fakechip is a stateful ATECC608B stand-in on the se608.Bus interface, for CI and for se-lab's tests
-// (255-phase1-impl.md §7 "假晶片"). It speaks the byte protocol (wake, word address, count, CRC), so the driver's
+// (255-608b-impl.md §7 "假晶片"). It speaks the byte protocol (wake, word address, count, CRC), so the driver's
 // framing is exercised end to end.
 //
 // PR D models only what E0-E3 need: wake / idle / sleep, Info, Read, Write and Random, the config and data zones,

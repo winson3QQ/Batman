@@ -1,6 +1,6 @@
 //go:build linux
 
-// se-lab — the rig tool for the ATECC608B experiments E0-E3 (docs/design/255-608b-config.md §8; 255-phase1-impl.md
+// se-lab — the rig tool for the ATECC608B experiments E0-E3 (docs/design/255-608b-config.md §8; 255-608b-impl.md
 // §5). A developer tool: it is not built into any image (feed/batman-prov/Makefile builds only batman-provhelper and
 // batman-provd); it runs from tmpfs on the rig Pi (Raspberry Pi OS Lite). Build it static:
 //
