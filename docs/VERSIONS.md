@@ -60,14 +60,16 @@ this rule (`docs/design/254-p3-impl.md` §3.7.1; code `feed/batman-prov/src/rele
 
 | MAJOR | #75 milestone | meaning |
 | --- | --- | --- |
-| 1.x | v1.1 DEV golden *(closed 2026-11-17)* | the 1.x line; started as the prebuilt OpenMANET image + our files, self-built since 1.3 |
-| 2.x | v2.0 內部試用 — 自編映像(Pi 4)+ 階段 1/2 | **we build the Pi 4 image ourselves, CI-reproduced**; App provisioning (#254) and the 608B (#255) in internal trial |
-| 3.x | v3.0 第一個對外版本 — 新 HAT、外殼、PTT、可鎖 | first release handed to others (#219 stage 3, #256): new HAT, enclosure, PTT; verified boot, immutable rootfs, lockable |
+| 1.x | v1.1 DEV golden *(closed 2026-11-17)*; v1.6 階段 1 穩定版 | the 1.x line; started as the prebuilt OpenMANET image + our files, self-built since 1.3; 1.6 = App provisioning (#254) on the software identity |
+| 2.x | v2.0 硬體信任鏈 — 608B、簽章、驗證開機、加密、RTC(Pi 4 + WM1302) | **the hardware trust chain on the Pi 4**: 608B (#255), signing pipeline without OTP (#405), verified boot / immutable rootfs (#74, #41), LUKS (#111), RTC (#174), plus the CI-reproduced build (#108, #113, #73) |
+| 3.x | v3.0 新 HAT 組裝驗證 + 第一個對外版本 | first release handed to others: HAT v2 assembled and verified (#419, #256), enclosure, factory flow, compliance |
 | 4.x | v4.0 全隊管理與進階安全 | fleet management, fleet OTA, advanced security, TAK/ICS interop |
 
-Milestones renamed and regrouped on 2026-11-17 (`docs/roadmap.md` § Roadmap v4); the Pi 3A+ variant was excluded the same day. The old names were `v2.0 Build gate — own image, both boards`, `v3.0 PROD — trusted, OTA, lockable` and `v4.0 Fleet & HW security`.
+Milestones were regrouped again on 2026-11-25 (`docs/roadmap.md` § Roadmap v5). **The milestones v2.1–v2.5 are not image versions**: v2.1 (OpenVLM), v2.2 (hardware validation on jumpers / eval boards), v2.3 (CM4 + IO board) and v2.4 (HAT v2 design freeze) are hardware-validation and design gates that ship no image of their own; v2.5 (the hardware-independent software line, started after #255) ships as ordinary 2.x MINOR releases. So a `2.N.0` image number does **not** mean the `v2.N` milestone was reached — only MAJOR is tied to a milestone.
 
-- **+1 to MAJOR only when that milestone's full #75 gate checklist is met** and cut via CI — not when work on it merely starts. E.g. `2.0.0` waits for #108 (CI reproduce build, Pi 4) + #109 (kernel-config) + #110 + #113 (HIL) + the #73 gates, and the rest of the v2.0 milestone.
+Earlier names: on 2026-11-17 (§ Roadmap v4) the milestones were `v2.0 內部試用 — 自編映像(Pi 4)+ 階段 1/2` and `v3.0 第一個對外版本 — 新 HAT、外殼、PTT、可鎖`; before that `v2.0 Build gate — own image, both boards`, `v3.0 PROD — trusted, OTA, lockable` and `v4.0 Fleet & HW security`. The Pi 3A+ variant was excluded on 2026-11-17.
+
+- **+1 to MAJOR only when that milestone's full #75 gate checklist is met** and cut via CI — not when work on it merely starts. E.g. `2.0.0` waits for the 608B (#255, #196), the signing pipeline (#405), verified boot / immutable rootfs (#74, #41), LUKS (#111), #108 (CI reproduce build, Pi 4) + #109 + #110 + #113 (HIL) + the #73 gates, and the rest of the v2.0 milestone.
 - **MINOR** — a significant capability added within the current MAJOR line. **PATCH** — fixes/rebuilds.
 - A build's **target** milestone (what it is working toward) is recorded in `/etc/batman-build`'s `BATMAN_MILESTONE` field, so aspiration is captured without claiming the number early. Example: `1.3.0` carries `targets v2.0 Build-gate` because docker-in-image (#159) is build-gated, but the v2.0 gate is not yet met, so it stays on the 1.x line.
 
@@ -84,7 +86,7 @@ Existing GitHub release tags were named ad-hoc (by content/date) and do **not** 
 | 1.4.14 | flash-and-go rework (#216), Pi 4 only | *(WSL dev, Batman-P)* — stamp names wrong commits, real = feed `8685c5a` fw `397e313` | OpenMANET 1.8.0 |
 | 1.5.0 | **Pi 3A+ A/B (#209) + one tree for both boards**; Pi 4 gets the #209 shared A/B hardening + gpu-fw 1.20250915 | *(in validation, S5)* | OpenMANET 1.8.0 |
 | 1.5.11 | OTS EUD gateway (#289) + one validation set (#290) + guardian/A-B/provisioning fixes; validated on Pi 4 only | [`v1.5.11`](https://github.com/winson3QQ/Batman/releases/tag/v1.5.11) | OpenMANET 1.8.0 |
-| 2.0.0 | *(reserved)* v2.0 內部試用 milestone reached | — | — |
+| 2.0.0 | *(reserved)* v2.0 硬體信任鏈 milestone reached | — | — |
 
 Refs #75 (SoT), #160 (provenance), #73 (dev-infra).
 
