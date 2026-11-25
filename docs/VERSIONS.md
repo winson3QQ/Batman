@@ -60,7 +60,7 @@ this rule (`docs/design/254-p3-impl.md` §3.7.1; code `feed/batman-prov/src/rele
 
 | MAJOR | #75 milestone | meaning |
 | --- | --- | --- |
-| 1.x | v1.1 DEV golden *(closed 2026-11-17)*; v1.6 階段 1 穩定版 | the 1.x line; started as the prebuilt OpenMANET image + our files, self-built since 1.3; 1.6 = App provisioning (#254) on the software identity |
+| 1.x | v1.1 DEV golden *(closed 2026-11-17)*; v1.6 App 入網穩定版 *(named `v1.6 階段 1 穩定版` until 2026-11-25)* | the 1.x line; started as the prebuilt OpenMANET image + our files, self-built since 1.3; 1.6 = App provisioning (#254) on the software identity |
 | 2.x | v2.0 硬體信任鏈 — 608B、簽章、驗證開機、加密、RTC(Pi 4 + WM1302) | **the hardware trust chain on the Pi 4**: 608B (#255) and mesh admission by its identity (#13), signing pipeline without OTP (#405), verified boot / immutable rootfs (#74, #41), LUKS (#111), RTC (#174), plus the CI-reproduced build (#108, #113, #73) |
 | 3.x | v3.0 新 HAT 組裝驗證 + 第一個對外版本 | first release handed to others: HAT v2 assembled and verified (#419, #256), enclosure, factory flow, compliance |
 | 4.x | v4.0 全隊管理與進階安全 | fleet management, fleet OTA, advanced security, TAK/ICS interop |
