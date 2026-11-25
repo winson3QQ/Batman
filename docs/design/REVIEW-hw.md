@@ -2,7 +2,7 @@
 
 This is the hardware counterpart of [`REVIEW.md`](REVIEW.md). Give it to every independent reviewer, together with the design (spec, schematic, BOM, measurement plan).
 
-It covers the hardware stages of roadmap v5: the jumper and eval-board work and the power-only board in v2.2, the CM4 measurements in v2.3, and the HAT v2 design freeze in v2.4 (#417). Software that runs on the hardware is still reviewed with `REVIEW.md`.
+It covers the hardware stages of roadmap v5: the jumper and eval-board work and the power-only board in v2.2, the CM4 measurements in v2.3, and the HAT v2 design in v2.4 (requirements freeze #417, final design #227). Software that runs on the hardware is still reviewed with `REVIEW.md`.
 
 ## Why
 
@@ -14,13 +14,14 @@ A board mistake costs a fab run and weeks. A software mistake costs a commit. HA
 |---|---|
 | A measurement plan on eval boards or jumpers (v2.2, v2.3) | one reviewer, at most 2 rounds |
 | The power-only board (#408), or any other small board we fabricate | one reviewer, until no BLOCKER or MAJOR is open |
-| **HAT v2 freeze** (#417, the final spec and Gerber) | **two** independent reviewers, until no BLOCKER or MAJOR is open |
+| **HAT v2 requirements freeze** (#417) | one reviewer, until no BLOCKER or MAJOR is open |
+| **HAT v2 final spec, schematic and Gerber** (#227), before the fab order | **two** independent reviewers, until no BLOCKER or MAJOR is open |
 
-The freeze gate is: v2.1–v2.3 are done, and the freeze review has no open BLOCKER or MAJOR. The round limits in `REVIEW.md` § Review level apply here too.
+The gate for the fab order is: v2.1–v2.3 are done, and the #227 review has no open BLOCKER or MAJOR. The round limits in `REVIEW.md` § Review level apply here too.
 
 ## The design must state
 
-1. **Requirements trace.** Every requirement in the HAT v2 spec (`docs/design/hat-v2-spec.md`, PR #303) maps to a part or net in the schematic, and to the verification item that proves it (spec §14, done in v3.0 by #419). A requirement with no test is a finding.
+1. **Requirements trace.** Every requirement in the HAT v2 spec (`docs/design/hat-v2-spec.md`, in PR #303, not yet merged) maps to a part or net in the schematic, and to the verification item that proves it (spec §14, done in v3.0 by #419). A requirement with no test is a finding.
 2. **Assumptions with evidence.** Every assumption (spec §11) carries a datasheet reference (document, revision, page or table) or a bench measurement with its raw data. "Typical" values are not evidence for a worst case. The datasheet checks are #418.
 3. **Power tree.** For every rail:
    - source, regulator and worst-case current, with margin;
