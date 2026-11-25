@@ -30,20 +30,23 @@ half of the problem.
 |---|---|---|---|
 | **PHY / RF** | External SDR **or an admitted node** keys up on 920–925 MHz and saturates airtime (CSMA: one greedy TX starves everyone); malformed-frame flooding | ❌ **No** — you cannot encrypt your way out of a jammed medium | Frequency agility / channel hop (**#15**), directional antennas, TX-power control, **detect → hop / locate & remove**; low-duty-cycle coexistence |
 | **L2 mesh (batman-adv)** | Admitted-but-malicious node floods OGMs, **lies about throughput metric to attract traffic then black/grey-holes it**, broadcast storm, MAC/claim spoofing | ⚠️ Partial — identity can *sign* OGMs, but batman-adv does not authenticate them itself | **Behavioural detection**: watch per-originator OGM rate, **measured delivery vs. advertised metric**, bridge-loop-avoidance (**#10**, confirmed enabled) → quarantine |
-| **L3 / admission** | Random/anonymous node joins the mesh | ✅ **Yes** — PKI admission + attribution | **#13** per-node certs |
+| **L3 / admission** | Random/anonymous node joins the mesh | ⚠️ Partly — in v2.0 admission is the network password, given only to enrolled nodes; per-node admission needs **#16** and holds from the CM4 platform on (`docs/design/security-architecture.md` §7) | **#13** (placeholder-key guard, password only to enrolled nodes); **#16** |
 | **App / TAK** | Unauthorised client injects forged CoT (position, chat, orders) | ✅ **Yes** — mutual-TLS client certs | TAK mTLS (below) |
 
-## Trust architecture: one PKI, two certificate populations
+## Trust architecture: separate roots (superseded 2026-11-25)
 
-A single offline/air-gapped **root CA** signs:
+This section used to say that a single offline root CA signs both node certificates and
+TAK client certificates. That is no longer the design. The current trust architecture is
+`docs/design/security-architecture.md` (#423) §2: **five trust roots that cannot stand in
+for each other**. In particular the node-identity root (factory root) and the TAK CA are
+separate keys and separate CAs (`docs/design/255-key-authority.md` D5), and the node
+certificate carries identity only, never roles or network membership.
 
-1. **Node certificates** — each mesh node has a unique identity used for admission,
-   attribution, and (future) signed routing / WireGuard peer identity (**#16**).
-2. **TAK client certificates** — each ATAK/iTAK device is enrolled with its own cert.
-
-Benefits over a shared key: per-entity attribution, **revocation of one entity
-without re-keying the fleet** (CRL / short-lived certs), and a clean provisioning
-story (**#11**: enrol identity at first boot).
+Still true from the old text: per-entity attribution beats a shared key. No longer
+claimed: "revocation of one entity without re-keying the fleet (CRL / short-lived certs)".
+Nodes have no trusted clock and no connectivity to a CA, so removing an entity today means
+a new network configuration plus a new network password; what replaces that is an open
+problem (`security-architecture.md` §10 O-1).
 
 ### TAK client authentication (current gap)
 
@@ -51,7 +54,7 @@ Today FTS on manet02 accepts **plaintext CoT on TCP 18087** — anyone who can r
 the port can read or inject CoT. Acceptable for bring-up, **not for production**.
 
 Target: **mutual TLS on SSL CoT (8089)** with per-device client certificates issued
-by the mesh/FTS CA, data-package enrolment for ATAK, and API auth on the RestAPI.
+by the TAK CA (separate from the node-identity root, `security-architecture.md` §2), data-package enrolment for ATAK, and API auth on the RestAPI.
 Disable the plaintext CoT port in the production profile.
 
 ## The honest boundary (state this to customers)
@@ -77,7 +80,7 @@ routing through the offending node, and (PHY) trigger a channel hop.
 
 ## Maps to issues
 
-- **#13** — per-node PKI; single root also signs TAK client certs. *Foundation.*
+- **#13** — mesh admission in v2.0 (`security-architecture.md` §7). Node identity and TAK certificates come from separate roots. *Foundation.*
 - **TAK mTLS client auth** (new) — 8089 mutual TLS, kill plaintext CoT in prod.
 - **Node misbehaviour detection + quarantine/revocation** (new) — feeds #14, eats
   `morse_cli`/`batctl`/`alfred`.
