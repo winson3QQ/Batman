@@ -28,7 +28,7 @@
 | 實驗台的 Pi | 不是 02、04。型號開機後記錄（§3.2）。**不需要插 HaLow 卡** |
 | SD 卡 | 燒 Raspberry Pi OS Lite（64 位元） |
 | 工具 | 烙鐵（約 320 °C；鑿形 2.4D 或刀頭）、有鉛 63/37 0.5 mm 焊錫、助焊劑、吸錫線、鑷子、放大鏡、三用電表、防靜電手環、絕緣膠帶 |
-| 開發機 | DSKT-MOONLIGHT（Git Bash 與 WSL Ubuntu-24.04），用來編 `se-lab` |
+| 手邊的電腦 | 任何一台能 SSH 與 scp 到實驗台的機器。**不必是 DSKT-MOONLIGHT**：`se-lab` 用手冊附的執行檔即可（§5a），要自己編才需要 DSKT-MOONLIGHT 的 WSL |
 
 ---
 
@@ -225,6 +225,24 @@ i2ctransfer -y 1 w1@0x68 0x0e r2 2>&1 | tee -a e0a.txt
 
 `se-lab` 在分支 `feat/255-se608-core`（PR #380，還沒合併；實驗工具不進任何映像，直接從分支編就可以）。
 
+### 5a. 捷徑：用附好的執行檔（不在 DSKT-MOONLIGHT 上作業時走這條）
+
+手冊旁邊附了一個編好的 `se-lab`（aarch64 靜態執行檔，從 commit `a62c5a0` 編出）。這條路不需要 Go、WSL，也不需要有原始碼，只要能 `scp` 到實驗台：
+
+```sh
+sha256sum se-lab
+```
+
+預期：
+
+```
+5638e4aba8ca5eeff3b0d5ff8cbf6b6c865ebf26884e61898da2abc6c45415b0
+```
+
+**雜湊不符就停**，不要用那個檔案。相符就直接跳到本節最後的「複製到實驗台」。
+
+### 5b. 自己編（在 DSKT-MOONLIGHT 上）
+
 **先在 Windows 這邊（Git Bash）記下 commit**（這個資料夾是 worktree，在 WSL 裡下 git 指令會失敗）：
 
 ```sh
@@ -243,10 +261,14 @@ GOFLAGS=-mod=vendor GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go b
 sha256sum /tmp/se-lab
 ```
 
-把雜湊記下來。複製到實驗台的 **tmpfs**（設計要求不落地）：
+把雜湊記下來（應該和 5a 的相同）。
+
+### 複製到實驗台
+
+複製到實驗台的 **tmpfs**（設計要求不落地）。`<se-lab 的路徑>` 是 5a 的附檔或 5b 編出來的 `/tmp/se-lab`：
 
 ```sh
-scp /tmp/se-lab <使用者>@<實驗台>:/dev/shm/se-lab
+scp <se-lab 的路徑> <使用者>@<實驗台>:/dev/shm/se-lab
 ```
 
 實驗台上：
@@ -256,7 +278,7 @@ chmod +x /dev/shm/se-lab
 sha256sum /dev/shm/se-lab
 ```
 
-雜湊要和開發機上的相同。
+雜湊要和複製過去之前的相同（也要和 §5a 列的相同）。
 
 **`se-lab` 的結束代碼**（✅ `cmd/se-lab/main.go`）：0 完成；1 晶片或匯流排失敗；2 用法錯誤；3 拒絕（版本不對、晶片不在清單、設定區已鎖、位元組 17 不符、匯流排被別的程式佔用）；4 比對不同。
 
@@ -319,9 +341,9 @@ i2ctransfer -y -a 1 w1@0x00 0x00 2>&1 | tee -a e0a.txt; echo "general-call rc=$?
 
 ## 7. E2：設定區鎖定前的行為
 
-### 7.1 犧牲晶片清單（由開發機產生，設計 §8.0 的要求）
+### 7.1 犧牲晶片清單（由手邊的電腦產生，不在實驗台上產生；設計 §8.0 的要求）
 
-在**開發機**上：
+在**手邊那台電腦**上（任何一台都可以，不必是 DSKT-MOONLIGHT）：
 
 ```sh
 scp '<使用者>@<實驗台>:/dev/shm/e1-info.txt' .
@@ -394,7 +416,7 @@ B17=$(grep '^byte17=' e1-dump.txt | cut -d= -f2); echo "byte17=$B17"
 | `e3-rewrite.txt` | `written_words=0`（已經一樣，不再寫）、`compare=EQUAL`、`rc=0` |
 | `e3-dump.txt` | `lock_config=55`、`lock_data=55`（仍未上鎖） |
 
-**最後一步：斷電之前，在開發機上把結果複製出來**（tmpfs 關機就消失）：
+**最後一步：斷電之前，在手邊那台電腦上把結果複製出來**（tmpfs 關機就消失）：
 
 ```sh
 scp '<使用者>@<實驗台>:/dev/shm/*.txt' <目的資料夾>/
