@@ -20,12 +20,22 @@
 #                           "STILL <addr> after <s> s";
 #                           seconds from 02's /proc/uptime. Then disconnect + remove either way.
 #   drop <addr>             disconnect + remove
+#   rw <addr> <hex>         (prov-gatt-254 E2) one session to a KNOWN address (read's pick removed the device, so it
+#                           scans again first, as hold does): connect, subscribe TX (notify on), write <hex> to RX
+#                           (Write Command), 5 s of notifications, notify off, disconnect, remove. No pairing.
+#                           <hex> is checked here (hex digits, even length, <= 244 B) before it reaches bluetoothctl;
+#                           <addr> must be AA:BB:CC:DD:EE:FF. "RW <addr>", "NVAL <hex>" per notification (to the host,
+#                           which reassembles), "NOTIFY n=<frames> bytes=<total>", "WROTE rc=<0|1>",
+#                           "SUB <yes|no>" / "WRITE <yes|no>" (bluetoothctl's own "Notify started" / "Attempting to
+#                           write"), "ERRLINES <…|->", "CONN_S <s connected, 02's clock>", "PAIRED <yes|no>"
 #   addrs                   one 12 s scan: "ADDRS <addr> ..." = the advertisers of the UUID whose advertisements arrived
 #                           in THIS scan ([NEW] / [CHG] lines; `devices` alone also lists BlueZ's cached ones), then
 #                           removes every unpaired device it saw; "ADDRS -" none
 # busybox ash; the 128-bit UUIDs are the D4 values (254-p2-impl §1.3).
 U=540aa38c-0086-4d58-a9c0-c7c9d1e1bd42
 CTRL=540aa38c-0086-4d5b-a9c0-c7c9d1e1bd42
+RXU=540aa38c-0086-4d59-a9c0-c7c9d1e1bd42
+TXU=540aa38c-0086-4d5a-a9c0-c7c9d1e1bd42
 STAT=540aa38c-0086-4d5c-a9c0-c7c9d1e1bd42
 D=/tmp/run/batman-dv
 [ -d "$D" ] || mkdir -m 700 "$D"
@@ -122,6 +132,22 @@ read_one() {
 	# STATUS first: a refused CTRL read (prov-gatt's encrypt-read white box) prints no Value and may upset the session
 	SV=$(value 1); CV=$(value 2)
 }
+# hex_ok <hex>: hex digits only, even length, at most 244 bytes (it is spliced into bluetoothctl's command stream)
+hex_ok() { case "$1" in ''|*[!0-9a-f]*) return 1 ;; esac; [ $(( ${#1} % 2 )) = 0 ] && [ ${#1} -le 488 ]; }
+# (a pattern, not grep: grep -x matches line by line, so "<mac>\nquit" would pass — gatt-judges.sh's negative control)
+addr_ok() { case "$1" in [0-9A-F][0-9A-F]:[0-9A-F][0-9A-F]:[0-9A-F][0-9A-F]:[0-9A-F][0-9A-F]:[0-9A-F][0-9A-F]:[0-9A-F][0-9A-F]) return 0 ;; esac; return 1; }
+# every notification value of a bluetoothctl session, one hex line each (prompts stripped, hex columns only)
+values_all() {
+	awk '
+	/Value:$/ { if (h != "") print h; h = ""; inb = 1; next }
+	inb {
+		l = $0; sub(/^.*\]# */, "", l); m = split(l, f, /[[:space:]]+/); x = ""
+		for (i = 1; i <= m && i <= 16; i++) { if (f[i] ~ /^[0-9a-f][0-9a-f]$/) x = x f[i]; else break }
+		if (x == "") { if (h != "") print h; h = ""; inb = 0; next }
+		h = h x
+	}
+	END { if (h != "") print h }' "$1"
+}
 # pick <last4|->: sets A (and CV SV PV of the chosen node); rc 1 none / unreadable, rc 3 ambiguous / not found
 pick() {
 	want=$1; A=""; tries=0
@@ -185,5 +211,36 @@ addrs)
 	done
 	echo "ADDRS${l:- -}" ;;
 drop) drop "$2"; echo "DROPPED $2" ;;
-*) echo "usage: prov-p2-central-254.sh read <last4|-> | hold <last4|-> | watch <addr> <s> | drop <addr> | addrs"; exit 2 ;;
+rw)
+	a=${2:-}; hx=${3:-}
+	addr_ok "$a" || { echo "FAIL rw: bad address [$a]"; exit 2; }
+	hex_ok "$hx" || { echo "FAIL rw: bad hex (hex digits, even length, <= 244 B)"; exit 2; }
+	wv=$(printf '%s' "$hx" | sed 's/../0x& /g; s/ $//')
+	CONN_A=$a
+	{ echo "menu scan"; echo "uuids $U"; echo "transport le"; echo back; echo "scan on"; sleep 10; echo "scan off"; sleep 1
+	  # select-attribute needs the device's GATT proxies (run 1, 2026-11-26: after 6 s 04 saw neither the CCC write nor the
+	  # RX write): the same 8 s + list-attributes + 2 s as read_one, whose reads work
+	  up > "$T/t_conn"; echo "connect $a"; sleep 8; echo "menu gatt"; echo list-attributes; sleep 2
+	  echo "select-attribute $TXU"; sleep 1; echo "notify on"; sleep 3
+	  echo "select-attribute $RXU"; sleep 1; echo "write \"$wv\""; sleep 5
+	  echo "select-attribute $TXU"; sleep 1; echo "notify off"; sleep 1; echo back
+	  echo "disconnect $a"; sleep 3; up > "$T/t_disc"; echo quit; } | bluetoothctl 2>&1 | clean > "$T/rw"
+	info_of "$a" > "$T/info"; PV=$(sed -n 's/^[[:space:]]*Paired: //p' "$T/info")
+	drop "$a"; CONN_A=""
+	echo "RW $a"
+	values_all "$T/rw" > "$T/vals"
+	while IFS= read -r v; do echo "NVAL $v"; done < "$T/vals"
+	echo "NOTIFY n=$(grep -c . "$T/vals") bytes=$(awk '{ s += length($0) / 2 } END { print s + 0 }' "$T/vals")"
+	grep -q 'Failed to write' "$T/rw" && echo "WROTE rc=1 $(grep -o 'Failed to write[^|]*' "$T/rw" | head -1)" || echo "WROTE rc=0"
+	# what bluetoothctl itself confirmed (client/gatt.c notify_reply "Notify started", write_attribute "Attempting to write");
+	# the unit's precondition is 04's capture, these lines say why it is missing
+	grep -q 'Notify started' "$T/rw" && echo "SUB yes" || echo "SUB no"
+	grep -q 'Attempting to write' "$T/rw" && echo "WRITE yes" || echo "WRITE no"
+	e=$(grep -iE 'fail|error|no device|no attribute|not available|unable|segmentation' "$T/rw" | sed 's/^.*\]# *//' | sort -u | head -5 | tr '\n' '|'); echo "ERRLINES ${e:--}"
+	echo "CONN_S $(( $(cat "$T/t_disc" 2>/dev/null || echo 0) - $(cat "$T/t_conn" 2>/dev/null || echo 0) ))"
+	echo "PAIRED ${PV:-?}"
+	# the session as bluetoothctl printed it (prompts stripped, <= 400 lines): run 2 reported NOTIFY n=0 while 04 sent
+	# two Multiple Value Notifications — the raw text shows how 02 printed them. Public values only (CTRL, msg2).
+	sed 's/^.*\]# *//' "$T/rw" | head -400 | cut -c1-200 | sed 's/^/RAW /' ;;
+*) echo "usage: prov-p2-central-254.sh read <last4|-> | hold <last4|-> | watch <addr> <s> | drop <addr> | addrs | rw <addr> <hex>"; exit 2 ;;
 esac

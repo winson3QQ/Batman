@@ -93,13 +93,15 @@ jobs:
         run: PY=python MIN_CHECKS=195 bash tests/vectors/219-protocol/ci-check.sh
       - name: squashfs-tools for signrel's image check (a real squashfs with and without T, #254 S5)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq squashfs-tools
-      - name: "#254 H4 host tools selftests (254-h4 §1.2) — peer (vectors + fake bridge), netobj, nodecert, blebridge, httprelay, benchstore, signrel (the test release signer)"
+      - name: "#254 H4 host tools selftests (254-h4 §1.2) — peer (vectors + fake bridge), netobj, nodecert, blebridge, gatt (prov-gatt-254 cases vs lax Reassemblers), gattjudge, httprelay, benchstore, signrel (the test release signer)"
         run: |
           cd tests/tools/peer
           python peer.py --selftest
           python netobj.py --selftest
           python nodecert.py --selftest
           python blebridge.py --selftest
+          python gatt.py --selftest
+          python gattjudge.py --selftest
           python httprelay.py --selftest
           python benchstore.py --selftest
           python signrel.py --selftest

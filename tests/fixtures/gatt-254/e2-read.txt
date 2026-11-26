@@ -1,0 +1,318 @@
+# 04 btmon -r excerpt, prov-gatt-254 run 2 E2 read-only control (02 reads CTRL / STATUS), 2026-11-26. Addresses replaced.
+# connections: handle 64 peer 5A:00:00:00:00:02
+= New Index: 00:00:00:00:00:00 (Primary,UART,hci0)              [hci0] 0.534934
+= Open Index: 00:00:00:00:00:00                                 [hci0] 0.534935
+= Index Info: 00:00:00:00:00:00 (Cypress Semiconductor)         [hci0] 0.534936
+> HCI Event: LE Meta Event (0x3e) plen 19                   #1 [hci0] 15.652847
+      LE Connection Complete (0x01)
+        Status: Success (0x00)
+        Handle: 64
+        Peer address type: Random (0x01)
+        Peer address: 5A:00:00:00:00:02 (Resolvable)
+< HCI Command: LE Read Remote Used... (0x08|0x0016) plen 2  #2 [hci0] 15.653290
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> HCI Event: LE Meta Event (0x3e) plen 12                   #5 [hci0] 15.788864
+        Status: Success (0x00)
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+< ACL Data TX: Handle 64 flags 0x00 dlen 7                  #6 [hci0] 15.824264
+      ATT: Exchange MTU Request (0x02) len 2
+        Client RX MTU: 517
+> HCI Event: LE Meta Event (0x3e) plen 11                   #7 [hci0] 15.837614
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 7                  #8 [hci0] 15.885820
+      ATT: Exchange MTU Request (0x02) len 2
+        Client RX MTU: 517
+< ACL Data TX: Handle 64 flags 0x00 dlen 7                  #9 [hci0] 15.886042
+      ATT: Exchange MTU Response (0x03) len 2
+        Server RX MTU: 517
+> ACL Data RX: Handle 64 flags 0x02 dlen 7                 #10 [hci0] 16.178444
+      ATT: Exchange MTU Response (0x03) len 2
+        Server RX MTU: 517
+< ACL Data TX: Handle 64 flags 0x00 dlen 11                #11 [hci0] 16.178668
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0001-0xffff
+> ACL Data RX: Handle 64 flags 0x02 dlen 11                #12 [hci0] 16.179206
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0001-0xffff
+< ACL Data TX: Handle 64 flags 0x00 dlen 9                 #13 [hci0] 16.179294
+      ATT: Error Response (0x01) len 4
+        Handle: 0x0001
+> HCI Event: Number of Completed Packets (0x13) plen 5     #14 [hci0] 16.179588
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 9                 #15 [hci0] 16.276051
+      ATT: Error Response (0x01) len 4
+        Handle: 0x0001
+< ACL Data TX: Handle 64 flags 0x00 dlen 11                #16 [hci0] 16.276261
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x0001-0xffff
+> ACL Data RX: Handle 64 flags 0x02 dlen 11                #17 [hci0] 16.276814
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x0001-0xffff
+< ACL Data TX: Handle 64 flags 0x00 dlen 24                #18 [hci0] 16.277024
+      ATT: Read By Group Type Response (0x11) len 19
+        Handle range: 0x0001-0x0007
+        UUID: Generic Access Profile (0x1800)
+        Handle range: 0x0008-0x0011
+        UUID: Generic Attribute Profile (0x1801)
+        Handle range: 0x0012-0x0014
+        UUID: Device Information (0x180a)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #19 [hci0] 16.277195
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 24                #20 [hci0] 16.374644
+      ATT: Read By Group Type Response (0x11) len 19
+        Handle range: 0x0001-0x0007
+        UUID: Generic Access Profile (0x1800)
+        Handle range: 0x0008-0x0011
+        UUID: Generic Attribute Profile (0x1801)
+        Handle range: 0x0012-0x0014
+        UUID: Device Information (0x180a)
+< ACL Data TX: Handle 64 flags 0x00 dlen 11                #21 [hci0] 16.374883
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x0015-0xffff
+> ACL Data RX: Handle 64 flags 0x02 dlen 11                #22 [hci0] 16.375235
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x0015-0xffff
+< ACL Data TX: Handle 64 flags 0x00 dlen 26                #23 [hci0] 16.375329
+      ATT: Read By Group Type Response (0x11) len 21
+        Handle range: 0x0029-0x0032
+        UUID: Vendor specific (540aa38c-0086-4d58-a9c0-c7c9d1e1bd42)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #24 [hci0] 16.375616
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 26                #25 [hci0] 16.472086
+      ATT: Read By Group Type Response (0x11) len 21
+        Handle range: 0x0015-0x001e
+        UUID: Vendor specific (540aa38c-0086-4d58-a9c0-c7c9d1e1bd42)
+< ACL Data TX: Handle 64 flags 0x00 dlen 11                #26 [hci0] 16.472299
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x001f-0xffff
+> ACL Data RX: Handle 64 flags 0x02 dlen 11                #27 [hci0] 16.472849
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x0033-0xffff
+< ACL Data TX: Handle 64 flags 0x00 dlen 9                 #28 [hci0] 16.472940
+      ATT: Error Response (0x01) len 4
+        Handle: 0x0033
+> HCI Event: Number of Completed Packets (0x13) plen 5     #29 [hci0] 16.473231
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 9                 #30 [hci0] 16.568557
+      ATT: Error Response (0x01) len 4
+        Handle: 0x001f
+< ACL Data TX: Handle 64 flags 0x00 dlen 11                #31 [hci0] 16.568840
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x0001-0xffff
+> ACL Data RX: Handle 64 flags 0x02 dlen 11                #32 [hci0] 16.569321
+      ATT: Read By Group Type Request (0x10) len 6
+        Handle range: 0x0001-0xffff
+< ACL Data TX: Handle 64 flags 0x00 dlen 9                 #33 [hci0] 16.569415
+      ATT: Error Response (0x01) len 4
+        Handle: 0x0001
+> HCI Event: Number of Completed Packets (0x13) plen 5     #34 [hci0] 16.569702
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 9                 #35 [hci0] 16.666059
+      ATT: Error Response (0x01) len 4
+        Handle: 0x0001
+< ACL Data TX: Handle 64 flags 0x00 dlen 11                #36 [hci0] 16.666175
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0001-0x001e
+> ACL Data RX: Handle 64 flags 0x02 dlen 11                #37 [hci0] 16.666822
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0001-0x0032
+< ACL Data TX: Handle 64 flags 0x00 dlen 9                 #38 [hci0] 16.666903
+      ATT: Error Response (0x01) len 4
+        Handle: 0x0001
+> HCI Event: Number of Completed Packets (0x13) plen 5     #39 [hci0] 16.667203
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 9                 #40 [hci0] 16.763561
+      ATT: Error Response (0x01) len 4
+        Handle: 0x0001
+< ACL Data TX: Handle 64 flags 0x00 dlen 11                #41 [hci0] 16.763640
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0001-0x001e
+> ACL Data RX: Handle 64 flags 0x02 dlen 11                #42 [hci0] 16.764324
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0001-0x0032
+< ACL Data TX: Handle 64 flags 0x00 dlen 48                #43 [hci0] 16.764422
+      ATT: Read By Type Response (0x09) len 43
+        Handle: 0x0002
+            Value Handle: 0x0003
+            Value UUID: Device Name (0x2a00)
+        Handle: 0x0004
+            Value Handle: 0x0005
+            Value UUID: Appearance (0x2a01)
+        Handle: 0x0006
+            Value Handle: 0x0007
+            Value UUID: Central Address Resolution (0x2aa6)
+        Handle: 0x0009
+            Value Handle: 0x000a
+            Value UUID: Service Changed (0x2a05)
+        Handle: 0x000c
+            Value Handle: 0x000d
+            Value UUID: Client Supported Features (0x2b29)
+        Handle: 0x0013
+            Value Handle: 0x0014
+            Value UUID: PnP ID (0x2a50)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #44 [hci0] 16.764706
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 48                #45 [hci0] 16.863322
+      ATT: Read By Type Response (0x09) len 43
+        Handle: 0x0002
+            Value Handle: 0x0003
+            Value UUID: Device Name (0x2a00)
+        Handle: 0x0004
+            Value Handle: 0x0005
+            Value UUID: Appearance (0x2a01)
+        Handle: 0x0006
+            Value Handle: 0x0007
+            Value UUID: Central Address Resolution (0x2aa6)
+        Handle: 0x0009
+            Value Handle: 0x000a
+            Value UUID: Service Changed (0x2a05)
+        Handle: 0x000c
+            Value Handle: 0x000d
+            Value UUID: Client Supported Features (0x2b29)
+        Handle: 0x0013
+            Value Handle: 0x0014
+            Value UUID: PnP ID (0x2a50)
+< ACL Data TX: Handle 64 flags 0x00 dlen 11                #46 [hci0] 16.863410
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0014-0x001e
+> ACL Data RX: Handle 64 flags 0x02 dlen 11                #47 [hci0] 16.864084
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0014-0x0032
+< ACL Data TX: Handle 64 flags 0x00 dlen 90                #48 [hci0] 16.864203
+      ATT: Read By Type Response (0x09) len 85
+        Handle: 0x002a
+            Value Handle: 0x002b
+            Value UUID: Vendor specific (540aa38c-0086-4d59-a9c0-c7c9d1e1bd42)
+        Handle: 0x002c
+            Value Handle: 0x002d
+            Value UUID: Vendor specific (540aa38c-0086-4d5a-a9c0-c7c9d1e1bd42)
+        Handle: 0x002f
+            Value Handle: 0x0030
+            Value UUID: Vendor specific (540aa38c-0086-4d5b-a9c0-c7c9d1e1bd42)
+        Handle: 0x0031
+            Value Handle: 0x0032
+            Value UUID: Vendor specific (540aa38c-0086-4d5c-a9c0-c7c9d1e1bd42)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #49 [hci0] 16.864466
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 90                #50 [hci0] 16.963077
+      ATT: Read By Type Response (0x09) len 85
+        Handle: 0x0016
+            Value Handle: 0x0017
+            Value UUID: Vendor specific (540aa38c-0086-4d5c-a9c0-c7c9d1e1bd42)
+        Handle: 0x0018
+            Value Handle: 0x0019
+            Value UUID: Vendor specific (540aa38c-0086-4d59-a9c0-c7c9d1e1bd42)
+        Handle: 0x001a
+            Value Handle: 0x001b
+            Value UUID: Vendor specific (540aa38c-0086-4d5a-a9c0-c7c9d1e1bd42)
+        Handle: 0x001d
+            Value Handle: 0x001e
+            Value UUID: Vendor specific (540aa38c-0086-4d5b-a9c0-c7c9d1e1bd42)
+< ACL Data TX: Handle 64 flags 0x00 dlen 11                #51 [hci0] 16.963215
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x001e-0x001e
+> ACL Data RX: Handle 64 flags 0x02 dlen 11                #52 [hci0] 16.963840
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x0032-0x0032
+< ACL Data TX: Handle 64 flags 0x00 dlen 9                 #53 [hci0] 16.963922
+      ATT: Error Response (0x01) len 4
+        Handle: 0x0032
+> HCI Event: Number of Completed Packets (0x13) plen 5     #54 [hci0] 16.964221
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 9                 #55 [hci0] 17.056068
+      ATT: Error Response (0x01) len 4
+        Handle: 0x001e
+< ACL Data TX: Handle 64 flags 0x00 dlen 9                 #56 [hci0] 17.056274
+      ATT: Find Information Request (0x04) len 4
+        Handle range: 0x000e-0x0011
+> ACL Data RX: Handle 64 flags 0x02 dlen 9                 #57 [hci0] 17.056736
+      ATT: Find Information Request (0x04) len 4
+        Handle range: 0x000e-0x0011
+< ACL Data TX: Handle 64 flags 0x00 dlen 9                 #58 [hci0] 17.056811
+      ATT: Error Response (0x01) len 4
+        Handle: 0x000e
+> HCI Event: Number of Completed Packets (0x13) plen 5     #59 [hci0] 17.057118
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 9                 #60 [hci0] 17.153572
+      ATT: Error Response (0x01) len 4
+        Handle: 0x000e
+> ACL Data RX: Handle 64 flags 0x02 dlen 8                 #61 [hci0] 17.154191
+      ATT: Write Request (0x12) len 3
+        Handle: 0x000d Type: Client Supported Features (0x2b29)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #62 [hci0] 17.154572
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+< ACL Data TX: Handle 64 flags 0x00 dlen 5                 #63 [hci0] 17.154773
+      ATT: Write Response (0x13) len 0
+< ACL Data TX: Handle 64 flags 0x00 dlen 8                 #64 [hci0] 17.154799
+      ATT: Write Request (0x12) len 3
+        Handle: 0x000d Type: Client Supported Features (0x2b29)
+> ACL Data RX: Handle 64 flags 0x02 dlen 9                 #65 [hci0] 17.251073
+      ATT: Write Request (0x12) len 4
+        Handle: 0x000b
+< ACL Data TX: Handle 64 flags 0x00 dlen 5                 #66 [hci0] 17.251288
+      ATT: Write Response (0x13) len 0
+> ACL Data RX: Handle 64 flags 0x02 dlen 5                 #67 [hci0] 17.251549
+      ATT: Write Response (0x13) len 0
+< ACL Data TX: Handle 64 flags 0x00 dlen 9                 #68 [hci0] 17.251620
+      ATT: Write Request (0x12) len 4
+        Handle: 0x000b
+> HCI Event: Number of Completed Packets (0x13) plen 5     #69 [hci0] 17.251931
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 7                 #70 [hci0] 17.348467
+      ATT: Read Request (0x0a) len 2
+        Handle: 0x0003 Type: Device Name (0x2a00)
+< ACL Data TX: Handle 64 flags 0x00 dlen 11                #71 [hci0] 17.348668
+      ATT: Read Response (0x0b) len 6
+> ACL Data RX: Handle 64 flags 0x02 dlen 5                 #72 [hci0] 17.348944
+      ATT: Write Response (0x13) len 0
+< ACL Data TX: Handle 64 flags 0x00 dlen 7                 #73 [hci0] 17.349020
+      ATT: Read Request (0x0a) len 2
+        Handle: 0x0003 Type: Device Name (0x2a00)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #74 [hci0] 17.349325
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 7                 #75 [hci0] 17.445969
+      ATT: Read Request (0x0a) len 2
+        Handle: 0x0005 Type: Appearance (0x2a01)
+< ACL Data TX: Handle 64 flags 0x00 dlen 7                 #76 [hci0] 17.446087
+      ATT: Read Response (0x0b) len 2
+> ACL Data RX: Handle 64 flags 0x02 dlen 11                #77 [hci0] 17.446732
+      ATT: Read Response (0x0b) len 6
+< ACL Data TX: Handle 64 flags 0x00 dlen 7                 #78 [hci0] 17.446839
+      ATT: Read Request (0x0a) len 2
+        Handle: 0x0005 Type: Appearance (0x2a01)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #79 [hci0] 17.447113
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 7                 #80 [hci0] 17.592223
+      ATT: Read Request (0x0a) len 2
+        Handle: 0x0014 Type: PnP ID (0x2a50)
+< ACL Data TX: Handle 64 flags 0x00 dlen 12                #81 [hci0] 17.592426
+      ATT: Read Response (0x0b) len 7
+> ACL Data RX: Handle 64 flags 0x02 dlen 7                 #82 [hci0] 17.592795
+      ATT: Read Response (0x0b) len 2
+< ACL Data TX: Handle 64 flags 0x00 dlen 7                 #83 [hci0] 17.592868
+      ATT: Read Request (0x0a) len 2
+        Handle: 0x0014 Type: PnP ID (0x2a50)
+> HCI Event: Number of Completed Packets (0x13) plen 5     #84 [hci0] 17.593176
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 12                #85 [hci0] 17.690167
+      ATT: Read Response (0x0b) len 7
+> HCI Event: Number of Completed Packets (0x13) plen 5     #86 [hci0] 17.690548
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 7                 #87 [hci0] 26.416071
+      ATT: Read Request (0x0a) len 2
+        Handle: 0x0032 Type: Vendor specific (540aa38c-0086-4d5c-a9c0-c7c9d1e1bd42)
+< ACL Data TX: Handle 64 flags 0x00 dlen 28                #88 [hci0] 26.417327
+      ATT: Read Response (0x0b) len 23
+> HCI Event: Number of Completed Packets (0x13) plen 5     #89 [hci0] 26.689558
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> ACL Data RX: Handle 64 flags 0x02 dlen 7                 #90 [hci0] 29.438643
+      ATT: Read Request (0x0a) len 2
+        Handle: 0x0030 Type: Vendor specific (540aa38c-0086-4d5b-a9c0-c7c9d1e1bd42)
+< ACL Data TX: Handle 64 flags 0x00 dlen 17                #91 [hci0] 29.439893
+      ATT: Read Response (0x0b) len 12
+> HCI Event: Number of Completed Packets (0x13) plen 5     #92 [hci0] 29.689583
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+> HCI Event: Disconnect Complete (0x05) plen 4             #93 [hci0] 41.090933
+        Status: Success (0x00)
+        Handle: 64 Address: 5A:00:00:00:00:02 (Resolvable)
+        Reason: Remote User Terminated Connection (0x13)

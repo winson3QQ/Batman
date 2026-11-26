@@ -26,7 +26,7 @@ PR_UNIT=prov-sshkeys-cut-254
 ARM=${1:-${ARM:-POST}}   # the suite passes it as $1 (prov-dv-254.sh)
 case "$ARM" in
 POST) MODE="cut"; AT=post ;; FAILPOST) MODE="fail"; AT=post ;; CUT1) MODE="cut"; AT=pre ;; FAIL1) MODE="fail"; AT=pre ;;
-RC6) MODE="rc6"; AT=post ;; *) echo "FAIL $PR_UNIT: unknown ARM=$ARM (POST FAILPOST CUT1 FAIL1 RC6)"; exit 2 ;;
+RC6) MODE="rc6"; AT=post ;; SHELLY) MODE="shelly"; AT=none ;; *) echo "FAIL $PR_UNIT: unknown ARM=$ARM (POST FAILPOST CUT1 FAIL1 RC6)"; exit 2 ;;
 esac
 # shellcheck source=scripts/dv/prov-254.sh
 . "$(dirname "$0")/prov-254.sh"
@@ -84,6 +84,27 @@ case "$w" in "rec=A file=A p5rec=A p5file=A "*) ;; *) inv "after [A]: $w (want A
 pk_login "$KD/a"; [ $? = 0 ] || { inv "key A does not log in after a normal ssh_keys.set"; fail_out "precondition"; }
 pk_proof || fail_out "the lab key stopped logging in after [A] (it was app-added?)"
 ok "precondition: [A] set normally, A in the record, the file and p5's copy; A and the lab key log in"
+if [ "$MODE" = shelly ]; then
+# #329-267 (2026-11-26): a REAL mains cut (Shelly plug SHELLY_IP, default 04's) SHELLY_DELAY s after ssh_keys.set [B]
+# answered OK; no hook. After the boot the files are read over ssh (the second access path): an OK answer must survive
+# the power loss — B in the overlay file, p5's copy and p5's record (and A gone), and B logs in.
+SIP=${SHELLY_IP:?SHELLY_IP=<the Shelly plug of NODE> is required for ARM=SHELLY}; SD=${SHELLY_DELAY:-0}
+sw(){ curl -s -m 5 "http://$SIP/rpc/Switch.Set?id=0&on=$1" >/dev/null; curl -s -m 5 "http://$SIP/rpc/Switch.GetStatus?id=0" | grep -q "\"output\":$1"; }
+sw true || fail_out "Shelly $SIP not answering / not on"
+b0=$(field "$(qr "$ST")" boot)
+r=$(sk "'$KB'"); reply=$(echo $r); say "ssh_keys.set [B]: $reply"
+grep -q 'RESULT ssh_keys.set code=0' <<< "$r" || fail_out "ssh_keys.set [B] did not answer OK"
+sleep "$SD"; sw false || { sw true; fail_out "Shelly off failed"; }; say "mains OFF ${SD}s after the OK answer"
+sleep 8; sw true || { pr_needs_person "Shelly $SIP did not switch back on — 04 is unpowered"; cleanup_keys; pr_result; exit 1; }
+pr_find 900 "$b0" || { no "no node after the mains cut"; pr_needs_person "04 did not come back after the mains cut"; cleanup_keys; pr_result; exit 1; }
+o=$(qr 'tail -1 /opt/batdata/log/boot-reasons.log'); case "$o" in *UNCLEAN*) ok "boot-reasons: UNCLEAN ($o)" ;; *) inv "boot-reasons: $o (want UNCLEAN: was power really cut?)" ;; esac
+w=$(where); say "after the mains cut (files read over ssh): $w"
+[ "$(field "$w" p5new)" = 0 ] || inv "p5's authorized_keys was rewritten after the reboot, before the judgement"
+case "$w" in "rec=B file=B p5rec=B p5file=B "*) ok "an OK answer survived the mains cut: B in the record, the file, p5's record and p5's copy ($w)" ;;
+	*) no "after an OK answer and a mains cut ${SD}s later the key set is not [B] everywhere ($w)" ;; esac
+pr_pc_place || fail_out "provclient after the reboot"
+pk_login "$KD/b"; [ $? = 0 ] && ok "key B logs in after the mains cut" || no "key B does not log in after the mains cut"
+else
 # --- the hook. $W/arm = "<mode> <pre|post>", $W/g0 = G0; one-shot: removed when it acts, $W/fired records it.
 pw prep >/dev/null
 q "sync; cp -p /usr/bin/batman-config-save $W/cfgsave.real && chmod 700 $W/cfgsave.real && cat > $W/cfgsave.cut <<'HOOK'
@@ -165,6 +186,7 @@ fi
 hc=$(held_calls); [ -z "$hc" ] || say "held off in the window (not run): $(echo $hc)"
 oc=$(other_calls); [ -z "$oc" ] || inv "another caller wrote p5 in the window: $(echo $oc)"
 q "rm -f $W/arm $W/window"
+fi
 # --- (1) invariant I
 holdsI "$w" && ok "(1) I holds: every app key in the file and in p5's copy is in p5's record ($w)" || no "(1) I broken: an app key is in the file or in p5's copy but not in p5's record ($w)"
 pk_login "$KD/a"; la=$?; pk_login "$KD/b"; lb=$?; say "logins after the op: A rc=$la B rc=$lb (0 in, 1 refused)"

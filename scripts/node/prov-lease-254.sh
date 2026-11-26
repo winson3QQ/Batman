@@ -74,7 +74,23 @@ role_fire_restore() {	# $1 run (or "recover")
 	# the H3 judge arms (prov-p2-254.sh): SIGSTOPped helper, dbus / bluetoothd stopped, bondable / pairable on, hci0 off
 	radio_restore | while IFS= read -r l; do dm_log "$1" "prov deadman: $l"; done
 	for s in joinwatch openmanetd tailscaled; do [ -x "/etc/init.d/$s" ] && lim 60 "/etc/init.d/$s" start >/dev/null 2>&1; done
+	# after radio_restore (it stops a harness btmon): this run's scratch dirs, which no restore path removes when the
+	# host is gone (prov-gatt-254 design §7, review B-m2): btmon snoops carry addresses and ciphertext
+	[ "$1" = recover ] || dm_rm_scratch "$1" | while IFS= read -r l; do dm_log "$1" "prov deadman: $l"; done
 	return 0
+}
+# dm_rm_scratch <run>: the run's provclient dir (/tmp/run/batman-dvpc.<run>: btmon, dbus-send, snoops, the liveness
+# watch) and its wbox W dir (/tmp/run/batman-dv/wbox/<run>); the background jobs named by their *.pid files get SIGINT
+# first. Only these two exact paths of a well-formed run id; a symlink is removed as a link, never followed.
+dm_rm_scratch() {
+	case "$1" in ''|*[!A-Za-z0-9_-]*) return 0 ;; esac
+	for _d in "/tmp/run/batman-dvpc.$1" "/tmp/run/batman-dv/wbox/$1"; do
+		[ -e "$_d" ] || [ -L "$_d" ] || continue
+		if [ -d "$_d" ] && [ ! -L "$_d" ]; then
+			for _pf in "$_d"/*.pid; do [ -f "$_pf" ] && kill -INT "$(cat "$_pf")" 2>/dev/null; done
+		fi
+		rm -rf "$_d" && echo "removed $_d"
+	done
 }
 cmd_state() {
 	echo "STATE lease-prov=[$(cat "$LEASE" 2>/dev/null)] lease=[$(cat "$BT/lease" 2>/dev/null)] boot=$(bootid) up=$(up_s)"

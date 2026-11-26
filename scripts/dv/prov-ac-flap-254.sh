@@ -41,13 +41,13 @@ sample(){
 	case "$dl" in ''|*[!0-9]*) no "no autocommit deadline in the trial [$dl]"; return 1 ;; esac
 	say "sampling autocommit.why every 10 s until uptime $((dl - 30)) s (the trial's deadline: $dl s)"; t0=$(mono)
 	while :; do
-		o=$(timeout 30 ssh $SSHO root@$NODE '. /usr/lib/batman/rundir.sh; echo "BOOT=$(cut -c1-8 /proc/sys/kernel/random/boot_id) UP=$(cut -d. -f1 /proc/uptime)"; cat $RUNDIR/autocommit.why 2>/dev/null' 2>/dev/null | tr -d '\r')
+		o=$(timeout 30 ssh $SSHO root@$NODE '. /usr/lib/batman/rundir.sh; echo "BOOT=$(cut -c1-8 /proc/sys/kernel/random/boot_id) UP=$(cut -d. -f1 /proc/uptime) HR=$(/etc/init.d/batman-provhelper running && echo 1 || echo 0) WHY_MTIME=$(date -r $RUNDIR/autocommit.why +%s 2>/dev/null) NOW=$(date +%s)"; cat $RUNDIR/autocommit.why 2>/dev/null' 2>/dev/null | tr -d '\r')
 		pr_trial_guard_tick "$b0"
 		case "$o" in
 			"BOOT=$b0 UP="*)
-				u=$(head -1 <<< "$o"); u=${u#*UP=}; w=$(tail -n +2 <<< "$o" | head -1)
-				if [ -n "$w" ]; then SAMPLES="$SAMPLES$w"$'\n'; say "why @${u}s: $w"; else say "why @${u}s: (none yet)"; fi
-				[ "${u:-0}" -ge $((dl - 30)) ] 2>/dev/null && return 0 ;;
+				u=$(head -1 <<< "$o"); DG=${u#* UP=}; u=${u#*UP=}; u=${u%% *}; w=$(tail -n +2 <<< "$o" | head -1)
+				if [ -n "$w" ]; then SAMPLES="$SAMPLES$w"$'\n'; say "why @${u}s: $w [diag ${DG#* }]"; else say "why @${u}s: (none yet)"; fi
+				[ "${u:-0}" -ge $((dl - 30)) ] 2>/dev/null && { [ -n "${DV_DIR:-}" ] && qr "logread | grep -E 'WBOX-helper-flap|batman-autocommit|provhelper' | tail -400" > "$DV_DIR/flap-logread.txt"; return 0; } ;;
 			BOOT=*) no "the trial boot $b0 ended before uptime $((dl - 30)) s (now [$(head -1 <<< "$o")])"; return 1 ;;
 		esac
 		[ $(( $(mono) - t0 )) -gt $(( dl + 300 )) ] && { no "no sample at uptime >= $((dl - 30)) s within $((dl + 300)) s of host time"; return 1; }

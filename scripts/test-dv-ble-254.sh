@@ -80,6 +80,10 @@ o=$(REPO=$REPO bash "$REPO/tests/judges/h3-judges.sh" 2>&1) && tok "h3 judges: $
 o=$(REPO=$REPO bash "$REPO/tests/judges/sd6-judge.sh" 2>&1) && tok "sd6 judge: $(tail -1 <<< "$o")" || tbad "sd6 judge: $(grep '^FAIL' <<< "$o" | head -3 | tr '\n' '|')"
 # the H4 offline judges (254-h4 §16): cap / hs / secrets, each with its bad-log cases (tests/judges/h4/test-judges.py)
 o=$(python3 "$REPO/tests/judges/h4/test-judges.py" 2>&1) && tok "h4 judges: $(tail -1 <<< "$o")" || tbad "h4 judges: $(grep '^FAIL' <<< "$o" | head -3 | tr '\n' '|')"
+# prov-gatt-254: the case / liveness / E2 / post-check verdicts on btmon samples (incl. the masked flip capture as E1's
+# negative control) and the unit's shell pieces (deadman scratch removal, Windows BLE lock, 02 input checks)
+o=$(python3 "$REPO/tests/tools/peer/gattjudge.py" --selftest 2>&1) && tok "gatt judge: $(tail -1 <<< "$o")" || tbad "gatt judge: $(grep '^FAIL' <<< "$o" | head -3 | tr '\n' '|')"
+o=$(REPO=$REPO bash "$REPO/tests/judges/gatt-judges.sh" 2>&1) && tok "gatt shell judges: $(tail -1 <<< "$o")" || tbad "gatt shell judges: $(grep '^FAIL' <<< "$o" | head -3 | tr '\n' '|')"
 
 # ---------------------------------------------------------------- 2. btmon judge (node awk) on fixtures
 judge() { RUN_ID=x sh "$REPO/scripts/node/ble-periph-254.sh" judge; }
