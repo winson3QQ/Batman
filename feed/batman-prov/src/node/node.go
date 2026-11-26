@@ -118,7 +118,7 @@ type Sys interface {
 type Node struct {
 	mu      sync.Mutex
 	P       provstore.Paths
-	KS      *keystore.Keystore
+	KS      keystore.Identity
 	Sys     Sys
 	BootID  []byte // 16 B, this helper's per-boot id (sig_static input)
 	nonces  map[string]*nonce
@@ -166,7 +166,7 @@ type nonce struct {
 }
 
 // New wires a node.
-func New(p provstore.Paths, ks *keystore.Keystore, sys Sys, log func(string, ...any)) *Node {
+func New(p provstore.Paths, ks keystore.Identity, sys Sys, log func(string, ...any)) *Node {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return &Node{P: p, KS: ks, Sys: sys, BootID: b, nonces: map[string]*nonce{}, Log: log,
