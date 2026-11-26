@@ -162,3 +162,8 @@ scripts/dv/prov-settings-254.sh	^x=\$\(qr .nz\(\)\{ \[ -s /tmp/\.uci/wireless \]
 scripts/dv/prov-settings-254.sh	grep -h '\^ssid=' /tmp/run/hostapd-\*\.conf	ST4: reads the ssid hostapd runs from its config under root-only /tmp/run (0644 by hostapd, F34); an observation, never a write
 scripts/dv/test-deadman-254.sh	(/tmp|/opt)	offline test: runs only inside its own mount namespace with fresh tmpfs over /tmp and /opt (asserted at :25-31 before anything is written); nothing runs on a node
 scripts/dv/test-pr02-254.sh	/tmp/run/batman/cfgsave-mnt\.y	offline test: the product cfgsave mount path as fixture text (expected p5-restore output); nothing runs on a node
+# --- #254 prov-gatt-254 (PR #435): read-only probes and the deadman's scratch removal ---
+scripts/dv/prov-gatt-254.sh	/var/lib/bluetooth	read-only listing of bluetoothd's root-0700 store (bond / device-dir counts); nothing is written there
+scripts/dv/prov-gatt-254.sh	in /tmp/run/batman-dvpc\.\*\)	case pattern on readlink /proc/<pid>/exe (btmon run from a harness provclient dir); a match is only printed, /tmp/run is root-only
+scripts/dv/prov-gatt-254.sh	/tmp/run/batman-provd-test	existence test / INFO text only (the prov_test frame-socket dir, root-made under root-only /tmp/run); never read or written
+scripts/node/prov-lease-254.sh	"/tmp/run/batman-dvpc\.\$1"	deadman scratch removal: one exact path of a validated run id under root-only /tmp/run; a symlink is removed as a link, never followed
