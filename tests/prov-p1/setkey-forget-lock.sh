@@ -31,7 +31,7 @@ printf 'logger(){ echo "$*" >> "%s/logger.log"; }\n' "$ST" > "$T/fns.sh"
 mkcopy() {   # $1 = LOCKWAIT for this copy, $2 = output
 	sed -e "1r $T/fns.sh" -e "s#/usr/lib/batman/rundir.sh#$ST/rundir.sh#g" -e "s#^MARK=/etc/halow-keyguard.blocked#MARK=$ST/mark#" \
 		-e "s#^WSETTLE=/usr/lib/batman/wireless-settle.sh#WSETTLE=$WS#" -e "s#^IEEE80211=/sys/class/ieee80211; NETCLASS=/sys/class/net; PROC=/proc; S1G_EXE=/usr/sbin/wpa_supplicant_s1g; S1G_UID=0#IEEE80211=$ST/sys/ieee80211; NETCLASS=$ST/sys/net; PROC=/proc; S1G_EXE=$SLEEPX; S1G_UID=$(id -u)#" \
-		-e "s#^SETTLE_WAIT=30#SETTLE_WAIT=3#" -e "s#^READBACK_WAIT=60#READBACK_WAIT=4#" \
+		-e "s#^SETTLE_WAIT=30#SETTLE_WAIT=3#" -e "s#^READBACK_WAIT=60#READBACK_WAIT=8#" \
 		-e "s#^LOCKWAIT=90#LOCKWAIT=$1#" -e "s#^FORGET_WAIT=30#FORGET_WAIT=2#" -e 's/\$(id -u)/$(echo 0)/g' \
 		-e "s#-b /dev/mmcblk0p5#-e $ST/p5#" "$SK" > "$2"
 }
