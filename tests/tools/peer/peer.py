@@ -16,6 +16,9 @@ Subcommands so far:
   eh9 --device-id <hex18>      read-only probe on a legacy / unclaimed node (E-H9): connect, NX with the device_id
                                prologue, first_contact (dev DAC rule), `info`, a ~9 KiB `info` (unknown body key,
                                ignored by the node: multi-frame both ways), idle --hold seconds, `info` again
+  gatt <case> --device-id <hex18> [--addr <a>] [--n N] [--deadline S]
+                               prov-gatt-254: one framing / MTU / pipeline case on one connection, observations only
+                               (gatt.py; the verdict is scripts/dv/prov-gatt-254.sh's, via gattjudge.py)
   --selftest                   the BLE transport against a fake bridge (no Bluetooth)
 """
 import argparse
@@ -37,8 +40,19 @@ import nodecert  # noqa: E402
 import peer_core  # noqa: E402
 import transport_sock as ts  # noqa: E402
 
-WIN_PY = "/mnt/c/Users/yello/AppData/Local/Programs/Python/Python313/python.exe"
-BRIDGE_WIN = r"\\wsl.localhost\Ubuntu-24.04" + str(HERE / "blebridge.py").replace("/", "\\")
+WIN_PY = os.environ.get("PEER_WIN_PY", "/mnt/c/Users/yello/AppData/Local/Programs/Python/Python313/python.exe")
+
+
+def _bridge_win(here):
+    """The bridge as Windows sees it: a checkout on a Windows drive (/mnt/<d>/...) by its drive path, one inside the
+    WSL filesystem through the wsl.localhost share."""
+    s = str(here / "blebridge.py")
+    if len(s) > 7 and s.startswith("/mnt/") and s[5].isalpha() and s[6] == "/":
+        return s[5].upper() + ":" + s[6:].replace("/", "\\")
+    return r"\\wsl.localhost\Ubuntu-24.04" + s.replace("/", "\\")
+
+
+BRIDGE_WIN = _bridge_win(HERE)
 
 
 def out(**kw):
@@ -60,6 +74,8 @@ class BleTransport:
         self.frame_limit = ts.MAX_FRAME
         self.msg1_frames = 0
         self._pending = []          # N lines that arrived while a control reply was awaited
+        self._wlock = threading.Lock()   # ONE writer of the bridge's stdin, whole lines only (review A3-m4)
+        self._hb = None
         threading.Thread(target=self._reader, daemon=True).start()
 
     def _reader(self):
@@ -69,10 +85,32 @@ class BleTransport:
 
     def cmd(self, line):
         try:
-            self.p.stdin.write(line + "\n")
-            self.p.stdin.flush()
-        except (BrokenPipeError, OSError) as e:
+            with self._wlock:
+                self.p.stdin.write(line + "\n")
+                self.p.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError) as e:
             raise ts.Closed(str(e)) from None
+
+    def start_hb(self, every=2.0, alive=lambda: True):
+        """HB every <every> s (it arms the bridge's stdin watchdog) while alive() holds. A dead parent stops the HBs and
+        the bridge then cuts the link by itself within its WATCHDOG_S (blebridge.py, review A3-m5)."""
+        stop = threading.Event()
+
+        def run():
+            while not stop.wait(every):
+                if not alive():
+                    return
+                try:
+                    self.cmd("HB")
+                except ts.Closed:
+                    return
+        self._hb = stop
+        threading.Thread(target=run, daemon=True).start()
+
+    def pid(self):
+        self.cmd("PID")
+        line = self.expect(("PID ",), timeout=15)
+        return int(line.split()[1]) if line.startswith("PID ") else -1
 
     def expect(self, prefixes, timeout=30.0):
         """Next control line starting with one of prefixes; N lines that arrive meanwhile are kept for recv()."""
@@ -90,7 +128,7 @@ class BleTransport:
             if line.startswith("N "):
                 self._pending.append(line)
                 continue
-            if line.startswith("LOST "):
+            if line.startswith("LOST ") or line.startswith("WATCHDOG"):
                 raise ts.Closed(line)
             if any(line.startswith(p) for p in prefixes) or line.startswith("ERR "):
                 return line
@@ -148,7 +186,9 @@ class BleTransport:
                 raise ts.Closed("bridge exited")
             if line.startswith("N "):
                 return bytes.fromhex(line[2:])
-            if line.startswith("LOST ") or line.startswith("ERR write"):
+            if line.startswith("NT "):
+                return bytes.fromhex(line.split()[2])
+            if line.startswith("LOST ") or line.startswith("ERR write") or line.startswith("WATCHDOG"):
                 raise ts.Closed(line)
 
     def close_link(self):
@@ -163,6 +203,8 @@ class BleTransport:
             return -1
 
     def quit(self):
+        if self._hb is not None:
+            self._hb.set()
         try:
             self.p.stdin.close()
         except OSError:
@@ -330,6 +372,12 @@ def main():
     e = sub.add_parser("eh9")
     e.add_argument("--device-id", required=True)
     e.add_argument("--hold", type=int, default=230)
+    g = sub.add_parser("gatt", help="prov-gatt-254: one GATT framing case on one connection (gatt.py)")
+    g.add_argument("case")
+    g.add_argument("--device-id", required=True)
+    g.add_argument("--addr", default="-", help="the node's address found by an earlier case (pinned), or -")
+    g.add_argument("--n", type=int, default=0, help="B1 / B1x: pipelined requests")
+    g.add_argument("--deadline", type=int, default=0, help="hard limit in s (default per case)")
     a = ap.parse_args()
     if a.selftest:
         # the vectors layer (selftest.py: peer_core / owner byte for byte against gen.py) first — it had no caller
@@ -340,6 +388,9 @@ def main():
         return 1 if (r1 or r2) else 0
     if a.cmd == "eh9":
         return cmd_eh9(a)
+    if a.cmd == "gatt":
+        import gatt
+        return gatt.main(a, BleTransport)
     ap.print_help()
     return 2
 
