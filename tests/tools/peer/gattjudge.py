@@ -1,4 +1,4 @@
-"""gattjudge — the verdicts of prov-gatt-254 (the prov-gatt-254 design §4.3, §5, §6), stdlib only. The unit script
+"""gattjudge - the verdicts of prov-gatt-254 (the prov-gatt-254 design §4.3, §5, §6), stdlib only. The unit script
 (scripts/dv/prov-gatt-254.sh) is the one judge; this is its library: it reads what peer.py printed (GATTR lines) and
 04's btmon text (`btmon -r`, decoded on 04 as uid 65534) and prints PASS / FAIL / INVALID lines and one
 "VERDICT case=<id> <PASS|FAIL|INVALID|RETRY|NA>" line. Nothing here talks to a node.
@@ -88,10 +88,13 @@ def conns(recs):
 
 
 def gatt_handles(recs, h):
-    """ATT handles of the provd service from the discovery on connection h: {rx, tx, ctrl, status, ccc}."""
+    """ATT handles of 04's provd service from the discovery on connection h: {rx, tx, ctrl, status, ccc}. Only responses
+    04 SENT (< ACL Data TX) describe 04's database: when the central is 02 (it runs provd too), 04's BlueZ discovers 02's
+    database on the same link and 02's responses (> ACL Data RX) list the same UUIDs at other handles (run 2,
+    2026-11-26: 04's RX 0x002b, 02's 0x0019 — the old parser took 02's)."""
     out, vals = {}, []
     for r in recs:
-        if r.handle() != h or "ACL Data" not in r.head:
+        if r.handle() != h or not r.head.startswith("< ACL Data TX"):
             continue
         cur = None
         for b in r.body:
@@ -122,15 +125,25 @@ def gatt_handles(recs, h):
         ccc = [c for c in out.get("_ccc", []) if out["tx"] < c < nxt]
         if ccc:
             out["ccc"] = ccc[0]
+        elif out["tx"] + 1 < nxt - 1:
+            # no Find Information for it: BlueZ's client (02) takes the gap between TX's value and the next
+            # characteristic's declaration (= its value handle - 1) as TX's descriptor — run 2: CCC write to 0x002e,
+            # TX value 0x002d, next declaration 0x002f. Windows asks with Find Information (run 1)
+            out["ccc"] = out["tx"] + 1
     out.pop("_ccc", None)
     return out
 
 
-def att(recs, h, op, handle=None):
-    """The records on connection h whose ATT line is <op> (and, when given, whose attribute Handle is <handle>)."""
+def att(recs, h, op, handle=None, direction=None):
+    """The records on connection h whose ATT line is <op> (and, when given, whose attribute Handle is <handle>);
+    direction "rx" = sent by the central to 04, "tx" = sent by 04 (default: the one the op implies for 04 as server:
+    writes / requests rx, notifications / responses tx)."""
+    if direction is None:
+        direction = "tx" if ("Notification" in op or "Response" in op) else "rx"
+    pfx = "> ACL Data RX" if direction == "rx" else "< ACL Data TX"
     out = []
     for r in recs:
-        if r.handle() != h or "ACL Data" not in r.head:
+        if r.handle() != h or not r.head.startswith(pfx):
             continue
         if not any(re.match(r"\s+ATT: %s \(" % re.escape(op), b) for b in r.body):
             continue
@@ -140,6 +153,12 @@ def att(recs, h, op, handle=None):
                 continue
         out.append(r)
     return out
+
+
+def notifications(recs, h, tx_handle):
+    """04's notifications on its TX value handle: single (0x1b) and multiple (0x23: BlueZ sends Handle Multiple Value
+    Notification to a client that announced support — 02's BlueZ does, run 2)."""
+    return att(recs, h, "Handle Value Notification", tx_handle) + att(recs, h, "Handle Multiple Value Notification", tx_handle)
 
 
 def encryption_lines(recs, h):
@@ -193,6 +212,11 @@ def mtu_at_ccc(recs, h, ccc):
 
 
 # ---- the peer-only shape (also what gatt.py's selftest checks) -------------------------------------------------------
+
+def peer_type(r):
+    t = r.field("Peer address type") or ""
+    return t.split(" (")[0] if t else ""
+
 
 def frac(s):
     try:
@@ -261,7 +285,7 @@ def gattr(text):
     return dict(kv.split("=", 1) for kv in g[-1].split()[1:] if "=" in kv)
 
 
-def judge_case(case, gatt_text, btmon_text, central, target=None, pids=None, retry=False, real_seen=False):
+def judge_case(case, gatt_text, btmon_text, central, target=None, pids=None, retry=False, real_seen=False, last4=None):
     v = V(case)
     d = gattr(gatt_text)
     if not d or "GATTEND case=%s" % case not in gatt_text:
@@ -269,9 +293,17 @@ def judge_case(case, gatt_text, btmon_text, central, target=None, pids=None, ret
         return v.done()
     if re.search(r"GATTEND case=\S+ rc=124", gatt_text):
         v.say("INVALID" if case != "b1x" else "FAIL", "peer.py hit its deadline (rc 124)%s" % (
-            " — B1x stalled: bluetoothd / provd stopped answering (judge the liveness log)" if case == "b1x" else ""))
+            " - B1x stalled: bluetoothd / provd stopped answering (judge the liveness log)" if case == "b1x" else ""))
+    # node identity first (run 2: the case ran on 02): whatever 04's capture says, a case on another node judges nothing
+    if d.get("hs") == "fake":
+        v.say("INVALID", "the handshake got the decoy msg2: the case did not run on 04 (wrong node, %s)" % d.get("target"))
+    if last4 not in (None, "-") and d.get("conn") == "ok" and str(d.get("node", "")).lower() != last4.lower():
+        v.say("INVALID", "the case's node has STATUS key 5 [%s], not 04's %s: wrong node" % (d.get("node"), last4))
+    if d.get("conn", "").startswith("err:no-node"):
+        v.say("INVALID", "no advertiser with 04's key 5 %s (seen: %s)" % (last4, d.get("seen")))
+        return v.done()
     if d.get("skip", "-") not in ("-", ""):
-        v.say("NA", "skipped (%s) — not reachable on this central" % d["skip"])
+        v.say("NA", "skipped (%s) - not reachable on this central" % d["skip"])
         return v.done()
     # pid rules (§6.3)
     if pids:
@@ -289,18 +321,21 @@ def judge_case(case, gatt_text, btmon_text, central, target=None, pids=None, ret
         return v.done()
     if not any(r.head.startswith("= New Index") or r.head.startswith("= Index Info") for r in recs):
         v.say("INVALID", "btmon capture has no New Index / Index Info: not known to cover the connection's start")
-    mine = [c for c in cs if central in ("-", None) or c[1] == central.upper()]
-    foreign = [c for c in cs if central not in ("-", None) and c[1] != central.upper()]
+    # central "any" (the default): the one Connection Complete of the window is the case's (design §4.3 fallback; the
+    # node identity is the peer's key-5 check above); a second one is a foreign central. A given address is enforced.
+    anyc = central in ("-", "any", None)
+    mine = [c for c in cs if anyc or c[1] == central.upper()]
+    foreign = [c for c in cs if not anyc and c[1] != central.upper()]
     if foreign:
         v.say("INVALID", "another central connected during the case: %s" % ",".join(str(c[1]) for c in foreign))
-    if central in ("-", None) and len(cs) > 1:
-        v.say("INVALID", "%d connections in the window and no known central address to tell them apart" % len(cs))
+    if anyc and len(cs) > 1:
+        v.say("INVALID", "%d connections in the window: a foreign central (%s)" % (len(cs), ",".join(str(c[1]) for c in cs)))
     if len(mine) != 1:
         v.say("INVALID", "%d Connection Complete from the central %s (want exactly 1)" % (len(mine), central))
         return v.done()
     h, peer_addr, lrpa, _i = mine[0]
-    if central in ("-", None) and peer_addr:
-        v.lines.append("INFO gatt %s: central %s" % (case, peer_addr))
+    if peer_addr:
+        v.lines.append("INFO gatt %s: central %s (%s)" % (case, peer_addr, peer_type(recs[_i]) or "type ?"))
     if lrpa and lrpa != "00:00:00:00:00:00" and target and target != "-" and lrpa != target.upper():
         v.say("INVALID", "Local RPA %s is not the target %s" % (lrpa, target))
     reason, cmd04, t_disc = disconnect(recs, h)
@@ -464,7 +499,7 @@ def judge_e2(rw_text, rw_btmon, read_btmon, central, msg2len):
             v.say("FAIL", "%s: encryption on 02's link: %s" % (label, "; ".join(sorted(set(enc)))))
         ccc = att(recs, h, "Write Request", hd.get("ccc")) if "ccc" in hd else []
         rxw = att(recs, h, "Write Command", hd.get("rx")) if "rx" in hd else []
-        ntf = att(recs, h, "Handle Value Notification")
+        ntf = notifications(recs, h, hd.get("tx")) if "tx" in hd else []
         mtu = mtu_at_ccc(recs, h, hd.get("ccc"))
         if want:
             miss = [n for n, x in (("RX/TX discovery", "rx" in hd and "ccc" in hd), ("CCC write (subscription)", ccc),
@@ -479,21 +514,26 @@ def judge_e2(rw_text, rw_btmon, read_btmon, central, msg2len):
                     att_len(rxw[-1]), h, mtu))
                 if not ntf:
                     v.say("FAIL", "rw: 04 sent no notification after 02's unencrypted subscription + msg1")
+                else:
+                    v.say("PASS", "rw: 04 answered on TX with %d notification PDU(s) (%s), unencrypted" % (
+                        len(ntf), ", ".join(sorted(set("multiple" if "Multiple" in r.text() else "single" for r in ntf)))))
         else:
             if ccc or ntf:
                 v.say("FAIL", "read control: a CCC write or a notification on a read-only link")
             else:
                 v.say("PASS", "read control: no subscription, no notification (the notifications are E2's doing)")
     if rw_ok:
+        # 02's own view (secondary: its bluetoothctl output is parsed by text and the notifications may come as one
+        # Multiple Value Notification, run 2): a full msg2 is a PASS line, anything else only INFO — 04's capture above
+        # is the verdict
         nv = [ln.split()[1] for ln in rw_text.splitlines() if ln.startswith("NVAL ")]
         vals = [bytes.fromhex(x) for x in nv if re.fullmatch(r"[0-9a-f]*", x) and len(x) % 2 == 0]
         total = sum(len(f) - 3 for f in vals if len(f) >= 3)
-        if not vals:
-            v.say("FAIL", "02 reports no notification although 04 saw its subscription and write (RX or TX needs encryption?)")
-        elif any(len(f) < 3 for f in vals) or total != msg2len:
-            v.say("FAIL", "02's notifications carry %d B, M1's msg2 is %d B" % (total, msg2len))
-        else:
+        if vals and not any(len(f) < 3 for f in vals) and total == msg2len:
             v.say("PASS", "02 (not paired) got msg2 (%d B in %d frames)" % (total, len(vals)))
+        else:
+            v.lines.append("INFO gatt e2: 02's bluetoothctl output gave %d value(s), %d B (M1's msg2 %d B) - see its RAW lines"
+                           % (len(vals), total, msg2len))
     return v.done()
 
 
@@ -526,7 +566,7 @@ def att_len(r):
 
 
 def judge_post(obs):
-    """obs: key=value lines — pnp_before / pnp_after (comma lists), bond04 (ls of the adapter dir), paired02 (count),
+    """obs: key=value lines - pnp_before / pnp_after (comma lists), bond04 (ls of the adapter dir), paired02 (count),
     btmon04 (pids of harness btmon), pcd (exists 0/1), orphan_wsl / orphan_win (counts), connected04 (count)."""
     d = {}
     for ln in obs.splitlines():
@@ -545,7 +585,7 @@ def judge_post(obs):
             "%s=%s" % (k, d[k] or "''") for k in unread))
         return v.done()
     new = sorted(set(filter(None, d["pnp_after"].split(","))) - set(filter(None, d["pnp_before"].split(","))))
-    v.say("FAIL", "Windows has new BLE devices (a bond?): %s — remove by hand" % ",".join(new)) if new else \
+    v.say("FAIL", "Windows has new BLE devices (a bond?): %s - remove by hand" % ",".join(new)) if new else \
         v.say("PASS", "Windows: no new BLE device (PnP diff empty)")
     extra = [x for x in d["bond04"].split() if re.fullmatch(MAC, x)]
     v.say("FAIL", "04 keeps a device directory (a bond?): %s" % ",".join(extra)) if extra else \
@@ -727,7 +767,9 @@ def selftest():
     s02 = sample(disc_reason=0x13, disc_cmd=False)
     rd02 = "\n".join(l for l in s02.splitlines() if "0x0014 Type" not in l and "Notification" not in l)
     check("E2: notifications total = msg2 length, read control clean -> PASS", verdict(judge_e2(rw_ok, s02, rd02, CENTRAL, 700)), "PASS")
-    check("E2: no notification -> FAIL", verdict(judge_e2("NOTIFY n=0 bytes=0", s02, rd02, CENTRAL, 700)), "FAIL")
+    e = judge_e2("NOTIFY n=0 bytes=0", s02, rd02, CENTRAL, 700)
+    check("E2: 04 notified but 02's output had no values -> PASS on 04's capture, 02's side only INFO (run 2)",
+          (verdict(e), any(ln.startswith("INFO gatt e2: 02's bluetoothctl output gave 0") for ln in e)), ("PASS", True))
     check("E2: read control has a notification -> FAIL", verdict(judge_e2(rw_ok, s02, s02, CENTRAL, 700)), "FAIL")
     # s512b (run 1, 2026-11-26): BlueZ drops a 513 B value before provd -> NA with the capture as evidence, never FAIL
     held = sample(disc_reason=0x13, disc_cmd=False, rxlen=513)
@@ -752,6 +794,18 @@ def selftest():
           ("ATT: Write Command (0x52) len 515" in ex, "Reason:" in ex, "Data:" not in ex), (True, True, True))
     check("E2: MTU 23 on 02's link -> INVALID", verdict(judge_e2(rw_ok, sample(mtu=(23, 517), disc_reason=0x13, disc_cmd=False), rd02, CENTRAL, 700)), "INVALID")
     check("E2: 02's address not in the capture -> INVALID", verdict(judge_e2(rw_ok, s02, rd02, OTHER, 700)), "INVALID")
+    # run 2's real E2 captures (masked excerpts, tests/fixtures/gatt-254): 04's discovery of 02's provd database on the
+    # same link, BlueZ's inferred CCC, Multiple Value Notifications -> PASS; the read-only control stays clean
+    fxd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "fixtures", "gatt-254")
+    rrw = open(os.path.join(fxd, "e2-rw.txt"), encoding="utf-8").read()
+    rrd = open(os.path.join(fxd, "e2-read.txt"), encoding="utf-8").read()
+    hd2 = gatt_handles(parse(rrw), 64)
+    check("run 2 capture: 04's own provd handles (RX 0x2b, TX 0x2d, CCC 0x2e), not 02's", (hd2.get("rx"), hd2.get("tx"), hd2.get("ccc")), (0x2b, 0x2d, 0x2e))
+    check("run 2 capture: E2 -> PASS (subscription + 35 B write seen, 2 multiple notifications)",
+          verdict(judge_e2("RW x\nNOTIFY n=0 bytes=0\nSUB yes\nWRITE yes", rrw, rrd, "-", 753)), "PASS")
+    rrw_nontf = "\n".join(ln for ln in rrw.splitlines() if "Multiple Value Notification" not in ln)
+    check("run 2 capture with 04's notifications removed -> FAIL (the E2 negative control on real data)",
+          verdict(judge_e2("NOTIFY n=0 bytes=0", rrw_nontf, rrd, "-", 753)), "FAIL")
     # post-check: every branch has its own negative control (A2-m10 / B2-m7)
     base = {"pnp_before": "a,b", "pnp_after": "a,b", "bond04": "attributes identity settings cache", "paired02": "0",
             "btmon04": "-", "pcd": "0", "orphan_wsl": "0", "orphan_win": "0", "connected04": "0"}
@@ -767,7 +821,34 @@ def selftest():
     # central learnt from the first case's capture (no GATT_CENTRAL): printed for the unit, then required
     lines = judge_case("m1", m1, acc, "-", pids=P)
     check("central '-' with one connection: learnt and printed",
-          any(ln == "INFO gatt m1: central %s" % CENTRAL for ln in lines), True)
+          any(ln.startswith("INFO gatt m1: central %s (Public)" % CENTRAL) for ln in lines), True)
+    # run 2 (2026-11-26): the case ran on 02 — decoy msg2, 04's capture empty -> INVALID naming the wrong node
+    wn = judge_case("m1", gl("m1", hs="fake", warm="0", answered="0/0", lost="no", target="5A:00:00:00:00:02", node="-"),
+                    sample(index=True, disc=False).split("> HCI Event: LE Meta")[0], "any", pids=P, last4="7d2c")
+    check("run 2: hs=fake on the case's connection -> INVALID 'did not run on 04', whatever the capture",
+          (verdict(wn), any("did not run on 04" in ln for ln in wn)), ("INVALID", True))
+    check("node key 5 not 04's -> INVALID", verdict(judge_case("t2", gl("t2", answered="1/1", lost="no", node="0000"),
+                                                               acc, "any", pids=P, last4="7d2c")), "INVALID")
+    check("node key 5 = 04's, central any, one connection -> PASS", verdict(judge_case(
+        "t2", gl("t2", answered="1/1", lost="no", node="7d2c"), acc, "any", pids=P, last4="7d2c")), "PASS")
+    check("central any with a second connection in the window -> INVALID", verdict(judge_case(
+        "t2", gl("t2", answered="1/1", lost="no", node="7d2c"), sample(extra_conn=OTHER, disc_reason=0x13, disc_cmd=False),
+        "any", pids=P, last4="7d2c")), "INVALID")
+    check("no advertiser with 04's key 5 -> INVALID", verdict(judge_case(
+        "t2", gl("t2", conn="err:no-node-7d2c", seen="AA:02:-"), acc, "any", pids=P, last4="7d2c")), "INVALID")
+    # run 2: 04's BlueZ also discovers 02's provd database on the same link (02's responses, RX); 04's handles are the
+    # TX ones. Mixed capture: 02's copy of the UUIDs at 0x0019.. must not replace 04's 0x0011..
+    mix = s02.replace("> ACL Data RX: Handle 64 flags 0x02 dlen 9  #9", "\n".join([
+        "> ACL Data RX: Handle 64 flags 0x02 dlen 27  #8 [hci0] 1.250000", "      ATT: Read By Type Response (0x09) len 22",
+        "            Value Handle: 0x0019", "            Value UUID: Vendor specific (%s)" % RX,
+        "            Value Handle: 0x001b", "            Value UUID: Vendor specific (%s)" % TX,
+        "> ACL Data RX: Handle 64 flags 0x02 dlen 9  #9"]))
+    check("mixed discovery: 04's own handles (TX responses) win over 02's database (RX responses)",
+          gatt_handles(parse(mix), 64).get("rx"), 0x11)
+    check("E2 on a mixed-discovery capture -> PASS", verdict(judge_e2(rw_ok, mix, rd02, CENTRAL, 700)), "PASS")
+    multi = s02.replace("ATT: Handle Value Notification (0x1b) len 245", "ATT: Handle Multiple Value Notification (0x23) len 496")
+    check("a Handle Multiple Value Notification counts as 04's notification",
+          len(notifications(parse(multi), 64, 0x13)), 1)
     check("E2 without 02's address: taken from the read capture -> PASS", verdict(judge_e2(rw_ok, s02, rd02, "-", 700)), "PASS")
     check("E2 without 02's address and a rw capture from another central -> INVALID",
           verdict(judge_e2(rw_ok, sample(central=OTHER, disc_reason=0x13, disc_cmd=False), rd02, "-", 700)), "INVALID")
@@ -789,6 +870,7 @@ def main(argv):
     c.add_argument("--pids", default="")
     c.add_argument("--retry", action="store_true")
     c.add_argument("--real-seen", action="store_true")
+    c.add_argument("--last4", default="-")
     c.add_argument("--gatt", required=True)
     c.add_argument("--btmon", required=True)
     lv = sub.add_parser("live")
@@ -808,7 +890,7 @@ def main(argv):
     rd = lambda p: open(p, encoding="utf-8", errors="replace").read() if p else ""  # noqa: E731
     if a.cmd == "case":
         lines = judge_case(a.case, rd(a.gatt), rd(a.btmon), a.central, a.target,
-                           a.pids.split(",") if a.pids else None, a.retry, a.real_seen)
+                           a.pids.split(",") if a.pids else None, a.retry, a.real_seen, a.last4)
     elif a.cmd == "live":
         lines = judge_live(rd(a.log))
     elif a.cmd == "e2":

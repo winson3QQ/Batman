@@ -238,6 +238,9 @@ rw)
 	grep -q 'Attempting to write' "$T/rw" && echo "WRITE yes" || echo "WRITE no"
 	e=$(grep -iE 'fail|error|no device|no attribute|not available|unable|segmentation' "$T/rw" | sed 's/^.*\]# *//' | sort -u | head -5 | tr '\n' '|'); echo "ERRLINES ${e:--}"
 	echo "CONN_S $(( $(cat "$T/t_disc" 2>/dev/null || echo 0) - $(cat "$T/t_conn" 2>/dev/null || echo 0) ))"
-	echo "PAIRED ${PV:-?}" ;;
+	echo "PAIRED ${PV:-?}"
+	# the session as bluetoothctl printed it (prompts stripped, <= 400 lines): run 2 reported NOTIFY n=0 while 04 sent
+	# two Multiple Value Notifications — the raw text shows how 02 printed them. Public values only (CTRL, msg2).
+	sed 's/^.*\]# *//' "$T/rw" | head -400 | cut -c1-200 | sed 's/^/RAW /' ;;
 *) echo "usage: prov-p2-central-254.sh read <last4|-> | hold <last4|-> | watch <addr> <s> | drop <addr> | addrs | rw <addr> <hex>"; exit 2 ;;
 esac

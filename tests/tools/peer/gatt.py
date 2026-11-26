@@ -131,11 +131,11 @@ class Case:
         self.pinned_dac, self.e_priv = pinned_dac, e_priv
         self.r = dict(case=a.case, conn="ok", target="-", mtu="unk", wmax="0", frame="0", status0="-", hs="none",
                       warm="0", sent="0", answered="0/0", lost="no", lost_at="-", msg2len="0", nlen="-", order="-",
-                      resp_frames="0", status1="-", skip="-")
+                      resp_frames="0", status1="-", skip="-", node="-", seen="-")
 
     def line(self):
         keys = ["case", "conn", "target", "mtu", "wmax", "frame", "status0", "hs", "warm", "sent", "answered", "lost",
-                "lost_at", "msg2len", "nlen", "order", "resp_frames", "status1", "skip"]
+                "lost_at", "msg2len", "nlen", "order", "resp_frames", "status1", "skip", "node", "seen"]
         return "GATTR " + " ".join("%s=%s" % (k, str(self.r[k]).replace(" ", "_")) for k in keys)
 
     def status(self):
@@ -149,25 +149,51 @@ class Case:
                     return "att:" + code.lower()
             return "att:" + (s.split()[-1] if s else "unknown")
 
+    def status_key5(self):
+        """STATUS before the handshake: (status word, key 5 = the node's last4 or '-'). An unclaimed / legacy provd
+        sends key 5 (server.go Status); a claimed one (02, the bench member) does not."""
+        try:
+            v = cbor2.loads(self.t.read("STATUS"))
+            k5 = v.get(5) if isinstance(v, dict) else None
+            return "ok", (k5 if isinstance(k5, str) and k5 else "-")
+        except Exception as e:  # noqa: BLE001 — BridgeError("ERR read <exc>") or a lost link
+            s_ = str(e)
+            for code in ("0x0e", "0x05", "0x0f"):
+                if code in s_.lower():
+                    return "att:" + code, "-"
+            return "att:" + (s_.split()[-1] if s_ else "unknown"), "-"
+
     def connect(self):
-        """Scan, connect (the pinned address when given), STATUS, CTRL -> frame size. Returns True when connected."""
+        """Scan, then connect to candidates (the pinned address first, the rest strongest first) until one's STATUS key 5
+        is the node's last4 (run 2, 2026-11-26: 02 advertises the same UUID and is stronger; an RPA also rotates every
+        ~900 s, so the pin is a hint, never trusted). CTRL -> frame size. Returns True on the node."""
         t, a = self.t, self.a
-        devs = sorted(t.scan(4 if a.addr != "-" else 8), key=lambda d: -d[1])
-        cands = [d for d, _r in devs if a.addr in ("-", d)]
-        if not cands:
+        want = getattr(a, "last4", "-") or "-"
+        devs = sorted(t.scan(8), key=lambda d: -d[1])
+        order = [d for d, _r in devs]
+        if a.addr != "-" and a.addr in order:
+            order.remove(a.addr)
+            order.insert(0, a.addr)
+        if not order:
             self.r["conn"] = "err:not-seen"
             return False
-        for addr in cands:
+        seen = []
+        for addr in order:
             try:
                 line = t.connect(addr)
             except Exception as e:  # noqa: BLE001
-                self.r["conn"] = "err:" + str(e).split()[-1]
+                seen.append("%s:connect-%s" % (addr, str(e).split()[-1]))
+                continue
+            st, k5 = self.status_key5()
+            seen.append("%s:%s" % (addr, k5))
+            if want != "-" and k5.lower() != want.lower():
+                t.close_link()          # not the node: no msg1 is ever sent to it
                 continue
             for kv in line.split()[2:]:
                 k, _, v = kv.partition("=")
                 if k in ("wmax", "mtu"):
                     self.r[k] = v
-            self.r["status0"] = self.status()
+            self.r["status0"], self.r["node"] = st, k5
             try:
                 ctrl = cbor2.loads(t.read("CTRL"))
             except Exception as e:  # noqa: BLE001
@@ -179,7 +205,10 @@ class Case:
             self.addr = addr
             self.r["target"] = addr
             self.r["conn"] = "ok"
+            self.r["seen"] = ",".join(seen)
             return True
+        self.r["seen"] = ",".join(seen)
+        self.r["conn"] = "err:no-node-" + want
         return False
 
     def handshake(self, frame):
@@ -406,7 +435,7 @@ class FakeNode:
     """The bridge's line protocol in front of a node: NX responder with the vectors' node static key and node_cert,
     `info` answered, a framing violation -> LOST (provd's Close -> Device1.Disconnect); a crash -> LOST + crashed."""
 
-    def __init__(self, variant="strict", wmax=514, bluez_drop=False):
+    def __init__(self, variant="strict", wmax=514, bluez_drop=False, with02=True):
         import queue
         import verify
         from noise.connection import Keypair, NoiseConnection
@@ -416,7 +445,8 @@ class FakeNode:
         self.s_priv, self.cert = bytes.fromhex(K["s_node_priv"]), bytes.fromhex(v["node_cert"]["cbor"])
         self.device_id = K["device_id"]
         self.dac = bytes.fromhex(K["dac_cert_der"])
-        self.variant, self.wmax, self.bluez_drop = variant, wmax, bluez_drop
+        self.variant, self.wmax, self.bluez_drop, self.with02 = variant, wmax, bluez_drop, with02
+        self.cur, self.msg1_to = None, []
         self.lines = queue.Queue()
         self.stdout = iter(self.lines.get, None)
         self.crashed, self.lost, self.writes = False, False, []
@@ -455,16 +485,20 @@ class FakeNode:
 
     def on(self, c):
         if c.startswith("SCAN"):
+            if self.with02:
+                self.put("DEV AA:02 -40")        # 02: stronger, same UUID, claimed (no key 5), answers NX with a decoy
             self.put("DEV AA:04 -50")
-            self.put("SCAN-END 1")
+            self.put("SCAN-END %d" % (2 if self.with02 else 1))
         elif c.startswith("CONNECT"):
             self._reset()
+            self.cur = c.split()[1]
             self.lost = False
             self.put("CONNECTED AA:04 wmax=%d mtu=517" % self.wmax)
         elif c == "READ CTRL":
             self.put("VAL a4010102000318f404192000")
         elif c == "READ STATUS":
-            self.put("VAL a10300")
+            self.put("VAL " + (cbor2.dumps({3: 1}) if self.cur == "AA:02" else
+                               cbor2.dumps({3: 3, 5: self.device_id[-4:]})).hex())
         elif c.startswith("FRAMEMAX"):
             self.frame = min(int(c.split()[1]), self.wmax, 513)
             self.put("FRAMESIZE %d" % self.frame)
@@ -497,7 +531,17 @@ class FakeNode:
             self.put("CLOSED AA:04 sent_after_msg1=%d" % len(self.writes))
 
     def message(self, m):
+        if self.nc is None and self.cur == "AA:02":
+            self.msg1_to.append("AA:02")          # a claimed node: the same-length decoy msg2 (noise.go:89-96)
+            self.notify(os.urandom(32 + 48 + len(self.cert) + 16))
+            self.nc = "fake"
+            return
+        if self.nc == "fake":
+            self.lost = True
+            self.put("LOST AA:02")
+            return
         if self.nc is None:
+            self.msg1_to.append(self.cur)
             nc = self.NC.from_name(peer_core.NX)
             nc.set_as_responder()
             nc.set_prologue(peer_core.prologue(self.device_id))
@@ -525,6 +569,7 @@ class FakeNode:
 class _A:
     def __init__(self, case, device_id, n=0):
         self.case, self.device_id, self.addr, self.n, self.deadline = case, device_id, "-", n, 0
+        self.last4 = device_id[-4:]
 
 
 def _observe(case, variant, n=0, wmax=514):
@@ -600,6 +645,34 @@ def selftest():
         d = dict(kv.split("=", 1) for kv in [x for x in out if x.startswith("GATTR")][-1].split()[1:])
         check("only frame.go:37 removed still drops Q2 (so Q2's lax variant is 'start sets next = seq')",
               gattjudge.peer_shape("q2", d, crashed=False) == "PASS", d)
+        # run 2 (2026-11-26): 02 is stronger and advertises the same UUID. With the node's last4 the case must never send
+        # msg1 to 02; without it (the old behaviour) it lands on 02, gets the decoy msg2 -> hs=fake -> INVALID
+        d, node = _observe("t2", "strict")
+        check("node identity: with last4 the case connects to 04 only (02 skipped after its STATUS, no msg1 to it)",
+              d.get("node") == node.device_id[-4:] and node.msg1_to and all(x == "AA:04" for x in node.msg1_to)
+              and "AA:02:-" in d.get("seen", ""), (d, node.msg1_to))
+        import peer
+        node = FakeNode("strict")
+        t = peer.BleTransport(popen=node)
+        out = []
+        a0 = _A("t2", node.device_id)
+        a0.last4 = "-"
+        Case(a0, t, out=out.append, pinned_dac=node.dac).run()
+        t.quit()
+        d = dict(kv.split("=", 1) for kv in [x for x in out if x.startswith("GATTR")][-1].split()[1:])
+        check("negative: without the identity check the case lands on 02 (hs=fake) -> INVALID, never a verdict",
+              d.get("target") == "AA:02" and d.get("hs") == "fake" and gattjudge.peer_shape("t2", d) == "INVALID", d)
+        # a pin that now points at 02 (an RPA rotated / reused): still checked, 04 found by key 5
+        node = FakeNode("strict")
+        t = peer.BleTransport(popen=node)
+        out = []
+        a1 = _A("t2", node.device_id)
+        a1.addr = "AA:02"
+        Case(a1, t, out=out.append, pinned_dac=node.dac).run()
+        t.quit()
+        d = dict(kv.split("=", 1) for kv in [x for x in out if x.startswith("GATTR")][-1].split()[1:])
+        check("a stale pin (AA:02) is tried first but rejected by key 5; the case runs on AA:04",
+              d.get("target") == "AA:04" and d.get("hs") == "real", d)
         # run 1 (2026-11-26): BlueZ itself drops the 513 B value (shared/gatt-server.c:807-818, 871-873) -> NA, not FAIL
         import peer
         node = FakeNode("strict", bluez_drop=True)

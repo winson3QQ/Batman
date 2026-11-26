@@ -17,8 +17,9 @@
 #   W1     NOT run here: cited from prov-provd-wbox-254 (design §5.5)
 # 04 is made legacy inside the snapshot (pr_begin) and restored to its base state at the end and on EVERY abnormal stop.
 # Needs: the WSL peer venv (PEER_PY), the host python (PY_HOST), the harness btmon (DV_BT_TOOLS) and dbus-send
-# (DV_DBUS_TOOLS). The central's LE address: GATT_CENTRAL (from probe U7), else learnt from M1's capture (one
-# connection only) and required equal in every later case. 02's address: GATT_02_ADDR, else E2's read capture.
+# (DV_DBUS_TOOLS). The node: STATUS key 5 = 04's last4, checked by the peer on every case before msg1 (02 advertises the
+# same UUID). The central's LE address: GATT_CENTRAL when given (enforced), else "any": the capture's one connection is
+# the case's and a second one is a foreign central. 02's address: GATT_02_ADDR, else E2's read capture.
 # GATT_CASES="<case> ..." runs only those (m1 is added first when missing). Evidence per case (peer lines, verdict lines,
 # the capture excerpt of that case's link) goes to $DV_DIR/prov-gatt-254-<run>/ (else the host temp dir).
 # Runs from Git Bash on the Windows host. Prints "UNIT prov-gatt-254 PASS|FAIL|INVALID".
@@ -32,7 +33,7 @@ PEER_PY=${PEER_PY:-'$HOME/.batman-dv/peer-venv/bin/python'}   # expanded in WSL
 HPY=${PY_HOST:-python}
 P2C="$REPO/scripts/node/prov-p2-central-254.sh"
 BTT=${DV_BT_TOOLS:-$HOME/batman-dv-tools/bluez-5.72}; DBT=${DV_DBUS_TOOLS:-$HOME/batman-dv-tools/dbus}
-CENTRAL=${GATT_CENTRAL:--}; C02=${GATT_02_ADDR:--}
+CENTRAL=${GATT_CENTRAL:-any}; C02=${GATT_02_ADDR:--}
 GL="${TEMP:?}/batman-dv-winble.lock"
 GW=$(mktemp -d)
 ADDR=-; DEVID=""; MSG2LEN=0; REAL_PID=""; PIDPREV=""; GL_HELD=0
@@ -176,7 +177,7 @@ run_case(){
 	case "$c" in b1|b1x) live_start $(( dl + 60 )) ;; esac
 	g="$GW/$lab.gatt"; b="$GW/$lab.btmon"
 	# the hard limit inside WSL (it ends peer.py; the bridge's watchdog then cuts the link), peer.py's own --deadline first
-	wsl_ timeout $(( dl + 60 )) bash -c "$PEER_PY $PEERW gatt $c --device-id $DEVID --addr $ADDR --n $n --deadline $dl" > "$g" 2>&1
+	wsl_ timeout $(( dl + 60 )) bash -c "$PEER_PY $PEERW gatt $c --device-id $DEVID --last4 $LAST4 --addr $ADDR --n $n --deadline $dl" > "$g" 2>&1
 	tr -d '\r' < "$g" > "$g.t" && mv "$g.t" "$g"
 	say "$c peer: $(grep -E '^(PIDS|GATTR|GATTEND)' "$g" | tr '\n' ' ' | cut -c1-400)"
 	orph_clean || { JV=INVALID; return 2; }
@@ -188,18 +189,19 @@ run_case(){
 	[ -n "$retry" ] && extra="--retry"
 	[ -n "$REAL_PID" ] && [ "$REAL_PID" = "$p1" ] && extra="$extra --real-seen"
 	# shellcheck disable=SC2086  # extra: zero, one or two flags
-	"$HPY" "$PJ" case --case "$c" --central "$CENTRAL" --target "$ADDR" --pids "$PIDPREV,$p0,$p1" $extra --gatt "$g" --btmon "$b" > "$GW/$lab.v"
+	"$HPY" "$PJ" case --case "$c" --central "$CENTRAL" --target "$ADDR" --last4 "$LAST4" --pids "$PIDPREV,$p0,$p1" $extra --gatt "$g" --btmon "$b" > "$GW/$lab.v"
 	judge_lines < "$GW/$lab.v"
 	keep "$lab" "$b" "$CENTRAL"
 	PIDPREV=$p1
-	# learn from the first bound case: the node's address (pinned from now on), the central's address, msg2's length
-	if grep -q 'hs=real' "$g" && [ "$p0" = "$p1" ]; then REAL_PID=$p1; fi
-	[ "$ADDR" = - ] && ADDR=$(sed -n 's/^GATTR .* target=\([^ ]*\) .*/\1/p' "$g" | tail -1); ADDR=${ADDR:--}
-	if [ "$CENTRAL" = - ]; then
-		local cs; cs=$(sed -n 's/^INFO gatt [a-z0-9]*: central \(.*\)$/\1/p' "$GW/$lab.v")
-		[ -n "$cs" ] && { CENTRAL=$cs; say "the Windows central's LE address, learnt from $c's capture: $CENTRAL (every later case must match)"; }
+	# from a case that ran on 04 (real handshake, STATUS key 5 = 04's): the node's address as a HINT for the next case
+	# (the peer re-checks key 5 every time: 02 advertises the same UUID and RPAs rotate, run 2), msg2's length.
+	# The central's address is not learnt: GATT_CENTRAL is enforced when given, else the window's one connection is the
+	# case's (design §4.3 fallback) and its address / type is printed per case
+	if grep -q 'hs=real' "$g" && grep -q " node=$LAST4 " "$g"; then
+		[ "$p0" = "$p1" ] && REAL_PID=$p1
+		ADDR=$(sed -n 's/^GATTR .* target=\([^ ]*\) .*/\1/p' "$g" | tail -1); ADDR=${ADDR:--}
+		[ "$c" = m1 ] && MSG2LEN=$(sed -n 's/^GATTR .* msg2len=\([0-9]*\).*/\1/p' "$g" | tail -1)
 	fi
-	[ "$c" = m1 ] && MSG2LEN=$(sed -n 's/^GATTR .* msg2len=\([0-9]*\).*/\1/p' "$g" | tail -1)
 	return 0
 }
 case_once(){	# <case>: with the one RETRY of §6.4
@@ -226,7 +228,7 @@ e2(){
 	local try=1
 	while :; do
 		lg_mark; bt_start e2-rw || return 0
-		o=$(c02 rw "$a" "$hx"); echo "$o" > "$GW/e2.rw"; say "E2 02 rw (try $try): $(grep -vE '^NVAL' <<< "$o" | tr '\n' ' ' | cut -c1-300)"
+		o=$(c02 rw "$a" "$hx"); echo "$o" > "$GW/e2.rw"; say "E2 02 rw (try $try): $(grep -vE '^(NVAL|RAW) ' <<< "$o" | tr '\n' ' ' | cut -c1-300)"
 		wait_idle 40; sleep 2; bt_stop e2-rw "$GW/e2-rw.btmon"; lg_guard "E2 rw"
 		keep e2-rw "$GW/e2-rw.btmon"
 		# 02's own confirmation of the subscription and the write; the judge's precondition is 04's capture

@@ -376,6 +376,7 @@ def main():
     g.add_argument("case")
     g.add_argument("--device-id", required=True)
     g.add_argument("--addr", default="-", help="the node's address found by an earlier case (pinned), or -")
+    g.add_argument("--last4", default="-", help="the node's STATUS key 5 (last 4 of its serial): the only node a case may use")
     g.add_argument("--n", type=int, default=0, help="B1 / B1x: pipelined requests")
     g.add_argument("--deadline", type=int, default=0, help="hard limit in s (default per case)")
     a = ap.parse_args()
