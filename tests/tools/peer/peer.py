@@ -40,7 +40,8 @@ import nodecert  # noqa: E402
 import peer_core  # noqa: E402
 import transport_sock as ts  # noqa: E402
 
-WIN_PY = os.environ.get("PEER_WIN_PY", "/mnt/c/Users/yello/AppData/Local/Programs/Python/Python313/python.exe")
+WIN_PY = "/mnt/c/Users/yello/AppData/Local/Programs/Python/Python313/python.exe"
+WIN_PY = os.environ.get("PEER_WIN_PY", WIN_PY)   # override the bench default
 
 
 def _bridge_win(here):
