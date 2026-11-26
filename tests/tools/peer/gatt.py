@@ -406,7 +406,7 @@ class FakeNode:
     """The bridge's line protocol in front of a node: NX responder with the vectors' node static key and node_cert,
     `info` answered, a framing violation -> LOST (provd's Close -> Device1.Disconnect); a crash -> LOST + crashed."""
 
-    def __init__(self, variant="strict", wmax=514):
+    def __init__(self, variant="strict", wmax=514, bluez_drop=False):
         import queue
         import verify
         from noise.connection import Keypair, NoiseConnection
@@ -416,7 +416,7 @@ class FakeNode:
         self.s_priv, self.cert = bytes.fromhex(K["s_node_priv"]), bytes.fromhex(v["node_cert"]["cbor"])
         self.device_id = K["device_id"]
         self.dac = bytes.fromhex(K["dac_cert_der"])
-        self.variant, self.wmax = variant, wmax
+        self.variant, self.wmax, self.bluez_drop = variant, wmax, bluez_drop
         self.lines = queue.Queue()
         self.stdout = iter(self.lines.get, None)
         self.crashed, self.lost, self.writes = False, False, []
@@ -479,6 +479,8 @@ class FakeNode:
                 return
             f = bytes.fromhex(c[2:])
             self.writes.append(f)
+            if self.bluez_drop and len(f) > 512:
+                return            # bluetoothd: check_length refuses a value > 512 B, silently for a Write Command
             try:
                 m = self.r.push(f)
             except ValueError:
@@ -598,6 +600,16 @@ def selftest():
         d = dict(kv.split("=", 1) for kv in [x for x in out if x.startswith("GATTR")][-1].split()[1:])
         check("only frame.go:37 removed still drops Q2 (so Q2's lax variant is 'start sets next = seq')",
               gattjudge.peer_shape("q2", d, crashed=False) == "PASS", d)
+        # run 1 (2026-11-26): BlueZ itself drops the 513 B value (shared/gatt-server.c:807-818, 871-873) -> NA, not FAIL
+        import peer
+        node = FakeNode("strict", bluez_drop=True)
+        t = peer.BleTransport(popen=node)
+        out = []
+        Case(_A("s512b", node.device_id), t, out=out.append, pinned_dac=node.dac).run()
+        t.quit()
+        d = dict(kv.split("=", 1) for kv in [x for x in out if x.startswith("GATTR")][-1].split()[1:])
+        check("s512b behind a bluetoothd that drops > 512 B: link held, nothing answered -> NA (the capture decides)",
+              gattjudge.peer_shape("s512b", d) == "NA", d)
         # S512 on a central whose wmax < 513: skipped, never a verdict
         d, _node = _observe("s512a", "strict", wmax=244)
         check("S512 with wmax 244 -> skip (N/A), not PASS", gattjudge.peer_shape("s512a", d) == "NA", d)

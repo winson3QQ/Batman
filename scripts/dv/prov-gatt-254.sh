@@ -19,6 +19,8 @@
 # Needs: the WSL peer venv (PEER_PY), the host python (PY_HOST), the harness btmon (DV_BT_TOOLS) and dbus-send
 # (DV_DBUS_TOOLS). The central's LE address: GATT_CENTRAL (from probe U7), else learnt from M1's capture (one
 # connection only) and required equal in every later case. 02's address: GATT_02_ADDR, else E2's read capture.
+# GATT_CASES="<case> ..." runs only those (m1 is added first when missing). Evidence per case (peer lines, verdict lines,
+# the capture excerpt of that case's link) goes to $DV_DIR/prov-gatt-254-<run>/ (else the host temp dir).
 # Runs from Git Bash on the Windows host. Prints "UNIT prov-gatt-254 PASS|FAIL|INVALID".
 set -u
 PR_UNIT=prov-gatt-254
@@ -35,6 +37,24 @@ GL="${TEMP:?}/batman-dv-winble.lock"
 GW=$(mktemp -d)
 ADDR=-; DEVID=""; MSG2LEN=0; REAL_PID=""; PIDPREV=""; GL_HELD=0
 CASES_A="m1 s1a s3b q7a q7b s512a s512b s8192 s8193 t1 t2 t4 q1 q2 q3 q4 q5 q6"
+ALLCASES="$CASES_A b1 b1x e2"
+# GATT_CASES=<list>: only these (any of $ALLCASES). m1 always runs first when anything else is asked for: it pins the
+# node's address, learns the central's and measures msg2's length (E2 compares with it)
+SEL=" ${GATT_CASES:-$ALLCASES} "
+for c in $SEL; do case " $ALLCASES " in *" $c "*) ;; *) echo "FAIL prov-gatt-254: unknown case [$c] in GATT_CASES (known: $ALLCASES)"; echo "UNIT $PR_UNIT INVALID"; exit 2 ;; esac; done
+case "$SEL" in *" m1 "*) ;; *) SEL=" m1$SEL" ;; esac
+sel(){ case "$SEL" in *" $1 "*) return 0 ;; esac; return 1; }
+# evidence kept per case (review of run 1: the captures went with $PCD): peer.py's lines, the judge's lines and the
+# capture excerpt of the case's own link (connection, ATT opcodes with lengths and handles, disconnect + reason, SMP /
+# encryption — no ATT data bytes, no keys), in DV_DIR (the suite's run dir), else the host's temp dir
+EVD="${DV_DIR:-${TEMP:?}}/prov-gatt-254-$RUN"
+keep(){	# <label> <btmon file> [central]: the excerpt + whatever $GW/<label>.* exists
+	local f
+	mkdir -p "$EVD" || return 0
+	[ -s "$2" ] && "$HPY" "$PJ" excerpt --central "${3:--}" --btmon "$2" > "$EVD/$1.btmon.txt" 2>&1
+	for f in "$GW/$1".gatt "$GW/$1".v "$GW/$1".live "$GW/$1".rw "$GW/$1".read; do [ -f "$f" ] && cp "$f" "$EVD/"; done
+	return 0
+}
 c02(){ timeout 300 ssh $SSHO root@$PEER sh -s -- "$@" < "$P2C" 2>&1 | tr -d '\r'; }
 provd_pid_q(){ qr 'for x in $(pidof batman-provd); do [ "$(readlink /proc/$x/exe)" = /usr/bin/batman-provd ] && echo $x; done'; }
 judge_lines(){	# judge output -> ok / no / inv / say; sets JV to the verdict
@@ -47,8 +67,27 @@ judge_lines(){	# judge output -> ok / no / inv / say; sets JV to the verdict
 
 # ---- host side: the Windows BLE adapter lock, orphans, PnP (design §3, §7) --------------------------------------------
 host_boot(){ echo $(( $(date +%s) - $(cut -d. -f1 /proc/uptime) )); }
-orph_wsl(){ wsl_ bash -c "pgrep -f 'peer.py gatt' | grep -vx \$\$ | wc -l" 2>/dev/null | tr -d '\r '; }
-orph_win(){ powershell.exe -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { \$_.CommandLine -match 'blebridge\.py' }).Count" 2>/dev/null | tr -d '\r '; }
+# The orphan patterns are bracketed: run 1 (2026-11-26) counted "peer.py 1" with no peer running — the old
+# `bash -c "pgrep -f 'peer.py gatt' | …"` matched its own shell's forked pipeline children, whose command line holds the
+# pattern until they exec. '[p]eer\.py gatt' matches "peer.py gatt" but not its own text.
+ORPH_RE='[p]eer\.py gatt'
+orph_wsl_pids(){ wsl_ pgrep -af "$ORPH_RE" 2>/dev/null | tr -d '\r'; }
+orph_win_pids(){ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { \$_.CommandLine -match '[b]lebridge\.py' } | ForEach-Object { '{0} {1}' -f \$_.ProcessId, \$_.CommandLine }" 2>/dev/null | tr -d '\r'; }
+orph_wsl(){ orph_wsl_pids | grep -c .; }
+orph_win(){ orph_win_pids | grep -c .; }
+# orph_wait [s]: a peer that is still ending (its bridge's CLOSE, the WSL interop exit) is not an orphan yet: poll up to
+# <s> (20) seconds; rc 1 = still there after that, with the processes it saw logged
+orph_wait(){
+	local t0 w x; t0=$(mono)
+	while :; do
+		w=$(orph_wsl_pids); x=$(orph_win_pids)
+		[ -z "$w" ] && [ -z "$x" ] && return 0
+		[ $(( $(mono) - t0 )) -ge "${1:-20}" ] && break
+		sleep 2
+	done
+	say "after ${1:-20} s still running — WSL: [$(tr '\n' '|' <<< "$w")] Windows: [$(tr '\n' '|' <<< "$x" | cut -c1-200)]"
+	return 1
+}
 pnp_list(){ powershell.exe -NoProfile -Command "(Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | Where-Object { \$_.InstanceId -like 'BTHLE*' } | ForEach-Object { \$_.InstanceId }) -join ','" 2>/dev/null | tr -d '\r'; }
 # gl_take: one bridge per host. A lock whose owner is gone (pid dead, or another host boot) and with no bridge running is
 # printed and taken over; otherwise refused (review A2-m7 / B2-m6)
@@ -66,16 +105,15 @@ gl_take(){
 }
 gl_release(){	# only after the orphan check passed (review A3-m6)
 	[ "$GL_HELD" = 1 ] || return 0
-	if [ "$(orph_wsl)" = 0 ] && [ "$(orph_win)" = 0 ]; then rm -f "$GL/owner"; rmdir "$GL" 2>/dev/null; GL_HELD=0
+	if orph_wait 20; then rm -f "$GL/owner"; rmdir "$GL" 2>/dev/null; GL_HELD=0
 	else no "orphan peer / bridge still running: the Windows BLE lock $GL is KEPT"; fi
 }
 # orph_clean: INT, then TERM, then the bridge's own watchdog (it cuts the link and exits once HBs stop): 15 s
 orph_clean(){
-	local i
-	[ "$(orph_wsl)" = 0 ] && [ "$(orph_win)" = 0 ] && return 0
-	wsl_ pkill -INT -f 'peer.py gatt' >/dev/null 2>&1; sleep 3
-	wsl_ pkill -TERM -f 'peer.py gatt' >/dev/null 2>&1
-	for i in 1 2 3 4 5 6 7 8; do [ "$(orph_wsl)" = 0 ] && [ "$(orph_win)" = 0 ] && return 0; sleep 2; done
+	orph_wait 20 && return 0
+	wsl_ pkill -INT -f "$ORPH_RE" >/dev/null 2>&1; sleep 3
+	wsl_ pkill -TERM -f "$ORPH_RE" >/dev/null 2>&1
+	orph_wait 16 && return 0
 	# no pr_needs_person here: that would skip 04's restore (pr_on_exit), and 04 must not stay legacy (review A2-M3).
 	# The host side waits for a person through the KEPT lock (gl_release refuses while an orphan runs).
 	no "orphan after INT / TERM / the bridge watchdog: peer.py $(orph_wsl), blebridge.py $(orph_win) — stop it on the Windows host by hand; 04 is restored regardless"
@@ -152,6 +190,7 @@ run_case(){
 	# shellcheck disable=SC2086  # extra: zero, one or two flags
 	"$HPY" "$PJ" case --case "$c" --central "$CENTRAL" --target "$ADDR" --pids "$PIDPREV,$p0,$p1" $extra --gatt "$g" --btmon "$b" > "$GW/$lab.v"
 	judge_lines < "$GW/$lab.v"
+	keep "$lab" "$b" "$CENTRAL"
 	PIDPREV=$p1
 	# learn from the first bound case: the node's address (pinned from now on), the central's address, msg2's length
 	if grep -q 'hs=real' "$g" && [ "$p0" = "$p1" ]; then REAL_PID=$p1; fi
@@ -173,19 +212,34 @@ case_once(){	# <case>: with the one RETRY of §6.4
 e2(){
 	local o r a hx
 	lg_mark; bt_start e2-read || return 0
+	# 02's one-shot bluetoothctl calls (read's scan / info, `: | bluetoothctl info`) segfault now and then — 2 in 10 on
+	# 2026-11-01, once in run 1 (2026-11-26, "Segmentation fault" ahead of the read lines); the central retries them
+	# (info_of, pick's 5 scans) and only the values it reports count. Cause inside bluetoothctl not found (❓).
 	o=$(c02 read "$LAST4"); r=$?; echo "$o" > "$GW/e2.read"; say "E2 02 read: $(tr '\n' ' ' <<< "$o" | cut -c1-300)"
 	wait_idle 40; sleep 2; bt_stop e2-read "$GW/e2-read.btmon"; lg_guard "E2 read"
+	keep e2-read "$GW/e2-read.btmon"
 	a=$(sed -n 's/^ADDR //p' <<< "$o")
 	[ $r = 0 ] && [ -n "$a" ] || { inv "E2: 02 could not read 04 (rc $r)"; return 0; }
 	[ -n "$(sed -n 's/^CTRL //p' <<< "$o")" ] && [ -n "$(sed -n 's/^STATUS //p' <<< "$o")" ] && ok "E2: 02 read CTRL and STATUS without pairing" || no "E2: 02's unencrypted read of CTRL / STATUS failed [$(grep -E '^(CTRL|STATUS|ERRS|ERRLINES)' <<< "$o" | tr '\n' '|')]"
 	grep -q '^PAIRED no' <<< "$o" && ok "E2: 02 not paired after the read" || no "E2: 02 $(grep '^PAIRED' <<< "$o")"
 	hx="030000$(head -c 32 /dev/urandom | od -An -v -tx1 | tr -d ' \n')"
-	lg_mark; bt_start e2-rw || return 0
-	o=$(c02 rw "$a" "$hx"); echo "$o" > "$GW/e2.rw"; say "E2 02 rw: $(grep -vE '^NVAL' <<< "$o" | tr '\n' ' ' | cut -c1-300)"
-	wait_idle 40; sleep 2; bt_stop e2-rw "$GW/e2-rw.btmon"; lg_guard "E2 rw"
+	local try=1
+	while :; do
+		lg_mark; bt_start e2-rw || return 0
+		o=$(c02 rw "$a" "$hx"); echo "$o" > "$GW/e2.rw"; say "E2 02 rw (try $try): $(grep -vE '^NVAL' <<< "$o" | tr '\n' ' ' | cut -c1-300)"
+		wait_idle 40; sleep 2; bt_stop e2-rw "$GW/e2-rw.btmon"; lg_guard "E2 rw"
+		keep e2-rw "$GW/e2-rw.btmon"
+		# 02's own confirmation of the subscription and the write; the judge's precondition is 04's capture
+		grep -q '^SUB yes' <<< "$o" && grep -q '^WRITE yes' <<< "$o" && break
+		[ $try -ge 2 ] && break
+		say "E2: 02 did not confirm the subscription / write ($(grep -E '^(SUB|WRITE|ERRLINES)' <<< "$o" | tr '\n' ' ')) — once more"
+		try=$((try + 1))
+	done
 	grep -q '^PAIRED no' <<< "$o" || no "E2 rw: 02 $(grep '^PAIRED' <<< "$o")"
 	[ "${MSG2LEN:-0}" -gt 0 ] || { inv "E2: no msg2 length from M1 to compare"; return 0; }
-	judge_lines < <("$HPY" "$PJ" e2 --central "$C02" --msg2len "$MSG2LEN" --rw "$GW/e2.rw" --rw-btmon "$GW/e2-rw.btmon" --read-btmon "$GW/e2-read.btmon")
+	"$HPY" "$PJ" e2 --central "$C02" --msg2len "$MSG2LEN" --rw "$GW/e2.rw" --rw-btmon "$GW/e2-rw.btmon" --read-btmon "$GW/e2-read.btmon" > "$GW/e2.v"
+	judge_lines < "$GW/e2.v"
+	cp "$GW/e2.v" "$GW/e2.rw" "$GW/e2.read" "$EVD/" 2>/dev/null || :
 }
 
 # ---- post-check (every exit path; design §7) -------------------------------------------------------------------------
@@ -194,6 +248,7 @@ post_obs(){	# observations -> the judge's key=value form; pcd is checked after t
 	echo "bond04=$(qr 'for d in /var/lib/bluetooth/*/; do ls "$d"; done 2>/dev/null' | tr '\n' ' ')"
 	echo "paired02=$(timeout 30 ssh $SSHO root@$PEER ': | bluetoothctl devices Paired 2>/dev/null' | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g' | grep -c '^Device ')"
 	echo "btmon04=$(qr 'for x in $(pidof btmon); do case "$(readlink /proc/$x/exe)" in /tmp/run/batman-dvpc.*) echo $x ;; esac; done' | tr '\n' ' ' | sed 's/ *$//; s/^$/-/')"
+	orph_wait 20 >&2 || :          # a peer still ending is not an orphan yet (run 1: "peer.py 1", gone a minute later)
 	echo "pcd=0"; echo "orphan_wsl=$(orph_wsl)"; echo "orphan_win=$(orph_win)"; echo "connected04=$(connected04)"
 }
 post_check(){ post_obs > "$GW/post.obs"; judge_lines < <("$HPY" "$PJ" post --obs "$GW/post.obs"); }
@@ -243,22 +298,28 @@ st=$(qr "sed -n 's/.*state=\([a-z]*\).*/\1/p' /etc/batman-prov/prov.meta")
 [ "$st" = legacy ] || { inv "04 is [$st] after make-legacy: the anonymous handshake needs legacy"; pr_abort "not legacy"; pr_result; exit 1; }
 
 # ---- Windows central: the cases -----------------------------------------------------------------------------------
+say "cases: $SEL; evidence in $EVD"
 for c in $CASES_A b1 b1x; do
+	sel "$c" || continue
 	case_once "$c" || { pr_abort "case $c"; pr_result; exit 1; }
 	say "$c: verdict $JV"
 	[ "$c" = m1 ] && [ "$ADDR" = - ] && { inv "M1 found no node to pin: the rest cannot run"; break; }
 done
 # ---- 02 central: E2, and the post-check's own negative control (a held link must FAIL its Connected branch)
-e2
-o=$(c02 hold "$LAST4"); a=$(sed -n 's/^HELD \([^ ]*\) connected=yes$/\1/p' <<< "$o")
-if [ -n "$a" ]; then
-	post_obs > "$GW/post-neg.obs"
-	"$HPY" "$PJ" post --obs "$GW/post-neg.obs" | grep -q '^FAIL gatt post: 04: [0-9]* connected' && ok "post-check negative control: a held link FAILs the Connected branch" || no "post-check negative control: a held link did not FAIL the Connected branch"
-	c02 drop "$a" >/dev/null
-else inv "post-check negative control: 02 could not hold a link [$(echo $o)]"; fi
-wait_idle 40
+if sel e2; then
+	e2
+	o=$(c02 hold "$LAST4"); a=$(sed -n 's/^HELD \([^ ]*\) connected=yes$/\1/p' <<< "$o")
+	if [ -n "$a" ]; then
+		post_obs > "$GW/post-neg.obs"
+		"$HPY" "$PJ" post --obs "$GW/post-neg.obs" | grep -q '^FAIL gatt post: 04: [0-9]* connected' && ok "post-check negative control: a held link FAILs the Connected branch" || no "post-check negative control: a held link did not FAIL the Connected branch"
+		c02 drop "$a" >/dev/null
+	else inv "post-check negative control: 02 could not hold a link [$(echo $o)]"; fi
+	wait_idle 40
+fi
 say "W1 (GATT_ENCRYPT_CTRL white box) is cited, not run: prov-provd-wbox-254, 2026-11-07, 1.5.14-wsl.22 (design §5.5)"
-post_check; GT_DONE=1
+post_check; cp "$GW/post.obs" "$EVD/" 2>/dev/null; GT_DONE=1
 pr_end
 [ "$(qr "[ -e $PCD ] && echo left")" = left ] && no "this run's provclient dir $PCD is still on 04" || ok "this run's provclient dir is gone from 04"
+gl_release      # before the result line, so its verdict is counted (run 1 printed the KEPT line after UNIT)
+say "evidence: $EVD"
 pr_result

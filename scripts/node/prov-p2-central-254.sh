@@ -26,7 +26,8 @@
 #                           <hex> is checked here (hex digits, even length, <= 244 B) before it reaches bluetoothctl;
 #                           <addr> must be AA:BB:CC:DD:EE:FF. "RW <addr>", "NVAL <hex>" per notification (to the host,
 #                           which reassembles), "NOTIFY n=<frames> bytes=<total>", "WROTE rc=<0|1>",
-#                           "CONN_S <s connected, 02's clock>", "PAIRED <yes|no>"
+#                           "SUB <yes|no>" / "WRITE <yes|no>" (bluetoothctl's own "Notify started" / "Attempting to
+#                           write"), "ERRLINES <…|->", "CONN_S <s connected, 02's clock>", "PAIRED <yes|no>"
 #   addrs                   one 12 s scan: "ADDRS <addr> ..." = the advertisers of the UUID whose advertisements arrived
 #                           in THIS scan ([NEW] / [CHG] lines; `devices` alone also lists BlueZ's cached ones), then
 #                           removes every unpaired device it saw; "ADDRS -" none
@@ -217,8 +218,10 @@ rw)
 	wv=$(printf '%s' "$hx" | sed 's/../0x& /g; s/ $//')
 	CONN_A=$a
 	{ echo "menu scan"; echo "uuids $U"; echo "transport le"; echo back; echo "scan on"; sleep 10; echo "scan off"; sleep 1
-	  up > "$T/t_conn"; echo "connect $a"; sleep 6; echo "menu gatt"
-	  echo "select-attribute $TXU"; sleep 1; echo "notify on"; sleep 2
+	  # select-attribute needs the device's GATT proxies (run 1, 2026-11-26: after 6 s 04 saw neither the CCC write nor the
+	  # RX write): the same 8 s + list-attributes + 2 s as read_one, whose reads work
+	  up > "$T/t_conn"; echo "connect $a"; sleep 8; echo "menu gatt"; echo list-attributes; sleep 2
+	  echo "select-attribute $TXU"; sleep 1; echo "notify on"; sleep 3
 	  echo "select-attribute $RXU"; sleep 1; echo "write \"$wv\""; sleep 5
 	  echo "select-attribute $TXU"; sleep 1; echo "notify off"; sleep 1; echo back
 	  echo "disconnect $a"; sleep 3; up > "$T/t_disc"; echo quit; } | bluetoothctl 2>&1 | clean > "$T/rw"
@@ -229,6 +232,11 @@ rw)
 	while IFS= read -r v; do echo "NVAL $v"; done < "$T/vals"
 	echo "NOTIFY n=$(grep -c . "$T/vals") bytes=$(awk '{ s += length($0) / 2 } END { print s + 0 }' "$T/vals")"
 	grep -q 'Failed to write' "$T/rw" && echo "WROTE rc=1 $(grep -o 'Failed to write[^|]*' "$T/rw" | head -1)" || echo "WROTE rc=0"
+	# what bluetoothctl itself confirmed (client/gatt.c notify_reply "Notify started", write_attribute "Attempting to write");
+	# the unit's precondition is 04's capture, these lines say why it is missing
+	grep -q 'Notify started' "$T/rw" && echo "SUB yes" || echo "SUB no"
+	grep -q 'Attempting to write' "$T/rw" && echo "WRITE yes" || echo "WRITE no"
+	e=$(grep -iE 'fail|error|no device|no attribute|not available|unable|segmentation' "$T/rw" | sed 's/^.*\]# *//' | sort -u | head -5 | tr '\n' '|'); echo "ERRLINES ${e:--}"
 	echo "CONN_S $(( $(cat "$T/t_disc" 2>/dev/null || echo 0) - $(cat "$T/t_conn" 2>/dev/null || echo 0) ))"
 	echo "PAIRED ${PV:-?}" ;;
 *) echo "usage: prov-p2-central-254.sh read <last4|-> | hold <last4|-> | watch <addr> <s> | drop <addr> | addrs | rw <addr> <hex>"; exit 2 ;;

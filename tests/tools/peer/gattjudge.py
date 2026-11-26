@@ -229,6 +229,8 @@ def peer_shape(case, d, crashed=False):
             return "INVALID"
         if k >= 1:
             return "FAIL"       # a lax provd answered the frames that break one rule
+        if case == "s512b" and not lost:
+            return "NA"         # BlueZ drops a > 512 B value before provd: only 04's capture can say (judge_case)
         return "PASS" if lost else "FAIL"     # spec: a bad sequence not dropped = FAIL
     return "INVALID"
 
@@ -370,6 +372,17 @@ def judge_case(case, gatt_text, btmon_text, central, target=None, pids=None, ret
                 v.say("FAIL", "outbound frames not min(244, MTU-3) = %d: %s" % (L, ";".join(bad)))
             else:
                 v.say("PASS", "every non-final outbound frame = %d (MTU at subscription %d; not discriminating at 244)" % (L, L + 3))
+    elif case == "s512b" and k < 1 and not lost:
+        # BlueZ refuses an attribute value over 512 B before any app sees it (check_length, shared/gatt-server.c:807-818,
+        # called at :849-851) and, for a Write Command, says nothing (:871-873). So a 513 B frame never reaches provd
+        # over BLE: its MaxFrame 512 check is reachable only on the frame socket (prov-provd-wbox-254's sock arm).
+        big = [w for w in att(recs, h, "Write Command", hd.get("rx")) if att_len(w) == 513]
+        if not big:
+            v.say("INVALID", "no 513 B Write Command on RX in 04's capture: the stimulus did not reach 04")
+        else:
+            v.say("PASS", "04 received the 513 B Write Command on RX and kept the link; nothing was answered")
+            v.say("NA", "BlueZ drops attribute values > 512 B before provd (shared/gatt-server.c:807-818, 849-851, "
+                        "871-873): provd's MaxFrame is not reachable over the air - judged on gatt.sock instead")
     elif case in REJECT:
         if k >= 1:
             v.say("FAIL", "the node ANSWERED frames that break one framing rule (lax Reassembler)")
@@ -425,21 +438,10 @@ def judge_live(text, max_ok=2.0, gap_max=3.0, hang_s=10.0):
 
 
 def judge_e2(rw_text, rw_btmon, read_btmon, central, msg2len):
+    """E2: the notifications 02 reports are judged only once 04's own capture shows that 02 really subscribed (CCC Write
+    Request) and wrote (Write Command on RX) on one bound link: without that, a missing notification says nothing about
+    provd (run 1, 2026-11-26: 02 printed WROTE rc=0, 04 saw neither write) -> INVALID, never FAIL."""
     v = V("e2")
-    nv = [ln.split()[1] for ln in rw_text.splitlines() if ln.startswith("NVAL ")]
-    vals = [bytes.fromhex(x) for x in nv if re.fullmatch(r"[0-9a-f]*", x) and len(x) % 2 == 0]
-    total, ok_frames = 0, True
-    for f in vals:
-        if len(f) < 3:
-            ok_frames = False
-            continue
-        total += len(f) - 3
-    if not vals:
-        v.say("FAIL", "02 got no notification after subscribing and writing msg1 unencrypted (RX or TX needs encryption?)")
-    elif not ok_frames or total != msg2len:
-        v.say("FAIL", "02's notifications carry %d B, M1's msg2 is %d B" % (total, msg2len))
-    else:
-        v.say("PASS", "02 (not paired) subscribed TX, wrote msg1 to RX and got msg2 (%d B in %d frames)" % (total, len(vals)))
     if central in ("-", None):
         # no U17 address: 02's own address is the one connection of the read capture, and the rw capture must match it
         rc = conns(parse(read_btmon))
@@ -448,9 +450,10 @@ def judge_e2(rw_text, rw_btmon, read_btmon, central, msg2len):
             return v.done()
         central = rc[0][1]
         v.lines.append("INFO gatt e2: 02's address from the read capture: %s" % central)
+    rw_ok = False
     for label, txt, want in (("rw", rw_btmon, True), ("read", read_btmon, False)):
         recs = parse(txt)
-        cs = [c for c in conns(recs) if central in ("-", None) or c[1] == central.upper()]
+        cs = [c for c in conns(recs) if c[1] == central.upper()]
         if len(cs) != 1:
             v.say("INVALID", "%s: %d connections from 02 (%s) in its capture" % (label, len(cs), central))
             continue
@@ -460,19 +463,66 @@ def judge_e2(rw_text, rw_btmon, read_btmon, central, msg2len):
         if enc:
             v.say("FAIL", "%s: encryption on 02's link: %s" % (label, "; ".join(sorted(set(enc)))))
         ccc = att(recs, h, "Write Request", hd.get("ccc")) if "ccc" in hd else []
+        rxw = att(recs, h, "Write Command", hd.get("rx")) if "rx" in hd else []
         ntf = att(recs, h, "Handle Value Notification")
         mtu = mtu_at_ccc(recs, h, hd.get("ccc"))
         if want:
-            if mtu < 38:
+            miss = [n for n, x in (("RX/TX discovery", "rx" in hd and "ccc" in hd), ("CCC write (subscription)", ccc),
+                                   ("RX Write Command", rxw)) if not x]
+            if miss:
+                v.say("INVALID", "rw: 04's capture lacks the %s on handle %d: 02 did not do what E2 needs" % (", ".join(miss), h))
+            elif mtu < 38:
                 v.say("INVALID", "rw: ATT MTU %d < 38: a 35 B write does not fit" % mtu)
-            if not ccc or not ntf or not att(recs, h, "Write Command", hd.get("rx")):
-                v.say("INVALID", "rw: the capture lacks the CCC write / RX write / notification on handle %d" % h)
+            else:
+                rw_ok = True
+                v.say("PASS", "rw: 04 saw 02 subscribe TX and write %d B to RX (handle %d, MTU %d), unencrypted" % (
+                    att_len(rxw[-1]), h, mtu))
+                if not ntf:
+                    v.say("FAIL", "rw: 04 sent no notification after 02's unencrypted subscription + msg1")
         else:
             if ccc or ntf:
                 v.say("FAIL", "read control: a CCC write or a notification on a read-only link")
             else:
                 v.say("PASS", "read control: no subscription, no notification (the notifications are E2's doing)")
+    if rw_ok:
+        nv = [ln.split()[1] for ln in rw_text.splitlines() if ln.startswith("NVAL ")]
+        vals = [bytes.fromhex(x) for x in nv if re.fullmatch(r"[0-9a-f]*", x) and len(x) % 2 == 0]
+        total = sum(len(f) - 3 for f in vals if len(f) >= 3)
+        if not vals:
+            v.say("FAIL", "02 reports no notification although 04 saw its subscription and write (RX or TX needs encryption?)")
+        elif any(len(f) < 3 for f in vals) or total != msg2len:
+            v.say("FAIL", "02's notifications carry %d B, M1's msg2 is %d B" % (total, msg2len))
+        else:
+            v.say("PASS", "02 (not paired) got msg2 (%d B in %d frames)" % (total, len(vals)))
     return v.done()
+
+
+def excerpt(btmon_text, central):
+    """The evidence lines of the bound connection (kept per case in DV_DIR): connection, ATT opcodes with their lengths
+    and attribute handles, disconnect and reason, SMP / encryption. No ATT data bytes, no keys."""
+    recs = parse(btmon_text)
+    cs = conns(recs)
+    out = ["# connections: " + ", ".join("handle %s peer %s" % (c[0], c[1]) for c in cs)]
+    mine = [c for c in cs if central in ("-", None) or c[1] == central.upper()]
+    hs = {c[0] for c in mine}
+    for r in recs:
+        h = r.handle()
+        if r.head.startswith("= ") and ("Index" in r.head):
+            out.append(r.head)
+        elif h in hs or (r.head.startswith("> HCI Event: LE Meta Event") and any("Connection Complete" in b for b in r.body[:1])):
+            keep = [b for b in r.body if re.match(r"\s+(ATT|SMP|LE [A-Za-z ]*Complete|LE Long Term|Status|Reason|Handle|Peer address|"
+                                                   r"Local resolvable|Client RX MTU|Server RX MTU|Value Handle|Value UUID|UUID)", b)]
+            out.append(r.head)
+            out += keep
+    return "\n".join(out) + "\n"
+
+
+def att_len(r):
+    for b in r.body:
+        m = re.match(r"\s+ATT: .* len (\d+)", b)
+        if m:
+            return int(m.group(1)) - 2      # the attribute handle is part of the ATT length
+    return -1
 
 
 def judge_post(obs):
@@ -516,7 +566,7 @@ OTHER = "5A:11:22:33:44:55"
 
 
 def sample(case_kind="reject", central=CENTRAL, h=64, extra_conn=None, discovery=True, disc_reason=0x16,
-           disc_cmd=True, enc=False, index=True, mtu=(517, 517), dt=1.2, disc=True, lrpa=None):
+           disc_cmd=True, enc=False, index=True, mtu=(517, 517), dt=1.2, disc=True, lrpa=None, rxlen=33):
     """A btmon -r text in BlueZ 5.72's format (the shapes of tests/fixtures/btmon-254/*.txt, values unmasked)."""
     L = []
     if index:
@@ -570,7 +620,7 @@ def sample(case_kind="reject", central=CENTRAL, h=64, extra_conn=None, discovery
               "      SMP: Pairing Request (0x01) len 6", "        IO capability: NoInputNoOutput (0x03)"]
     tw = 3.0
     L += ["> ACL Data RX: Handle %d flags 0x02 dlen 40  #13 [hci0] %.6f" % (h, tw),
-          "      ATT: Write Command (0x52) len 35", "        Handle: 0x0011 Type: Vendor specific (%s)" % RX,
+          "      ATT: Write Command (0x52) len %d" % (rxlen + 2), "        Handle: 0x0011 Type: Vendor specific (%s)" % RX,
           "          Data: 070000"]
     if disc:
         if disc_cmd:
@@ -679,6 +729,27 @@ def selftest():
     check("E2: notifications total = msg2 length, read control clean -> PASS", verdict(judge_e2(rw_ok, s02, rd02, CENTRAL, 700)), "PASS")
     check("E2: no notification -> FAIL", verdict(judge_e2("NOTIFY n=0 bytes=0", s02, rd02, CENTRAL, 700)), "FAIL")
     check("E2: read control has a notification -> FAIL", verdict(judge_e2(rw_ok, s02, s02, CENTRAL, 700)), "FAIL")
+    # s512b (run 1, 2026-11-26): BlueZ drops a 513 B value before provd -> NA with the capture as evidence, never FAIL
+    held = sample(disc_reason=0x13, disc_cmd=False, rxlen=513)
+    s5 = gl("s512b", answered="0/1", lost="no", frame="513")
+    check("s512b: 513 B write in the capture, link held, nothing answered -> NA (BlueZ check_length)",
+          verdict(judge_case("s512b", s5, held, CENTRAL, pids=P)), "NA")
+    check("s512b: the 513 B write is not in the capture -> INVALID",
+          verdict(judge_case("s512b", s5, sample(disc_reason=0x13, disc_cmd=False), CENTRAL, pids=P)), "INVALID")
+    check("s512b: answered -> FAIL", verdict(judge_case("s512b", gl("s512b", answered="1/1", lost="no"), held, CENTRAL, pids=P)), "FAIL")
+    check("s512b: 04 dropped the link (provd got it and refused) -> PASS",
+          verdict(judge_case("s512b", gl("s512b"), sample(rxlen=513), CENTRAL, pids=P)), "PASS")
+    # E2: a capture without 02's writes is INVALID only (run 1: FAIL and INVALID together)
+    nocc = "\n".join(ln for ln in s02.splitlines() if "0x0014 Type" not in ln and "Write Request" not in ln)
+    el = judge_e2("NOTIFY n=0 bytes=0\nWROTE rc=0", nocc, rd02, CENTRAL, 700)
+    check("E2: no CCC write in 04's capture -> INVALID, and no FAIL line",
+          (el[-1].split()[-1], any(ln.startswith("FAIL") for ln in el)), ("INVALID", False))
+    nontf = "\n".join(ln for ln in s02.splitlines() if "Notification" not in ln and "0x0013 Type" not in ln)
+    check("E2: writes in the capture but no notification at all -> FAIL",
+          verdict(judge_e2("NOTIFY n=0 bytes=0", nontf, rd02, CENTRAL, 700)), "FAIL")
+    ex = excerpt(held, CENTRAL)
+    check("excerpt: keeps the bound link's ATT lines with lengths and the disconnect reason, drops Data bytes",
+          ("ATT: Write Command (0x52) len 515" in ex, "Reason:" in ex, "Data:" not in ex), (True, True, True))
     check("E2: MTU 23 on 02's link -> INVALID", verdict(judge_e2(rw_ok, sample(mtu=(23, 517), disc_reason=0x13, disc_cmd=False), rd02, CENTRAL, 700)), "INVALID")
     check("E2: 02's address not in the capture -> INVALID", verdict(judge_e2(rw_ok, s02, rd02, OTHER, 700)), "INVALID")
     # post-check: every branch has its own negative control (A2-m10 / B2-m7)
@@ -728,6 +799,9 @@ def main(argv):
     e.add_argument("--rw", required=True)
     e.add_argument("--rw-btmon", required=True)
     e.add_argument("--read-btmon", required=True)
+    x = sub.add_parser("excerpt")
+    x.add_argument("--central", default="-")
+    x.add_argument("--btmon", required=True)
     po = sub.add_parser("post")
     po.add_argument("--obs", required=True)
     a = ap.parse_args(argv[1:])
@@ -739,6 +813,9 @@ def main(argv):
         lines = judge_live(rd(a.log))
     elif a.cmd == "e2":
         lines = judge_e2(rd(a.rw), rd(a.rw_btmon), rd(a.read_btmon), a.central, a.msg2len)
+    elif a.cmd == "excerpt":
+        sys.stdout.write(excerpt(rd(a.btmon), a.central))
+        return 0
     elif a.cmd == "post":
         lines = judge_post(rd(a.obs))
     else:

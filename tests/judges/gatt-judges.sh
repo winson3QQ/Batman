@@ -24,7 +24,8 @@ echo snoop > "$W/run/batman-dvpc.r1/g-m1.snoop"; echo x > "$W/keep/precious"
 # job control on while it starts: a non-interactive shell's background job would ignore SIGINT and prove nothing
 set -m; sleep 30 & SLP=$!; set +m; echo "$SLP" > "$W/run/batman-dvpc.r1/live.pid"
 o=$(dm_rm_scratch r1)
-sleep 0.5
+# shellcheck disable=SC2218  # the real sleep: the stub below is defined for orph_wait only, later
+command sleep 0.5
 [ ! -e "$W/run/batman-dvpc.r1" ] && [ ! -e "$W/run/batman-dv/wbox/r1" ] && tok "dm_rm_scratch: this run's provclient dir and W dir are gone ($(echo $o))" || tbad "dm_rm_scratch left: $(ls "$W/run" "$W/run/batman-dv/wbox")"
 kill -0 "$SLP" 2>/dev/null && tbad "dm_rm_scratch: the job of a *.pid file was not signalled" || tok "dm_rm_scratch: the *.pid job got SIGINT"
 [ -d "$W/run/batman-dvpc.r2" ] && tok "dm_rm_scratch: another run's dir is untouched" || tbad "dm_rm_scratch removed another run's dir"
@@ -41,10 +42,16 @@ mkdir -p "$W/run/batman-dvpc." 2>/dev/null; o=$(dm_bad "")
 [ -n "$o" ] && tok "negative control: without the run-id check an empty id removes a dir (the check matters)" || tbad "negative control did not bite"
 
 # ---- gl_take / gl_release with the host calls stubbed
-for f in gl_take gl_release host_boot; do s=$(fn "$REPO/scripts/dv/prov-gatt-254.sh" $f); [ -n "$s" ] || { tbad "$f not found"; exit 1; }; eval "$s"; done
-say(){ echo "SAY $*"; }; no(){ echo "NO $*"; }
+for f in gl_take gl_release host_boot orph_wait orph_wsl orph_win; do s=$(fn "$REPO/scripts/dv/prov-gatt-254.sh" $f); [ -n "$s" ] || { tbad "$f not found"; exit 1; }; eval "$s"; done
+say(){ echo "SAY $*"; }; no(){ echo "NO $*"; }; mono(){ cut -d. -f1 /proc/uptime; }
+sleep(){ command sleep 0.05; }     # orph_wait's 2 s polls, shortened (its clock is mono: 20 s still means 20 s of polls)
 GL="$W/lock"; RUN=t1; GL_HELD=0; WINB=0; WSLP=0; : "$RUN"   # RUN: read by the eval'd gl_take
-orph_win(){ echo "$WINB"; }; orph_wsl(){ echo "$WSLP"; }
+# the pid lists the real orph_*_pids would print: WSLP / WINB lines; WSLEND=<n>: the peer is gone after n polls
+# (the poll counter lives in a file: orph_wait calls this in a command substitution, a subshell)
+NP="$W/npoll"; echo 0 > "$NP"
+orph_wsl_pids(){ local k; k=$(( $(cat "$NP") + 1 )); echo "$k" > "$NP"
+	[ "$WSLP" -gt 0 ] && { [ -z "${WSLEND:-}" ] || [ "$k" -le "$WSLEND" ]; } && echo "4711 python peer.py gatt b1x"; :; }
+orph_win_pids(){ [ "$WINB" -gt 0 ] && echo "814 C:\\python.exe -E blebridge.py"; :; }
 o=$(gl_take; echo "held=$GL_HELD"); grep -q 'held=1' <<< "$o" && [ -f "$GL/owner" ] && tok "gl_take: a free lock is taken (owner written)" || tbad "gl_take free: $o"
 sleep 60 & LIVE=$!
 echo "pid=$LIVE boot=$(host_boot) start=1 run=other" > "$GL/owner"
@@ -56,6 +63,24 @@ o=$(gl_take; echo "rc=$?"); grep -q 'rc=1' <<< "$o" && grep -q 'still runs' <<< 
 WINB=0; GL_HELD=1; echo "pid=$$ boot=1 start=1" > "$GL/owner"; WSLP=1
 o=$(gl_release; echo "rc=$?"); [ -f "$GL/owner" ] && grep -q 'KEPT' <<< "$o" && tok "gl_release: an orphan peer keeps the lock" || tbad "gl_release with an orphan: $o"
 WSLP=0; gl_release; [ ! -e "$GL" ] && tok "gl_release: no orphan -> lock removed" || tbad "gl_release clean left $GL"
+# run 1 (2026-11-26): the peer was still ending when the post-check looked -> wait, do not call it an orphan at once
+echo 0 > "$NP"; WSLP=1; WSLEND=3; o=$(orph_wait 20; echo "rc=$?")
+grep -q 'rc=0' <<< "$o" && tok "orph_wait: a peer that ends within the window is not an orphan" || tbad "orph_wait with an ending peer: $o"
+echo 0 > "$NP"; WSLEND=""; o=$(orph_wait 3; echo "rc=$?")
+grep -q 'rc=1' <<< "$o" && grep -q '4711 python peer.py gatt' <<< "$o" && tok "orph_wait: a peer still there after the window -> rc 1, its pid and command logged" || tbad "orph_wait persistent: $o"
+WSLP=0
+# the bracketed pattern, live (WSL / Linux): it finds a process named like the peer and never counts its own pipeline
+s=$(sed -n "s/^ORPH_RE='\(.*\)'$/\1/p" "$REPO/scripts/dv/prov-gatt-254.sh")
+if command -v pgrep >/dev/null; then
+	n=0; for _ in 1 2 3 4 5 6 7 8 9 10; do k=$(bash -c "pgrep -af '$s' | wc -l"); n=$((n + k)); done
+	[ "$n" = 0 ] && tok "ORPH_RE [$s]: 10 pgrep pipelines with no peer running count 0 (no self-match)" || tbad "ORPH_RE self-matched $n time(s)"
+	( exec -a "python3 peer.py gatt x" sleep 3 ) & D=$!; command sleep 0.3
+	k=$(bash -c "pgrep -af '$s' | wc -l"); kill $D 2>/dev/null; wait $D 2>/dev/null
+	[ "$k" = 1 ] && tok "ORPH_RE finds a process whose command line is 'python3 peer.py gatt x'" || tbad "ORPH_RE found $k for one peer"
+	# negative control: the old unbracketed pattern inside a bash -c pipeline also counts the pipeline's own forks
+	m=0; for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do k=$(bash -c "pgrep -f 'peer.py gatt' | grep -vx \$\$ | wc -l"); m=$((m + k)); done
+	echo "info old pattern: $m self-match(es) in 20 pipelines with no peer running (racy; run 1 saw 1)"
+else tbad "no pgrep: the live pattern check cannot run"; fi
 
 # ---- hex_ok / addr_ok
 for f in hex_ok addr_ok; do s=$(fn "$REPO/scripts/node/prov-p2-central-254.sh" $f); [ -n "$s" ] || { tbad "$f not found"; exit 1; }; eval "$s"; done
