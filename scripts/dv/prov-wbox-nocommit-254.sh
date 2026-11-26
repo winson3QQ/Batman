@@ -92,6 +92,10 @@ rbarm(){
 		done
 		[ -n "$g" ] && [ $((SECONDS - t0)) -lt 3 ] && sleep $((3 - (SECONDS - t0)))
 		[ -n "$g" ] || say "launcher ($1): no launch.$t on the node after $((SECONDS - t0)) s; ssh printed [$(tr -d '\r' < "$lf" | head -3 | tr '\n' '|')]"
+		[ -n "$g" ] || { [ -n "${DV_DIR:-}" ] && cp "$lf" "$DV_DIR/ssh-$t.txt"; say "launcher diag ($t): ssh pid $sp alive=$(kill -0 $sp 2>/dev/null && echo 1 || echo 0); node: $(qr "logread | grep -iE 'dropbear' | tail -6 | tr '
+' '|'; echo; ls -la $RD | tr '
+' '|'; echo; ps w | grep -E '[r]barm|[l]aunch|[s]leep 30' | tr '
+' ';'")"; }
 		rm -f "$lf"
 		[ -n "$g" ] && q "kill -HUP -- -$g" >/dev/null
 		kill "$sp" 2>/dev/null; wait "$sp" 2>/dev/null

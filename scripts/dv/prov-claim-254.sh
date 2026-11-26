@@ -13,7 +13,8 @@ PL_NAME=prov-claim
 pl_prep
 
 # --- 3. negative first (state must not change): the buyer's response bound to the OWNER key, sent with the ATTACKER key
-r=$(pc owner.pem -- claim-attacker "$ATK" "$ENC" "$OWNER"); echo "$r"
+# attacker.pem: the attacker signs its own sig_enc, so only CheckMac can refuse (with owner.pem sig_enc refused first)
+r=$(pc attacker.pem -- claim-attacker "$ATK" "$ENC" "$OWNER"); echo "$r"
 grep -q "RESULT claim.verify code=3 " <<< "$r" && ok "attacker owner_pub with the buyer's response -> E_FORBIDDEN" || no "attacker claim not refused: $r"
 [ "$(q 'sed -n "s/.*state=\([a-z]*\).*/\1/p" /etc/batman-prov/prov.meta')" = legacy ] && ok "state still legacy after the refused claim" || no "state changed by a refused claim"
 
