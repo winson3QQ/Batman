@@ -26,10 +26,6 @@ const (
 	pollFirst  = 1 * time.Millisecond
 	pollEvery  = 1 * time.Millisecond
 	pollMargin = 20 * time.Millisecond
-	execInfo   = 5 * time.Millisecond
-	execRead   = 5 * time.Millisecond
-	execWrite  = 45 * time.Millisecond
-	execRandom = 23 * time.Millisecond
 )
 
 var wakeOK = [4]byte{0x04, 0x11, 0x33, 0x43}
@@ -37,14 +33,28 @@ var wakeOK = [4]byte{0x04, 0x11, 0x33, 0x43}
 // Dev is one chip on one bus. Do runs one command sequence at a time (the driver's mutex, impl §2.2); across
 // processes the chip lock is the exclusive flock OpenI2C takes on the bus device.
 type Dev struct {
-	bus   Bus
-	mu    sync.Mutex
-	sleep func(time.Duration)
-	now   func() time.Time
+	bus    Bus
+	policy Policy
+	mu     sync.Mutex
+	sleep  func(time.Duration)
+	now    func() time.Time
 }
 
-// New returns a Dev on bus at Addr.
-func New(bus Bus) *Dev { return &Dev{bus: bus, sleep: time.Sleep, now: time.Now} }
+// New returns a Dev on bus at Addr with the daemon's policy: the commands a running helper needs and nothing that
+// changes the chip (impl §2.2).
+func New(bus Bus) *Dev { return NewPolicy(bus, PolicyDaemon) }
+
+// NewBurn returns a Dev that may also write, lock and generate keys: the burn mode (impl §2.5) and nothing else.
+func NewBurn(bus Bus) *Dev { return NewPolicy(bus, PolicyBurn) }
+
+// NewPolicy returns a Dev with the caller's policy. The product uses New and NewBurn; se-lab passes its own wider
+// policy (package se608/lab), which no shipped binary links (cmd/deps_test.go).
+func NewPolicy(bus Bus, p Policy) *Dev {
+	if p == nil {
+		p = PolicyDaemon // never a Dev that sends everything by accident
+	}
+	return &Dev{bus: bus, policy: p, sleep: time.Sleep, now: time.Now}
+}
 
 // SetClock replaces sleep and now (tests with a fake chip).
 func (d *Dev) SetClock(sleep func(time.Duration), now func() time.Time) { d.sleep, d.now = sleep, now }
@@ -60,6 +70,9 @@ type Session struct {
 func (d *Dev) Do(fn func(*Session) error) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if failPending() {
+		return fmt.Errorf("%w: se-fail seam", ErrNoResponse)
+	}
 	if err := d.wake(); err != nil {
 		return err
 	}
@@ -105,13 +118,18 @@ func (d *Dev) wake() error {
 	return fmt.Errorf("%w: response % x", ErrWake, last)
 }
 
-// Exec sends one command and returns its data bytes. Only opcodes in allowedOps are sent.
+// Exec sends one command and returns its data bytes. The Dev's policy decides what may be sent; a Lock that tells
+// the chip to skip its CRC check is refused under every policy (F§14.3: the CRC is the only device-side check that
+// what was written is what was intended).
 func (s *Session) Exec(c Cmd) ([]byte, error) {
 	if s.done {
 		return nil, ErrSession
 	}
-	if _, ok := allowedOps[c.Op]; !ok {
-		return nil, fmt.Errorf("%w: opcode 0x%02x", ErrRefused, c.Op)
+	if c.Op == OpLock && c.P1&(LockNoCRC|0x40) != 0 {
+		return nil, fmt.Errorf("%w: Lock mode 0x%02x (no-CRC or reserved bit)", ErrRefused, c.P1)
+	}
+	if err := s.d.policy(c); err != nil {
+		return nil, err
 	}
 	pkt, err := c.encode()
 	if err != nil {
@@ -148,6 +166,8 @@ func (s *Session) Exec(c Cmd) ([]byte, error) {
 		return nil, err
 	}
 	switch {
+	case c.RespLen < 0:
+		return data, nil
 	case len(data) == 1 && (c.RespLen != 1 || data[0] != 0x00):
 		return nil, &StatusError{Op: c.Op, Code: data[0]}
 	case len(data) != c.RespLen:
@@ -162,7 +182,7 @@ var Rev608B = [4]byte{0x00, 0x00, 0x60, 0x03}
 // Revision is Info mode 0x00: 4 bytes, 00 00 60 03 on an ATECC608B (255-608b-config.md §4, E1).
 func (s *Session) Revision() ([4]byte, error) {
 	var r [4]byte
-	data, err := s.Exec(Cmd{Op: OpInfo, P1: 0x00, P2: 0, RespLen: 4, MaxExec: execInfo})
+	data, err := s.Exec(Cmd{Op: OpInfo, P1: 0x00, P2: 0, RespLen: 4, MaxExec: MaxExec(OpInfo)})
 	if err == nil {
 		copy(r[:], data)
 	}
@@ -176,26 +196,18 @@ func (s *Session) Read(z Zone, addr uint16, n int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.Exec(Cmd{Op: OpRead, P1: p1, P2: addr, RespLen: n, MaxExec: execRead})
+	return s.Exec(Cmd{Op: OpRead, P1: p1, P2: addr, RespLen: n, MaxExec: MaxExec(OpRead)})
 }
 
-// Write writes 4 or 32 plain bytes (no MAC, no encryption) to the config or data zone. The OTP zone is refused in
-// PR D: after the data lock an OTP write cannot be undone (code review PR D B-m3).
+// Write writes 4 or 32 plain bytes (no MAC, no encryption). The daemon's policy refuses every Write; an OTP write
+// is the burn mode's and se-lab's (after the data lock it cannot be undone).
 func (s *Session) Write(z Zone, addr uint16, data []byte) error {
-	if z == ZoneOTP {
-		return fmt.Errorf("%w: Write to the OTP zone", ErrRefused)
-	}
 	p1, err := sizeFlag(z, len(data))
 	if err != nil {
 		return err
 	}
-	_, err = s.Exec(Cmd{Op: OpWrite, P1: p1, P2: addr, Data: data, RespLen: 1, MaxExec: execWrite})
+	_, err = s.Exec(Cmd{Op: OpWrite, P1: p1, P2: addr, Data: data, RespLen: 1, MaxExec: MaxExec(OpWrite)})
 	return err
-}
-
-// Random is the Random command, mode 0 (E2 records it before the config lock: a fixed test pattern, F§12).
-func (s *Session) Random() ([]byte, error) {
-	return s.Exec(Cmd{Op: OpRandom, P1: 0x00, P2: 0, RespLen: 32, MaxExec: execRandom})
 }
 
 func sizeFlag(z Zone, n int) (byte, error) {
