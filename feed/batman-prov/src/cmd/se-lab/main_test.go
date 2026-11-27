@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"batman-prov/se608"
 	"batman-prov/se608/fakechip"
@@ -21,7 +22,32 @@ type rig struct {
 	dir   string
 	opens int
 	busy  bool
+	// mutate runs once, just before the chip receives command number mutateAfter+1 of an invocation: something
+	// else changing the chip between two of the tool's steps.
+	mutateAfter int
+	mutate      func(*fakechip.Chip)
+	tier        string // the policy the last invocation ran its command under ("" = it never got that far)
+	installed   se608.Policy
 }
+
+// hookBus counts the command packets of one invocation and fires the rig's mutation.
+type hookBus struct {
+	r    *rig
+	cmds int
+}
+
+func (h *hookBus) Write(addr uint16, p []byte) error {
+	if addr == se608.Addr && len(p) > 0 && p[0] == 0x03 {
+		h.cmds++
+		if h.r.mutate != nil && h.cmds == h.r.mutateAfter+1 {
+			h.r.mutate(h.r.chip)
+			h.r.mutate = nil
+		}
+	}
+	return h.r.chip.Write(addr, p)
+}
+
+func (h *hookBus) Read(addr uint16, p []byte) error { return h.r.chip.Read(addr, p) }
 
 func newRig(t *testing.T) *rig { return &rig{chip: fakechip.New(), dir: t.TempDir()} }
 
@@ -51,14 +77,31 @@ func (r *rig) run(t *testing.T, args ...string) (int, string, string) {
 			if r.busy {
 				return nil, nil, se608.ErrBusy
 			}
-			return r.chip, func() {}, nil
+			return &hookBus{r: r}, func() {}, nil
 		},
 		out:    &out,
 		errOut: &errOut,
+		sleep:  func(time.Duration) {},
+		tier:   func(t string, p se608.Policy) { r.tier, r.installed = t, p },
+		clock: func(d *se608.Dev) {
+			fc := &fakeClock{t: time.Unix(0, 0)}
+			d.SetClock(fc.sleep, fc.now)
+		},
 	}
+	r.tier, r.installed = "", nil
 	rc := run(args, e)
 	return rc, out.String(), errOut.String()
 }
+
+// openBusFor hands a test the rig's bus directly (for unit tests of ctx methods).
+func (env) openBusFor(r *rig) (se608.Bus, func(), error) { return &hookBus{r: r}, func() {}, nil }
+
+// fakeClock makes polling deterministic: sleep advances now, nothing really waits (round 2 B-m6: the slow-answer
+// tests failed under load on a real clock).
+type fakeClock struct{ t time.Time }
+
+func (c *fakeClock) sleep(d time.Duration) { c.t = c.t.Add(d) }
+func (c *fakeClock) now() time.Time        { return c.t }
 
 func countOp(c *fakechip.Chip, op byte) int {
 	n := 0
@@ -135,11 +178,9 @@ func TestRefusals(t *testing.T) {
 		{"wrong revision", func(r *rig) { r.chip.Config[7] = 0x02 }, own, img, true},
 		{"wrong revision, info", func(r *rig) { r.chip.Config[7] = 0x02 }, func(*rig, *testing.T) []string { return nil }, func(*rig) []string { return []string{"info"} }, true},
 		{"config locked", func(r *rig) { r.chip.LockConfigForTest() }, own, img, true},
-		{"data-write, config locked", func(r *rig) { r.chip.LockConfigForTest() }, own, func(*rig) []string { return []string{"data-write", "9"} }, true},
 		{"wrong revision, data-write", func(r *rig) { r.chip.Config[7] = 0x02 }, own, func(*rig) []string { return []string{"data-write", "9"} }, true},
 		{"wrong revision, random", func(r *rig) { r.chip.Config[7] = 0x02 }, own, func(*rig) []string { return []string{"random"} }, true},
 		{"wrong revision, compare", func(r *rig) { r.chip.Config[7] = 0x02 }, func(*rig, *testing.T) []string { return nil }, func(r *rig) []string { return []string{"-byte17", r.b17(), "compare"} }, true},
-		{"random, config locked", func(r *rig) { r.chip.LockConfigForTest() }, own, func(*rig) []string { return []string{"random"} }, true},
 		{"wrong revision, dump", func(r *rig) { r.chip.Config[7] = 0x02 }, func(*rig, *testing.T) []string { return nil }, func(*rig) []string { return []string{"dump"} }, true},
 		{"lock byte 0xAA", func(r *rig) { r.chip.Config[se608.LockConfigByte] = 0xAA }, own, img, true},
 		{"byte17 differs", nil, own, func(*rig) []string { return []string{"-byte17", "00", "write-image"} }, true},

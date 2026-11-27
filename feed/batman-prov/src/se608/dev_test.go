@@ -31,7 +31,7 @@ func newDev(t *testing.T) (*se608.Dev, *fakechip.Chip, *recBus) {
 	t.Helper()
 	chip := fakechip.New()
 	rb := &recBus{Bus: chip}
-	d := se608.New(rb)
+	d := se608.NewBurn(rb)
 	c := &fakeClock{t: time.Unix(0, 0)}
 	d.SetClock(c.sleep, c.now)
 	return d, chip, rb
@@ -115,9 +115,12 @@ func TestWriteConfigImageRefusesLockedChip(t *testing.T) {
 	}
 }
 
-func TestExecRefusesIrreversibleOps(t *testing.T) {
+// What no product policy may send never reaches the chip: UpdateExtra, PrivWrite, Random, Counter, MAC, GenDig,
+// KDF and an unknown opcode are refused before the bus is touched.
+func TestExecRefusesOpsOutsideThePolicy(t *testing.T) {
 	d, chip, _ := newDev(t)
-	for _, op := range []byte{0x17 /* Lock */, 0x20 /* UpdateExtra */, 0x40 /* GenKey */, 0x46 /* PrivWrite */, 0x41, 0x43, 0x28, 0x99} {
+	for _, op := range []byte{se608.OpUpdateExtra, se608.OpPrivWrite, se608.OpRandom, se608.OpCounter, se608.OpMAC,
+		se608.OpGenDig, se608.OpKDF, se608.OpAES, se608.OpSHA, se608.OpDeriveKey, 0x99} {
 		err := d.Do(func(s *se608.Session) error {
 			_, err := s.Exec(se608.Cmd{Op: op, RespLen: 1, MaxExec: time.Second})
 			return err
@@ -186,25 +189,19 @@ func TestCorruptResponse(t *testing.T) {
 	}
 }
 
-// E2 on the fake: data write refused before the config lock (status 0x0F), Random is the test pattern.
+// E2 on the fake: data write refused before the config lock (status 0x0F). Random is se-lab's (lab_test.go).
 func TestBeforeConfigLock(t *testing.T) {
 	d, _, _ := newDev(t)
-	var rnd []byte
 	err := d.Do(func(s *se608.Session) error {
 		werr := s.Write(se608.ZoneData, se608.DataAddr(8, 0, 0), make([]byte, 32))
 		var se *se608.StatusError
 		if !errors.As(werr, &se) || se.Code != 0x0F {
 			t.Errorf("data write before lock: %v, want status 0x0F", werr)
 		}
-		var err error
-		rnd, err = s.Random()
-		return err
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !bytes.Equal(rnd[:4], []byte{0xFF, 0xFF, 0x00, 0x00}) {
-		t.Fatalf("random before lock % x", rnd)
 	}
 }
 
@@ -300,11 +297,20 @@ func TestWatchdogControl(t *testing.T) {
 	}
 }
 
-func TestWriteOTPRefused(t *testing.T) {
-	d, chip, _ := newDev(t)
-	err := d.Do(func(s *se608.Session) error { return s.Write(se608.ZoneOTP, 0, make([]byte, 4)) })
+// The daemon's Dev refuses every Write before the bus is touched (the OTP zone included); the burn mode's Dev sends
+// it and the chip decides (before the config lock: 0x0F).
+func TestWriteOTPDaemonRefusedBurnSends(t *testing.T) {
+	chip := fakechip.New()
+	daemon := se608.New(chip)
+	err := daemon.Do(func(s *se608.Session) error { return s.Write(se608.ZoneOTP, 0, make([]byte, 4)) })
 	if !errors.Is(err, se608.ErrRefused) || len(chip.Ops) != 0 {
-		t.Fatalf("OTP write: %v, ops % x", err, chip.Ops)
+		t.Fatalf("daemon OTP write: %v, ops % x", err, chip.Ops)
+	}
+	d, chip, _ := newDev(t)
+	err = d.Do(func(s *se608.Session) error { return s.Write(se608.ZoneOTP, 0, make([]byte, 4)) })
+	var se *se608.StatusError
+	if !errors.As(err, &se) || se.Code != 0x0F || len(chip.Ops) != 1 {
+		t.Fatalf("burn OTP write before the config lock: %v, ops % x", err, chip.Ops)
 	}
 }
 

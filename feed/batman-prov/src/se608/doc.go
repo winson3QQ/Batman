@@ -1,18 +1,19 @@
 // Package se608 is the ATECC608B driver core for #255 in v2.0 (docs/design/255-608b-impl.md §2.2, PR D).
 //
-// PR D scope (agreed 2026-11-23): only what the rig experiments E0–E3 need (255-608b-config.md §8): the I2C wake /
-// idle / sleep sequence, the command packet with its CRC-16, response polling, and the commands Info (revision),
-// Read and Write (config and data zones; the OTP zone is refused), and Random for E2. Nothing here can lock a zone
-// or a slot: Exec refuses every opcode outside allowedOps before touching the bus (Lock, UpdateExtra, GenKey,
-// PrivWrite, ...). allowedOps is one list for the whole package; PR D2 splits the product driver's commands from
-// se-lab's (255-608b-impl.md §2.2, §9). Sign, ECDH, CheckMac, GenKey and the burn flow come after
-// E1–E3 have run on a real chip.
+// It holds the I2C wake / idle sequence, the command packet with its CRC-16, response polling, and the nine
+// commands the product needs: Info, Read, Write, Lock, Nonce (pass-through), GenKey, Sign (external), ECDH and
+// CheckMac (255-608b-impl.md §2.2). What a Dev may send is decided by its Policy before the bus is touched:
+// New gives the daemon's list (nothing that changes the chip), NewBurn adds Write, Lock and key generation for the
+// burn mode. Everything else the chip can do (Random, MAC, GenDig, KDF, AES, Counter, UpdateExtra, PrivWrite, ...)
+// is only in package se608/lab, which se-lab uses on the rig and no shipped binary links. A Lock that skips the
+// chip's CRC check is refused under every policy.
 //
 // Confirmed on a real chip (measured on chip 0123ba99e2ca248cee, 2026-11-27 (E1-E3 on the rig; results in docs/design/255-608b-config.md §8.3)): the wake pulse and its
 // response 04 11 33 43 (3/3), the packet with its CRC-16, the "read the count byte, then the rest" polling, Info,
 // Read, Write and Random, and that this driver does not need the reset word before a receive. Bus 100 kHz.
 // Still from the datasheet summary, not measured: every status code except 0x00 and 0x0F, and the execution-time
-// caps (no command came near them, but the maxima themselves were not timed).
+// caps (no command came near them, but the maxima themselves were not timed). Not yet run on a real chip at all:
+// Lock, Nonce, GenKey, Sign, ECDH and CheckMac (cmds.go) — E4, E6, E17, E8, E10 and E14 are where they first do.
 //
 // The chip lock is an exclusive flock on the bus device (OpenI2C).
 //
