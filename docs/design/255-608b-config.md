@@ -300,7 +300,7 @@ image[112]=3c 00 1c 00 1c 00 1c 00 1c 00 1c 00 1c 00 1c 00
 | 鎖前：shell 自我檢查 | `rc=1` | `rc=1` | ✅ |
 | 鎖前：序號、鎖定位元組、影像 | `0123ba99e2ca248cee`、`55`/`55`、`EQUAL` | 相同 | ✅ |
 | 鎖前：soak 300 輪 | 0 錯誤 | `soak_errors=0`、`soak_differ=0` | ✅ 匯流排與手焊接點穩定 |
-| 乾跑 | 校驗值 `9022`、封包 `03 07 17 00 22 90 1d 15`、不送出 | 完全相同，乾跑後仍 `55`/`55` | ✅ |
+| 乾跑 | 校驗值 `9022`、封包 `03 07 17 00 22 90 1d 15`、不送出 | 完全相同；乾跑之後的 `info` 仍 `55`/`55`（`results/e4-dry.txt`，當場 tee 的檔案；`rig-shm/` 裡的 `e4-dry.txt` 只有乾跑本身） | ✅ |
 | 鎖定 | 晶片接受並鎖住 | `lock_config_result=locked`、`lock_config_after=00`、`lock_data_after=55`、`slot_locked_after=ffff` | ✅ **Lock 指令的格式與校驗值算法在真晶片上成立** |
 | 鎖後：寫設定區 | 被拒 | `config_write_word17=status_0f` | ✅ |
 | 鎖後：Random | 不是固定樣式 | 兩次各不相同，皆非 `ffff0000…` | ✅ 推論變事實（F§12） |

@@ -103,7 +103,7 @@ echo "$SN" > allow.txt
 | `lock-data` | `./se-lab info` | `lock_data=00` |
 | `lock-slot N` | 那一步的 `-dry-run lock-slot N` | `slot_already_locked=yes` |
 | `counter-inc 1` | `-dry-run counter-inc 1` | `counter1_before_le=` 不是 0。**斷電可能讓計數器跳不只一格**：不是 0 就不要再加 |
-| `update-extra 1 a0` | `-dry-run update-extra 1 a0` | `byte85_before=a0` |
+| `update-extra 1 a0` | `-dry-run update-extra 1 a0`（或 `./se-lab dump`：`info` 看不到位元組 85，dump 的 `config[ 80]=` 那一行第 6 個位元組就是它） | `byte85_before=a0` |
 
 已經做了 → 照那一步「做完之後」的檢查繼續；沒做 → 從那一步的乾跑重新開始。重送 `lock-data`、`lock-slot`、`update-extra` 不會造成傷害（工具或晶片會拒絕），**只有 `counter-inc` 重送會多加一次**。
 
@@ -256,7 +256,7 @@ OTP 的填充值要看晶片**實際存的內容**，不是只看寫入回應（
 ```sh
 for c in "mac 5" "mac 3" "gendig-mac 5" "gendig-mac 3" "hmac 5" "hmac 3" \
          "kdf hkdf 5" "kdf hkdf 3" "kdf prf 5" "kdf prf 3" "aes 5" "aes 3"; do
-  echo "=== $c"; ./se-lab -allow allow.txt $c 2>&1 | grep -v '^tool_rev=\|^revision=\|^serial=\|^lock_config=\|^lock_data='
+  echo "=== $c"; ./se-lab -allow allow.txt $c 2>&1 | grep -v '^revision=\|^serial=\|^lock_config=\|^lock_data='
 done | tee e8.txt
 ./se-lab slot-read 5 2>&1 | tee e8-read5.txt
 ./se-lab slot-read 8 2>&1 | tee e8-read8.txt
@@ -354,10 +354,10 @@ done | tee e8.txt
 ./se-lab -allow allow.txt genkey 1 2>&1 | tee e10-genkey1.txt
 ./se-lab -allow allow.txt genkey 2 2>&1 | tee e10-genkey2.txt
 for c in "kdf hkdf 3 6" "kdf hkdf 3 5" "kdf hkdf 3 15" "kdf hkdf 3 4" "kdf hkdf 3 0" "kdf prf 3 6" "kdf prf 3 5"; do
-  echo "=== $c"; ./se-lab -allow allow.txt $c 2>&1 | grep -v '^tool_rev=\|^revision=\|^serial=\|^lock_config=\|^lock_data='
+  echo "=== $c"; ./se-lab -allow allow.txt $c 2>&1 | grep -v '^revision=\|^serial=\|^lock_config=\|^lock_data='
 done | tee e9.txt
 for c in "ecdh 2 clear" "ecdh 2 tempkey" "ecdh 2 enc" "ecdh 2 compat" "ecdh 1 clear" "sign 1" "sign 0" "sign-internal 4" "sign-internal 2" "ecdh 2 slot"; do
-  echo "=== $c"; ./se-lab -allow allow.txt $c 2>&1 | grep -v '^tool_rev=\|^revision=\|^serial=\|^lock_config=\|^lock_data='
+  echo "=== $c"; ./se-lab -allow allow.txt $c 2>&1 | grep -v '^revision=\|^serial=\|^lock_config=\|^lock_data='
 done | tee e10.txt
 ```
 
@@ -448,10 +448,10 @@ E16（健康測試失敗後恢復）沒有辦法主動誘發，不做；過程�
 **🔒 取得同意後**（位元組 85 只能寫一次；`a0` 是「位址 0x50」，一個不是 0x60 的值）：
 
 ```sh
-./se-lab -allow allow.txt -serial "$SN" update-extra 1 a0 2>&1 | tee e12.txt
+./se-lab -allow allow.txt -serial "$SN" update-extra 1 a0 2>&1 | tee e12.txt; echo "rc=$?" | tee -a e12.txt
 ```
 
-預期 ⚠️：`update_extra_mode1=status_00`、`byte85_after=a0`。沒有 `update_extra_mode1=` 這一行、而是 `update_extra_result=WRITTEN_answer_lost`（回應沒收到，位元組已經是 `a0`）→ 不要重送，直接往下做斷電；`NOT_WRITTEN_answer_lost` 或 `UNKNOWN_read_back_failed` → **停**。然後照 §1.3 **斷電一次**，開機後：
+預期 ⚠️：`update_extra_mode1=status_00`、`byte85_after=a0`、`rc=0`。沒有 `update_extra_mode1=` 這一行、而是 `update_extra_result=WRITTEN_answer_lost`（回應沒收到，位元組已經是 `a0`）→ 不要重送，直接往下做斷電；`NOT_WRITTEN_answer_lost` 或 `UNKNOWN_read_back_failed` → **停**。然後照 §1.3 **斷電一次**，開機後：
 
 ```sh
 ./se-lab info 2>&1 | tee e12-after-power.txt; echo "rc=$?" | tee -a e12-after-power.txt

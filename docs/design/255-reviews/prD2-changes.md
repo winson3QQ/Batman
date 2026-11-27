@@ -42,3 +42,35 @@ The round's theme: protections that were present and correct but had no negative
 | B-m14 re-run after a power cut mid-E11 | §6: read the counter first; do not increment twice |
 
 Also since round 1 (not from a finding): the power-cut method was measured on the rig (config §8.3) — the smart plug really cuts power, the battery holds for about a second — so the runbook's power cuts are remote, judged by three things together (plug power 0, the Pi boots by itself, `get_rsts=1000`).
+
+## Round 2
+
+Code at 7aea4be (runbook at 1edcd9d). Reviewer A (`review-prD2-A-r2.md`) = 0 / 0 / 9, Reviewer B (`review-prD2-B-r2.md`) = 0 / 0 / 11. Both: merge = APPROVE-WITH-CHANGES; the runbook's remaining irreversible steps (§4–§12) = APPROVE-WITH-CHANGES. Both confirm every round-1 MAJOR fixed with evidence of their own. A rebuilt the rig binary from a clean clone of 7aea4be and got the same sha256 (`0eeaf15e…1140`) as the one E4 ran; both recomputed every for-good packet; both ran the runbook from §4 literally on a fake starting from the real chip's post-E4 bytes (A: 83 se-lab lines, B: 7 for-good packets, 0 mismatches). Mutants: A 61 (52 killed), B 39.
+
+An earlier attempt of each round-2 review was interrupted by the environment (twice) before reporting; B's partial logs from the first attempt (four survivors) were fixed in 57d9f33 before the rerun reported.
+
+| Finding | Handling |
+|---|---|
+| B partial / A N-m3(a) the first Dev could get the for-good policy under the "rewritable" name | The test hook receives the installed policy; `TestInstalledPolicyMatchesTier` tries a Lock through it for every command and flag set |
+| B partial / A N-m3(b,c), B m8 afterLock's own-refusal and `status_XX_but_LOCKED` branches untested | `TestAfterLockRemainingBranches` (fake knob `LockThenRefuse`) |
+| B partial / B m8 `tool_rev` `+modified` untested | `toolRevFrom` + `TestToolRevReportsADirtyTree` |
+| B m1 / A N-m4 Counter increment and UpdateExtra polled for the table time; a lost answer leaves no result line and invites a resend | `ForGoodPoll` (= LockPoll) for both; after a lost answer the counter / bytes 84-85 are read back and one `_result=` line says `INCREMENTED_answer_lost` / `NOT_INCREMENTED_answer_lost` / `WRITTEN_answer_lost` / `NOT_WRITTEN_answer_lost` / `UNKNOWN_read_back_failed`; nothing is resent. `TestForGoodAnswersAreNotGivenUpEarly` |
+| B m9 counter-inc's dry run shows no current value | `counter1_before_le=` in the dry and the real run |
+| B m6 / A N-m1 slow-answer tests on the real clock flaked under load | All se-lab and driver tests that poll run on a fake clock (`env.clock`, `Dev.SetClock`); `TestLockPollIsACap` checks the cap from the other side. 5 runs under 8 busy loops: all pass. se-lab's tests went from ~30 s to ~0.1 s |
+| A N-m2 the fake's watchdog charged a Lock 35 ms while the driver may wait 500 | The fake charges Lock / Counter increment / UpdateExtra what the driver may wait (`charge()`); `TestLongSequencesHitTheWatchdog` shows a sequence of GenKey + two Locks is cut. The burn primitives (one key slot's GenKey + Lock per sequence, 655 ms) still fit |
+| A N-m3(d,e) lock-slot result when the neighbouring slot is locked; update-extra mode 3 | Not reproducible on the code (`status_0f`, usage error); the walk now matches the result exactly (it used substring match, so `status_0f_but_LOCKED` would have passed) and checks mode 3 |
+| A N-m5 `secert.Parse` depends byte-for-byte on Go's encoder with no golden | `TestCanonicalEncodingGolden` pins the TBS hash for fixed inputs: a toolchain that changes the encoding fails CI, before any bench certificate stops parsing |
+| B m7 PolicyDaemon's comment says it stops a compromised caller | Comment corrected; impl §2.7: a compromised helper owns the chip, the trust boundary is the process |
+| B m3 se-lab run as root from world-writable /dev/shm (TOCTOU) | Runbook: a `mktemp -d` directory, checked `drwx------ root` |
+| B m2 a 🔒 step interrupted by a dropped ssh or a power cut | Runbook §1.4: never resend; the step's dry run is the "where am I" check; only counter-inc is not safe to resend; `nohup` option |
+| B m4 the OTP fill inferred from a write status | Runbook §4.2: read the OTP zone, choose the fill from its content |
+| B m5 / A N-r4 §8.4 looser than the raw files | Reworded: the post-lock dump differs from the pre-lock dump only at byte 87; the post-cut boot_id was not recorded; the "still 55/55 after the dry run" line is in the tee'd `results/e4-dry.txt` |
+| B m10 E17 order not enforced | Runbook precondition on the dry-run row |
+| B m11 blob length unchecked | `echo ${#BLOB}` must print 780 |
+| A N-r1 build from a clone, not a worktree | Runbook §1.1 (1edcd9d), and `tool_rev` with `+modified` / `unknown` is a stop |
+| A N-r2 §12 records no rc; `info` does not show byte 85 | rc recorded; lost-answer rows; `dump` named for byte 85 |
+| A N-r3 the loops filter out `tool_rev=` | The filter keeps it |
+| A A-M3 / B: `ProvisionalCmds` gate belongs to PR 2 | impl §2.2; added to #255's checklist with this PR |
+| B declined: N14 (re-read and Lock in one sequence not asserted) | Left: chip 1's config zone is already locked, and the chip's own CRC check is what makes the property matter |
+
+Negative controls for the round-2 fixes: every fix has a mutant that its test kills (10 + 3 run), except the fake-clock installation, which only affects determinism and was checked by stress runs instead. No third review round: neither reviewer had a BLOCKER or MAJOR, and the changes since 7aea4be add tests, a longer wait for two commands with a read-back after a lost answer, and runbook text; the rig binary for §4+ will be rebuilt from the PR's final commit and its `tool_rev` recorded.
