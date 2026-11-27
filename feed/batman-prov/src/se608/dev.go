@@ -17,8 +17,10 @@ type Bus interface {
 	Read(addr uint16, p []byte) error
 }
 
-// Timing (PROVISIONAL(E1)). tWHI is cryptoauthlib's default wake delay for the 608; the execution caps are the
+// Timing. tWHI is cryptoauthlib's default wake delay for the 608; the execution caps are the
 // fastest-clock maxima (ChipMode clock divider 0, 255-608b-config.md §4); pollMargin covers the bus.
+// Measured on chip 0123ba99e2ca248cee, 2026-11-27 (E1-E3 on the rig): these values worked for Info, Read, Write
+// and Random; no command needed a retry and none came near its cap. The caps themselves were not timed.
 const (
 	tWHI       = 1500 * time.Microsecond
 	pollFirst  = 1 * time.Millisecond
@@ -71,8 +73,10 @@ func (d *Dev) Do(fn func(*Session) error) error {
 }
 
 // wake sends the wake pulse (one byte to the general-call address: at 100 kHz or slower SDA is low for longer
-// than tWLO = 60 us; the NACK is expected; PROVISIONAL(E0a): current cryptoauthlib sends 0x01 there, the byte does
-// not reach the chip either way, E0a records the bus speed and whether any other device ACKs a general call), waits tWHI and reads the 4-byte wake response. A chip that was still awake
+// than tWLO = 60 us; current cryptoauthlib sends 0x01 there, the byte does not reach the chip either way), waits
+// tWHI and reads the 4-byte wake response. measured on chip 0123ba99e2ca248cee, 2026-11-27 (E1-E3 on the rig; results in docs/design/255-608b-config.md §8.3): the pulse woke the chip
+// and the response was 04 11 33 43 on all three tries. ⚠️ On that rig the same transfer to the general-call address
+// returned rc 0; whether a device really ACKs 0x00 or i2ctransfer just does not report the NACK is not settled. A chip that was still awake
 // from an interrupted sequence answers with whatever is in its output buffer: then send idle and try once more.
 func (d *Dev) wake() error {
 	var last []byte
@@ -263,7 +267,8 @@ func ImageWords() []int {
 }
 
 // writeOrder is ImageWords with word 4 (I2C address, ChipMode) last: if a changed byte there took effect before
-// the lock, it could only cut off the writes after it (PROVISIONAL(E3): unknown whether it does).
+// the lock, it could only cut off the writes after it (still unknown whether it does: measured on chip 0123ba99e2ca248cee, 2026-11-27 (E1-E3 on the rig; results in docs/design/255-608b-config.md §8.3),
+// E3 wrote 16 differing words in this order and the read-back matched, so the order is at least safe).
 func writeOrder() []int {
 	w := ImageWords()
 	return append(w[1:], w[0])

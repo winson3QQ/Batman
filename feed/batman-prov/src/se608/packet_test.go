@@ -8,7 +8,8 @@ import (
 
 // Vectors from outside this code: the wake response 04 11 33 43 is printed in the datasheet; the Info (revision)
 // and 32-byte config-block-0 Read packets are the byte strings cryptoauthlib puts on the wire, as quoted in
-// Microchip forum and library traces. PROVISIONAL(E1): E1 captures them from our chip.
+// Microchip forum and library traces. The wake response was confirmed on our chip (measured on chip 0123ba99e2ca248cee, 2026-11-27 (E1-E3 on the rig; results in docs/design/255-608b-config.md §8.3));
+// the two packet vectors are still from the traces, but the chip answered both packets as expected.
 func TestCRCVectors(t *testing.T) {
 	for _, v := range []struct {
 		in   []byte

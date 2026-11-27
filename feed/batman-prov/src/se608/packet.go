@@ -7,8 +7,8 @@ import (
 )
 
 // Word-address bytes: the first byte of every I2C write to the chip (0x00 reset and 0x01 sleep exist; PR D sends
-// neither). PROVISIONAL(E1): current cryptoauthlib also sends the reset word before each receive; this driver does
-// not, and E1 shows whether our chip needs it.
+// neither). Current cryptoauthlib also sends the reset word before each receive; this driver does not, and
+// measured on chip 0123ba99e2ca248cee, 2026-11-27 (E1-E3 on the rig; results in docs/design/255-608b-config.md §8.3) shows our chip does not need it.
 const (
 	wordIdle    = 0x02
 	wordCommand = 0x03
@@ -44,7 +44,8 @@ const (
 )
 
 // Cmd is one command packet. RespLen is the number of data bytes a success returns (1 = a status byte that must
-// be 0x00). MaxExec is the longest the chip may take (PROVISIONAL(E1)).
+// be 0x00). MaxExec is the longest the chip may take (datasheet summary; not timed on a chip, but no command in
+// E1-E3 came near its cap).
 type Cmd struct {
 	Op      byte
 	P1      byte
@@ -85,7 +86,8 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("se608: %s returned status 0x%02x (%s)", opName(e.Op), e.Code, StatusName(e.Code))
 }
 
-// StatusName names a status byte (datasheet summary "Status/Error Codes"; PROVISIONAL(E1)).
+// StatusName names a status byte (datasheet summary "Status/Error Codes"). Only 0x00 and 0x0F have been seen on a
+// real chip (measured on chip 0123ba99e2ca248cee, 2026-11-27 (E1-E3 on the rig; results in docs/design/255-608b-config.md §8.3)); the rest are still the datasheet's.
 func StatusName(c byte) string {
 	switch c {
 	case 0x00:

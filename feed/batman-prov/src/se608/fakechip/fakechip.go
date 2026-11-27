@@ -4,7 +4,8 @@
 //
 // PR D models only what E0-E3 need: wake / idle / sleep, Info, Read, Write and Random, the config and data zones,
 // and the two lock bytes as state (no Lock command: a test locks the chip by setting the bytes). Behaviour that
-// only the datasheet summary states is marked PROVISIONAL(E1/E2) and gets replaced by captures from the rig.
+// only the datasheet summary stated is now confirmed against a real chip (measured on chip 0123ba99e2ca248cee, 2026-11-27 (E1-E3 on the rig; results in docs/design/255-608b-config.md §8.3)):
+// a data-zone write before the config lock is refused with 0x0F, and Random returns the fixed test pattern.
 package fakechip
 
 import (
@@ -29,7 +30,9 @@ func Blank() [se608.ConfigLen]byte {
 	c[13] = 0x01 // AES_Enable (placeholder)
 	c[14] = 0x01 // I2C_Enable
 	c[16] = 0xC0
-	c[17] = 0x3B // placeholder, non-zero so a lost byte 17 shows up
+	// The real blank chip reads 0x00 here (measured on chip 0123ba99e2ca248cee, 2026-11-27 (E1-E3 on the rig; results in docs/design/255-608b-config.md §8.3)). The fake keeps a non-zero
+	// placeholder on purpose: it is what makes a dropped or wrong byte 17 visible in the tests.
+	c[17] = 0x3B
 	c[se608.LockDataByte] = 0x55
 	c[se608.LockConfigByte] = 0x55
 	c[88], c[89] = 0xFF, 0xFF
@@ -204,7 +207,7 @@ func (c *Chip) command(pkt []byte) []byte {
 		}
 		out := make([]byte, 32)
 		if !c.configLocked() {
-			// PROVISIONAL(E2): before the config lock Random returns a fixed test pattern (F§12).
+			// Confirmed on a real chip: before the config lock Random returns a fixed test pattern (F§12).
 			for i := 0; i < 32; i += 4 {
 				out[i], out[i+1] = 0xFF, 0xFF
 			}
@@ -256,7 +259,7 @@ func (c *Chip) read(p1 byte, p2 uint16, data []byte) []byte {
 		}
 		return respond(c.Config[off : off+n])
 	case byte(se608.ZoneData):
-		// PROVISIONAL(E2): data-zone reads are refused until the zones are locked.
+		// Data-zone reads are refused until the zones are locked (datasheet summary; the write side was confirmed).
 		if !c.configLocked() || c.Config[se608.LockDataByte] == 0x55 {
 			return status(0x0F)
 		}
@@ -283,14 +286,14 @@ func (c *Chip) write(p1 byte, p2 uint16, data []byte) []byte {
 		if !ok {
 			return status(0x03)
 		}
-		// Bytes 0-15 and 84-87 cannot be written with Write (datasheet summary; PROVISIONAL(E3)).
+		// Bytes 0-15 and 84-87 cannot be written with Write (datasheet summary; E3 never wrote them, so untested).
 		if off < 16 || (off < 88 && off+n > 84) {
 			return status(0x0F)
 		}
 		copy(c.Config[off:], data)
 		return status(0x00)
 	case byte(se608.ZoneData):
-		// E2's claim: a data write before the config lock is refused (PROVISIONAL(E2)).
+		// Confirmed on a real chip: a data write before the config lock is refused with 0x0F.
 		if !c.configLocked() {
 			return status(0x0F)
 		}
