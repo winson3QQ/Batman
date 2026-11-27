@@ -36,11 +36,17 @@
 在開發機上編（或用附在 PR 的執行檔），記下 commit 與 sha256，複製到實驗台的 tmpfs：
 
 ```sh
-# 開發機（WSL），在乾淨的 checkout 裡
-cd feed/batman-prov/src && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/se-lab ./cmd/se-lab
+# 開發機（WSL）。要在 WSL 自己的檔案系統上 clone 再編：在 Windows 掛載的 git worktree 裡編，
+# 版本資訊讀不到，tool_rev 會印 unknown（PR D2 第二輪審查 B）。
+rm -rf ~/d2build && git clone -q --no-checkout /mnt/c/src/Batman-app ~/d2build
+cd ~/d2build && git checkout -q <審過的 commit> && git status --short | wc -l    # 必須是 0
+cd feed/batman-prov/src && GOFLAGS=-mod=vendor CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/se-lab ./cmd/se-lab
+go version -m /tmp/se-lab | grep vcs      # vcs.revision = 那個 commit，vcs.modified=false
 sha256sum /tmp/se-lab
-scp /tmp/se-lab root@<實驗台>:/dev/shm/
+scp -O /tmp/se-lab root@<實驗台>:/dev/shm/
 ```
+
+E4 用的那一版：commit `7aea4be0…`，sha256 `0eeaf15e…1140`（設計 §8.4）。
 
 ```sh
 # 實驗台
@@ -65,7 +71,7 @@ echo "$SN" > allow.txt
 |---|---|---|
 | 自我檢查那一行 | `rc=1` | 印 `rc=0` = `pipefail` 沒生效，之後所有 `rc=` 都會是假的 → **停** |
 | `info` 的 `serial=` | 和 `e1-info.txt` 裡的 `serial=` **逐字相同**（拿紙本或另一個視窗對，不要只和 `$SN` 比 —— 清單和 `-serial` 都來自 `$SN`，它打錯的話兩道檢查會一起錯） | **停** |
-| `info` 的 `tool_rev=` | §1.1 記下的 commit | **停** |
+| `info` 的 `tool_rev=` | §1.1 記下的 commit，後面**沒有** `+modified` | 是 `unknown` 或帶 `+modified` → **停** |
 
 ### 1.3 斷電的做法（§2、§3、§6、§12 會用到）
 
