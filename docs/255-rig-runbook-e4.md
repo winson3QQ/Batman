@@ -43,22 +43,27 @@ cd ~/d2build && git checkout -q <審過的 commit> && git status --short | wc -l
 cd feed/batman-prov/src && GOFLAGS=-mod=vendor CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/se-lab ./cmd/se-lab
 go version -m /tmp/se-lab | grep vcs      # vcs.revision = 那個 commit，vcs.modified=false
 sha256sum /tmp/se-lab
-scp -O /tmp/se-lab root@<實驗台>:/dev/shm/
+ssh root@<實驗台> 'mktemp -d /dev/shm/selab.XXXXXX'       # 印出目錄名，例如 /dev/shm/selab.Ab12Cd
+scp -O /tmp/se-lab root@<實驗台>:<上面那個目錄>/
 ```
 
 E4 用的那一版：commit `7aea4be0…`，sha256 `0eeaf15e…1140`（設計 §8.4）。
 
 ```sh
-# 實驗台
-cd /dev/shm && chmod +x se-lab && sha256sum se-lab
+# 實驗台：工作目錄是 mktemp 建的 0700 目錄，只有 root 能寫。不要直接用 /dev/shm：
+# 那裡人人可寫，別的程式可以在你核對 sha256 之後、執行之前換掉 se-lab（PR D2 第二輪審查 B-m3）。
+D=<上面那個目錄>; cd "$D" && ls -ld . && chmod +x se-lab && sha256sum se-lab
 ```
+
+`ls -ld .` 必須是 `drwx------ ... root root`。
 
 兩邊的 sha256 不同 → **停**。
 
 ### 1.2 每開一條新的連線都要先做（斷電後重新連線也算）
 
 ```sh
-cd /dev/shm
+D=/dev/shm/selab.XXXXXX      # §1.1 建的那個目錄（斷電後要重建，見 §1.3）
+cd "$D" && ls -ld .           # 必須是 drwx------ root
 set -o pipefail
 false | tee /dev/null; echo "rc=$?"     # 必須印 rc=1
 SN=0123ba99e2ca248cee        # 第 1 顆晶片的序號（E1 讀到的，見第一份手冊帶回來的 e1-info.txt）
@@ -77,11 +82,11 @@ echo "$SN" > allow.txt
 
 實驗台的電源接在智慧插座上，切插座就是真的斷電（設計 §8.3 的實測：電池只撐幾秒）。全程可以遠端做：
 
-1. **先把 `/dev/shm/*.txt` 用 `scp` 帶走**（tmpfs 斷電就清空）。
+1. **先把工作目錄裡的 `*.txt` 用 `scp` 帶走**（tmpfs 斷電就清空）。
 2. `poweroff`，等 ssh 斷線後再等 20 秒。
 3. 插座斷電，**至少 60 秒**（電池在拔掉市電後還會撐幾秒，關機狀態下可能更久）；這段時間插座回報的功率必須是 `0.0 W`。
 4. 插座送電。Pi 會自己開機（約 1 分鐘）。
-5. 重新連線，確認 `vcgencmd get_rsts` 印 `get_rsts=1000`，把 `se-lab` 再複製一次並對 sha256（§1.1），再做一次 §1.2。
+5. 重新連線，確認 `vcgencmd get_rsts` 印 `get_rsts=1000`，**照 §1.1 重建工作目錄**（`mktemp -d`）、把 `se-lab` 再複製一次並對 sha256，再做一次 §1.2。
 
 三項證據要一起成立：斷電期間功率 0.0 W、Pi 自己開機、`get_rsts=1000`。任何一項不成立 → **停**，那一步的「斷電後」不算做過。
 
@@ -90,6 +95,19 @@ echo "$SN" > allow.txt
 ### 1.4 看不懂的結果
 
 任何指令 `rc` 不是預期的值、又沒有對應的列 → **停**，跑一次 `./se-lab info 2>&1 | tee stop-info.txt`，連同當時的輸出帶回來。**不要重送剛才那個指令。**
+
+**🔒 步驟做到一半斷線或斷電**（沒有看到任何結果行）：**不要重送。** 照 §1.2 重新連線，然後用那一步的**乾跑**看晶片現在在哪：
+
+| 斷在哪一步 | 跑什麼 | 已經做了的話會看到 |
+|---|---|---|
+| `lock-data` | `./se-lab info` | `lock_data=00` |
+| `lock-slot N` | 那一步的 `-dry-run lock-slot N` | `slot_already_locked=yes` |
+| `counter-inc 1` | `-dry-run counter-inc 1` | `counter1_before_le=` 不是 0。**斷電可能讓計數器跳不只一格**：不是 0 就不要再加 |
+| `update-extra 1 a0` | `-dry-run update-extra 1 a0` | `byte85_before=a0` |
+
+已經做了 → 照那一步「做完之後」的檢查繼續；沒做 → 從那一步的乾跑重新開始。重送 `lock-data`、`lock-slot`、`update-extra` 不會造成傷害（工具或晶片會拒絕），**只有 `counter-inc` 重送會多加一次**。
+
+斷線比斷電常見：🔒 那一行可以用 `nohup sh -c '<那一行>' > <檔名> 2>&1 &` 執行，ssh 斷掉也不會把 se-lab 從中間殺掉。
 
 ## 2. 鎖定前的最後檢查（可逆，可以重跑）
 
@@ -178,7 +196,18 @@ echo "$SN" > allow.txt
 
 ### 4.2 鎖資料區 🔒
 
-OTP 的填充值看上一步 E5 的結果：兩個 `otp_write_block` 都是 `status_00` → 用預設（`00`）；有 `status_0f`（OTP 寫不進去）→ **停**，帶回輸出（要先決定 OTP 的空白值是什麼，再用 `-otp-fill` 指定；`ff` 時的校驗值是 `3c9f`）。
+OTP 的填充值要看晶片**實際存的內容**，不是只看寫入回應（晶片可能回 `status_00` 卻沒寫進去，PR D2 第二輪審查 B-m4）。設定區鎖了之後 OTP 讀得到：
+
+```sh
+./se-lab read otp 0000 32 2>&1 | tee e5-otp0.txt
+./se-lab read otp 0008 32 2>&1 | tee e5-otp1.txt
+```
+
+| 兩個 `read_otp_…=` 的內容 | 用哪個填充值 | 預期校驗值 |
+|---|---|---|
+| 全是 `00` | 預設（`00`） | `be96` |
+| 全是 `ff` | `-otp-fill ff` | `3c9f` |
+| 其他（混合、或 `status_…`） | — | **停**，帶回輸出 |
 
 ```sh
 ./se-lab -allow allow.txt -dry-run lock-data 2>&1 | tee e6-dry.txt
@@ -186,7 +215,7 @@ OTP 的填充值看上一步 E5 的結果：兩個 `otp_write_block` 都是 `sta
 
 | 輸出 | 預期（獨立算的） | 不符合時 |
 |---|---|---|
-| `otp_fill=`、`data_crc=` | `00`、`be96` | **停** |
+| `otp_fill=`、`data_crc=` | `00`、`be96`（OTP 全 `ff` 時是 `ff`、`3c9f`） | **停** |
 | `lock_packet=` | `03 07 17 01 96 be 26 70` | **停** |
 | `dry_run=` | `nothing sent` | **停** |
 
@@ -194,6 +223,7 @@ OTP 的填充值看上一步 E5 的結果：兩個 `otp_write_block` 都是 `sta
 
 ```sh
 ./se-lab -allow allow.txt -serial "$SN" -expect-crc be96 lock-data 2>&1 | tee e6-lock.txt; echo "rc=$?" | tee -a e6-lock.txt
+# OTP 全 ff 時：-otp-fill ff -expect-crc 3c9f
 ```
 
 | `lock_data_result=` | `rc=` | 意思 | 怎麼辦 |
@@ -256,7 +286,7 @@ done | tee e8.txt
 ./se-lab -allow allow.txt -dry-run counter-inc 1 2>&1 | tee e11-dry.txt
 ```
 
-乾跑預期：`packet=03 07 24 01 01 00 06 f7`、`dry_run=nothing sent`。不同 → **停**。
+乾跑預期：`counter1_before_le=0`、`packet=03 07 24 01 01 00 06 f7`、`dry_run=nothing sent`。不同 → **停**（`counter1_before_le` 不是 0 = 已經加過了，**不要再加**）。
 
 **🔒 取得同意後**（這顆晶片的 Counter[1] 會永久加一；上限 2,097,151，一次無妨）：
 
@@ -269,6 +299,7 @@ done | tee e8.txt
 |---|---|
 | `counter1_after_inc=` | 一串 8 字元（**成功 = 匯流排上任何人不用授權就能加**）或 `status_…`（**被拒**）。這一行回填 `security-architecture.md` §10 O-1、O-17 的陷阱紀錄 |
 | 加一前後的 `counter1_le=` | 差 1 |
+| `counter1_inc_result=` | `incremented` 或 `status_XX`（被拒），`rc=0`。`INCREMENTED_answer_lost` / `NOT_INCREMENTED_answer_lost`（回應沒收到，工具已經讀回計數器）/ `UNKNOWN_read_back_failed`，`rc=1` → **不要重送**，照 §1.4 |
 
 照 §1.3 **斷電一次**，開機後 `counter-read 1`：值不變（或照實記錄跳了幾格）。然後兩個「降不回去」的嘗試（寫的是 Counter[1] 的兩個字，位元組 60–67；`ffffffff`、`00000000` 是它們的空白值）：
 
@@ -292,6 +323,8 @@ done | tee e8.txt
 ```
 
 乾跑預期：`slot=4`、`slot_config=2083`、`key_config=0073`、`lockable=yes`、`slot_already_locked=no`、`lock_packet=03 07 17 12 00 00 8e 08`、`dry_run=nothing sent`。任何一項不同 → **停**。
+
+**前提**：上面 `genkey 4` 印出了 128 個十六進位字元、`sign 4` 是 `signature_valid=yes`。沒有就不要鎖：鎖了之後槽 4 再也不能產生金鑰，E17 就做不成了（工具不知道你做過沒有，PR D2 第二輪審查 B-m10）。
 
 **🔒 取得同意後**：
 
@@ -387,6 +420,7 @@ E10（ECDH 與簽章的角色）：
 
 ```sh
 BLOB=$(printf 'a55a%.0s' $(seq 195))     # 390 位元組
+echo ${#BLOB}                             # 必須印 780
 ./se-lab -allow allow.txt slot-write 8 "$BLOB" 2>&1 | tee e15-write.txt
 ./se-lab slot-read 8 2>&1 | tee e15-read.txt
 ```
@@ -399,7 +433,7 @@ E16（健康測試失敗後恢復）沒有辦法主動誘發，不做；過程�
 
 ## 11. 斷電前先把結果帶走
 
-到這裡為止的 `/dev/shm/*.txt` 全部 `scp` 走。下一節是整份手冊唯一可能讓晶片從匯流排上「消失」的步驟。
+到這裡為止工作目錄裡的 `*.txt` 全部 `scp` 走。下一節是整份手冊唯一可能讓晶片從匯流排上「消失」的步驟。
 
 ## 12. E12：位元組 85 🔒（放在最後）
 
@@ -417,7 +451,7 @@ E16（健康測試失敗後恢復）沒有辦法主動誘發，不做；過程�
 ./se-lab -allow allow.txt -serial "$SN" update-extra 1 a0 2>&1 | tee e12.txt
 ```
 
-預期 ⚠️：`update_extra_mode1=status_00`、`byte85_after=a0`。然後照 §1.3 **斷電一次**，開機後：
+預期 ⚠️：`update_extra_mode1=status_00`、`byte85_after=a0`。沒有 `update_extra_mode1=` 這一行、而是 `update_extra_result=WRITTEN_answer_lost`（回應沒收到，位元組已經是 `a0`）→ 不要重送，直接往下做斷電；`NOT_WRITTEN_answer_lost` 或 `UNKNOWN_read_back_failed` → **停**。然後照 §1.3 **斷電一次**，開機後：
 
 ```sh
 ./se-lab info 2>&1 | tee e12-after-power.txt; echo "rc=$?" | tee -a e12-after-power.txt
@@ -428,7 +462,7 @@ i2cdetect -y -r 1 2>&1 | tee e12-scan.txt
 
 ## 13. 要帶回來的東西
 
-`/dev/shm` 裡所有 `p-*.txt`、`e4-*.txt` … `e17-*.txt`、`stop-info.txt`（**每次斷電前先 `scp` 走**），加上手寫：
+工作目錄裡所有 `p-*.txt`、`e4-*.txt` … `e17-*.txt`、`stop-info.txt`（**每次斷電前先 `scp` 走**），加上手寫：
 
 | 項目 | 來源 |
 |---|---|
